@@ -120,7 +120,7 @@ pub(crate) fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[RawFd]) ->
     if fds.is_empty() {
         return put(stream, bytes);
     }
-    let payload = std::mem::size_of_val(fds);
+    let payload = size_of_val(fds);
     let payload_len = libc::c_uint::try_from(payload)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many descriptors"))?;
     // SAFETY: CMSG_SPACE is arithmetic on its argument.
@@ -365,6 +365,107 @@ pub(crate) enum Granted {
     Kept,
 }
 
+/// Answer `grant:false` with `reason` and this daemon's warm set.
+fn refuse(stream: &UnixStream, registry: &Registry, reason: &str) -> io::Result<Granted> {
+    let answer = Answer {
+        status: "handover".to_owned(),
+        grant: false,
+        reason: Some(reason.to_owned()),
+        warm: registry.warm_workspaces(),
+        conns: Vec::new(),
+    };
+    let mut out = serde_json::to_string(&answer).map_err(io::Error::other)?;
+    out.push('\n');
+    put(stream, out.as_bytes())?;
+    Ok(Granted::Kept)
+}
+
+/// Abandon a handover: read requests again and restart every parked
+/// connection on this daemon.
+fn resume_all(succession: &Succession, resume: &dyn Fn(Parked), why: &str) {
+    succession.quiesce.store(false, Ordering::SeqCst);
+    let parked = std::mem::take(&mut succession.live().parked);
+    timing::say!(
+        "registry: handover abandoned ({why}); {} connection(s) resumed",
+        parked.len()
+    );
+    for conn in parked {
+        resume(conn);
+    }
+}
+
+/// Does the successor's claimed warm set cover everything this daemon holds
+/// warm, with no drawer rebuild in flight?
+fn covers(registry: &Registry, claimed: &[PathBuf]) -> bool {
+    registry.cold_builds_idle()
+        && registry
+            .warm_workspaces()
+            .iter()
+            .all(|workspace| claimed.contains(workspace))
+}
+
+/// The drain: every connection thread parks or ends, background work ends
+/// its pass and stays out, the sql caches close and the state file is
+/// flushed. `Err` names why the handover is abandoned.
+fn drain<'a>(
+    succession: &'a Succession,
+    registry: &Registry,
+    claimed: &[PathBuf],
+) -> Result<std::sync::RwLockWriteGuard<'a, ()>, &'static str> {
+    let deadline = Instant::now() + DRAIN_BOUND;
+    let drained = {
+        let readers = succession.live();
+        let (readers, _) = succession
+            .moved
+            .wait_timeout_while(readers, DRAIN_BOUND, |readers| readers.reading > 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        readers.reading == 0
+    };
+    if !drained {
+        return Err("busy");
+    }
+    let background = loop {
+        match succession.background.try_write() {
+            Ok(guard) => break guard,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return Err("busy"),
+        }
+    };
+    // A request served during the drain may have warmed something new.
+    if !covers(registry, claimed) {
+        return Err("warm");
+    }
+    if !registry.close_sql_stores() {
+        return Err("busy");
+    }
+    registry.flush();
+    Ok(background)
+}
+
+/// Send the grant line with every descriptor and wait for `adopted`.
+/// `Ok(false)`: the successor did not adopt inside the bound.
+fn pass(stream: &UnixStream, conns: Vec<ConnState>, mut fds: Vec<RawFd>) -> io::Result<bool> {
+    let answer = Answer {
+        status: "handover".to_owned(),
+        grant: true,
+        reason: None,
+        warm: Vec::new(),
+        conns,
+    };
+    let mut out = serde_json::to_string(&answer).map_err(io::Error::other)?;
+    out.push('\n');
+    let first: Vec<RawFd> = fds.drain(..fds.len().min(FDS_PER_MESSAGE)).collect();
+    send_with_fds(stream, out.as_bytes(), &first)?;
+    while !fds.is_empty() {
+        let chunk: Vec<RawFd> = fds.drain(..fds.len().min(FDS_PER_MESSAGE)).collect();
+        send_with_fds(stream, b" ", &chunk)?;
+    }
+    // The commit: `adopted` inside the bound, or this daemon serves on.
+    stream.set_read_timeout(Some(ADOPT_BOUND))?;
+    let mut word = String::new();
+    Ok(BufReader::new(stream).read_line(&mut word).is_ok() && word.contains("\"adopted\""))
+}
+
 /// Serve one `handover` request line on `stream` (the driver's own
 /// connection, already out of request mode). `resume` restarts a parked
 /// connection on this daemon when the handover is abandoned.
@@ -375,84 +476,24 @@ pub(crate) fn grant(
     succession: &Arc<Succession>,
     registry: &Registry,
     stream: &UnixStream,
-    line: &str,
+    request: &str,
     resume: &dyn Fn(Parked),
 ) -> io::Result<Granted> {
-    let claimed: Ask = serde_json::from_str(line).map_err(io::Error::other)?;
-    let refuse = |reason: &str| -> io::Result<Granted> {
-        let answer = Answer {
-            status: "handover".to_owned(),
-            grant: false,
-            reason: Some(reason.to_owned()),
-            warm: registry.warm_workspaces(),
-            conns: Vec::new(),
-        };
-        let mut out = serde_json::to_string(&answer).map_err(io::Error::other)?;
-        out.push('\n');
-        put(stream, out.as_bytes())?;
-        Ok(Granted::Kept)
-    };
-    let covers = |registry: &Registry| {
-        registry.cold_builds_idle()
-            && registry
-                .warm_workspaces()
-                .iter()
-                .all(|ws| claimed.warm.contains(ws))
-    };
-    if !covers(registry) {
-        return refuse("warm");
+    let claimed: Ask = serde_json::from_str(request).map_err(io::Error::other)?;
+    if !covers(registry, &claimed.warm) {
+        return refuse(stream, registry, "warm");
     }
     // One handover at a time.
     if succession.quiesce.swap(true, Ordering::SeqCst) {
-        return refuse("busy");
+        return refuse(stream, registry, "busy");
     }
-    let abandon = |reason: &str| -> io::Result<Granted> {
-        succession.quiesce.store(false, Ordering::SeqCst);
-        let parked = std::mem::take(&mut succession.live().parked);
-        timing::say!(
-            "registry: handover abandoned ({reason}); {} connection(s) resumed",
-            parked.len()
-        );
-        for conn in parked {
-            resume(conn);
-        }
-        refuse(reason)
-    };
-
-    // Drain: every connection thread parks or ends.
-    let deadline = Instant::now() + DRAIN_BOUND;
-    let drained = {
-        let live = succession.live();
-        let (live, _) = succession
-            .moved
-            .wait_timeout_while(live, DRAIN_BOUND, |live| live.reading > 0)
-            .unwrap_or_else(PoisonError::into_inner);
-        live.reading == 0
-    };
-    if !drained {
-        return abandon("busy");
-    }
-    // Background work ends its pass and stays out.
-    let background = loop {
-        match succession.background.try_write() {
-            Ok(guard) => break Some(guard),
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => break None,
+    let background = match drain(succession, registry, &claimed.warm) {
+        Ok(background) => background,
+        Err(reason) => {
+            resume_all(succession, resume, reason);
+            return refuse(stream, registry, reason);
         }
     };
-    let Some(background) = background else {
-        return abandon("busy");
-    };
-    // A request served during the drain may have warmed something new.
-    if !covers(registry) {
-        drop(background);
-        return abandon("warm");
-    }
-    if !registry.close_sql_stores() {
-        drop(background);
-        return abandon("busy");
-    }
-    registry.flush();
 
     // Both stay locked until the descriptors are sent: a concurrent stop
     // must not close a descriptor whose number is about to be passed.
@@ -467,14 +508,15 @@ pub(crate) fn grant(
     let (Some(listening), Some(lock)) = (listener.as_ref(), singleton.as_ref()) else {
         // This daemon is stopping.
         drop((listener, singleton, background));
-        return abandon("busy");
+        resume_all(succession, resume, "this daemon is stopping");
+        return refuse(stream, registry, "busy");
     };
-    let (conns, mut fds): (Vec<ConnState>, Vec<RawFd>) = {
-        let live = succession.live();
+    let (conns, fds): (Vec<ConnState>, Vec<RawFd>) = {
+        let readers = succession.live();
+        let parked = &readers.parked;
         let mut fds = vec![listening.as_raw_fd(), lock.held().as_raw_fd()];
-        fds.extend(live.parked.iter().map(|conn| conn.stream.as_raw_fd()));
-        let conns = live
-            .parked
+        fds.extend(parked.iter().map(|conn| conn.stream.as_raw_fd()));
+        let conns = parked
             .iter()
             .map(|conn| ConnState {
                 workspace: conn.workspace.clone(),
@@ -483,43 +525,13 @@ pub(crate) fn grant(
             .collect();
         (conns, fds)
     };
-    let answer = Answer {
-        status: "handover".to_owned(),
-        grant: true,
-        reason: None,
-        warm: Vec::new(),
-        conns,
-    };
-    let mut out = serde_json::to_string(&answer).map_err(io::Error::other)?;
-    out.push('\n');
-    let passed = fds.len() - 2;
-    let sent = (|| -> io::Result<bool> {
-        let first: Vec<RawFd> = fds.drain(..fds.len().min(FDS_PER_MESSAGE)).collect();
-        send_with_fds(stream, out.as_bytes(), &first)?;
-        while !fds.is_empty() {
-            let chunk: Vec<RawFd> = fds.drain(..fds.len().min(FDS_PER_MESSAGE)).collect();
-            send_with_fds(stream, b" ", &chunk)?;
-        }
-        // The commit: `adopted` inside the bound, or this daemon serves on.
-        stream.set_read_timeout(Some(ADOPT_BOUND))?;
-        let mut word = String::new();
-        let adopted =
-            BufReader::new(stream).read_line(&mut word).is_ok() && word.contains("\"adopted\"");
-        Ok(adopted)
-    })();
-    if !matches!(sent, Ok(true)) {
+    let passed = conns.len();
+    let adopted = pass(stream, conns, fds);
+    if !matches!(adopted, Ok(true)) {
         let _ = put(stream, b"{\"aborted\":true}\n");
         drop((listener, singleton, background));
-        succession.quiesce.store(false, Ordering::SeqCst);
-        let parked = std::mem::take(&mut succession.live().parked);
-        timing::say!(
-            "registry: handover abandoned (the successor did not adopt); {} connection(s) resumed",
-            parked.len()
-        );
-        for conn in parked {
-            resume(conn);
-        }
-        return sent.map(|_| Granted::Kept);
+        resume_all(succession, resume, "the successor did not adopt");
+        return adopted.map(|_| Granted::Kept);
     }
     succession.handed.store(true, Ordering::SeqCst);
     // The lock leaves with its descriptor: closing this copy unlocks nothing.
