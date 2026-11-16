@@ -87,14 +87,66 @@ pub struct PinRow {
     /// The declared ref, verbatim — empty on a lock-refusal row, which declares
     /// no ref and carries its refusal in [`PinRow::color`].
     pub declared_ref: String,
-    /// The colour the ONE pin computer gave it — what decides red from grey.
-    pub color: Color,
+    /// The colour the ONE pin computer gave it, as the class the plane sorts
+    /// by — what decides red from grey.
+    pub class: PinClass,
     /// The colour RENDERED by that same computer (`view::walk::color_label`):
     /// `red content-drifted`, `grey unmounted (root 'x')`, and so on.
     ///
     /// Carried rather than re-derived: the reason words are spelled once, in
     /// `view`.
     pub label: String,
+}
+
+/// Where one pin's colour files it in the [`PinPlane`]. A colour computed in
+/// this process converts ([`PinClass::of`]); one that arrived as wire words
+/// (`wire-contract.md` § A.13) is read off its tone and reason
+/// ([`PinClass::of_words`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinClass {
+    /// The pin holds.
+    Green,
+    /// The ledger claims content that is no longer there.
+    Red,
+    /// Grey for want of a measure — gates.
+    Grey,
+    /// `grey(outside-hash-domain)`: a policy statement, reported and never
+    /// gated.
+    Unattested,
+}
+
+impl PinClass {
+    /// The class of a colour.
+    #[must_use]
+    pub fn of(color: &Color) -> PinClass {
+        match color {
+            Color::Green => PinClass::Green,
+            Color::Red(_) => PinClass::Red,
+            Color::Grey(model::selector::GreyReason::OutsideHashDomain { .. }) => {
+                PinClass::Unattested
+            }
+            Color::Grey(_) => PinClass::Grey,
+        }
+    }
+
+    /// The class of a colour spelled as its tone and reason word
+    /// (`model::selector::color_tone` / `color_reason`). `None` for a tone the
+    /// colour model does not have.
+    #[must_use]
+    pub fn of_words(tone: &str, reason: Option<&str>) -> Option<PinClass> {
+        let unattested = model::selector::color_reason(&Color::Grey(
+            model::selector::GreyReason::OutsideHashDomain {
+                path: String::new(),
+            },
+        ));
+        match tone {
+            "green" => Some(PinClass::Green),
+            "red" => Some(PinClass::Red),
+            "grey" if reason.is_some() && reason == unattested => Some(PinClass::Unattested),
+            "grey" => Some(PinClass::Grey),
+            _ => None,
+        }
+    }
 }
 
 /// One pinned blob that is **ORPHANED**: no ref reaches it, and the file it is
@@ -268,15 +320,13 @@ pub fn pin_plane(
         out_of_jurisdiction: Vec::new(),
     };
     for pin in pins {
-        match pin.color {
-            Color::Red(_) => plane.red.push(pin.clone()),
+        match pin.class {
+            PinClass::Red => plane.red.push(pin.clone()),
             // The one grey that is a policy statement rather than an absence of
             // measure — sorted out here so the gate never sees it.
-            Color::Grey(model::selector::GreyReason::OutsideHashDomain { .. }) => {
-                plane.unattested.push(pin.clone());
-            }
-            Color::Grey(_) => plane.grey.push(pin.clone()),
-            Color::Green => {}
+            PinClass::Unattested => plane.unattested.push(pin.clone()),
+            PinClass::Grey => plane.grey.push(pin.clone()),
+            PinClass::Green => {}
         }
     }
     match objects_in(objects, mounted) {
@@ -579,12 +629,12 @@ mod tests {
         format!("# P\n\n{}\n", lock::render(&lock))
     }
 
-    fn pin(color: Color) -> PinRow {
+    fn pin(color: &Color) -> PinRow {
         PinRow {
             src_path: "claim.md".to_string(),
             declared_ref: "source.md#S/G".to_string(),
             label: "rendered by the ONE computer".to_string(),
-            color,
+            class: PinClass::of(color),
         }
     }
 
@@ -604,7 +654,7 @@ mod tests {
         let unattested = pin_plane(
             &root,
             &lock_objects(&docs),
-            &[pin(Color::Grey(
+            &[pin(&Color::Grey(
                 model::selector::GreyReason::OutsideHashDomain {
                     path: "drafts/tmp.md".to_string(),
                 },
@@ -632,7 +682,7 @@ mod tests {
         let blind = pin_plane(
             &root,
             &lock_objects(&docs),
-            &[pin(Color::Grey(model::selector::GreyReason::Ambiguous))],
+            &[pin(&Color::Grey(model::selector::GreyReason::Ambiguous))],
             &BTreeMap::new(),
         );
         assert!(
@@ -651,7 +701,7 @@ mod tests {
         let red = pin_plane(
             &root,
             &lock_objects(&docs),
-            &[pin(Color::Red(model::selector::RedReason::Drifted))],
+            &[pin(&Color::Red(model::selector::RedReason::Drifted))],
             &BTreeMap::new(),
         );
         assert!(red.is_red(), "a drifted pin is a lie the ledger is telling");
@@ -663,7 +713,7 @@ mod tests {
         let grey = pin_plane(
             &root,
             &lock_objects(&docs),
-            &[pin(Color::Grey(model::selector::GreyReason::Ambiguous))],
+            &[pin(&Color::Grey(model::selector::GreyReason::Ambiguous))],
             &BTreeMap::new(),
         );
         assert!(!grey.is_red(), "grey is not red");
@@ -673,7 +723,7 @@ mod tests {
         let green = pin_plane(
             &root,
             &lock_objects(&docs),
-            &[pin(Color::Green)],
+            &[pin(&Color::Green)],
             &BTreeMap::new(),
         );
         assert!(green.is_green(), "a green pin leaves nothing to report");

@@ -157,7 +157,7 @@ fn a_drifted_pin_still_reddens_after_the_journal_died() {
     let drifted = check::PinRow {
         src_path: "claim.md".to_string(),
         declared_ref: "source.md#S".to_string(),
-        color: model::selector::Color::Red(model::selector::RedReason::Drifted),
+        class: check::PinClass::Red,
         label: "red content-drifted".to_string(),
     };
     let plane = check::pin_plane(

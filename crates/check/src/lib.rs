@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use fs::WorkspaceRoot;
 
 pub use layer0::{
-    ClaimFinding, GREY_CANNOT_ASSESS, LockObject, OrphanedBlob, PinPlane, PinRow,
+    ClaimFinding, GREY_CANNOT_ASSESS, LockObject, OrphanedBlob, PinClass, PinPlane, PinRow,
     WRITE_HISTORY_NOT_ASSESSED, claims_realised, lock_objects, pin_plane,
 };
 // Layer 1 exports no armed-input or fault type of its own: the input is
@@ -329,7 +329,7 @@ mod honesty {
                 red: vec![crate::PinRow {
                     src_path: "claim.md".to_string(),
                     declared_ref: "source.md#S".to_string(),
-                    color: model::selector::Color::Red(model::selector::RedReason::Drifted),
+                    class: crate::PinClass::Red,
                     label: "red content-drifted".to_string(),
                 }],
                 ..clean()

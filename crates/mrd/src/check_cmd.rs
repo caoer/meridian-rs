@@ -849,7 +849,7 @@ fn pin_rows(
             src_path: pin.src_path,
             declared_ref: pin.declared_ref,
             label: view::walk::color_label(&pin.color),
-            color: pin.color,
+            class: check::PinClass::of(&pin.color),
         })
         .collect()
 }
@@ -1357,11 +1357,11 @@ mod tests {
         }
     }
 
-    fn pin(color: model::selector::Color, label: &str) -> PinRow {
+    fn pin(color: &model::selector::Color, label: &str) -> PinRow {
         PinRow {
             src_path: "claim.md".to_string(),
             declared_ref: "source.md#S".to_string(),
-            color,
+            class: check::PinClass::of(color),
             label: label.to_string(),
         }
     }
@@ -1464,7 +1464,7 @@ mod tests {
     fn a_red_pin_refuses_the_commit() {
         let pins = PinPlane {
             red: vec![pin(
-                model::selector::Color::Red(model::selector::RedReason::Drifted),
+                &model::selector::Color::Red(model::selector::RedReason::Drifted),
                 "red content-drifted",
             )],
             ..holding_pins()
@@ -1492,7 +1492,7 @@ mod tests {
     fn an_unreadable_pin_plane_refuses_as_an_absence_and_not_as_a_finding() {
         let pins = PinPlane {
             grey: vec![pin(
-                model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
+                &model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
                 "grey unmounted",
             )],
             ..holding_pins()
@@ -1538,11 +1538,11 @@ mod tests {
             }],
             pins: PinPlane {
                 red: vec![pin(
-                    model::selector::Color::Red(model::selector::RedReason::Drifted),
+                    &model::selector::Color::Red(model::selector::RedReason::Drifted),
                     "red content-drifted",
                 )],
                 grey: vec![pin(
-                    model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
+                    &model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
                     "grey unverifiable-fingerprint",
                 )],
                 ..holding_pins()
@@ -1589,7 +1589,7 @@ mod tests {
             drifted_claims: Vec::new(),
             pins: PinPlane {
                 grey: vec![pin(
-                    model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
+                    &model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
                     "grey unverifiable-fingerprint",
                 )],
                 ..holding_pins()
