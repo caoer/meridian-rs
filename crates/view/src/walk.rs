@@ -568,41 +568,6 @@ fn holder_pin_colors<W: PinWorld>(
     Ok(())
 }
 
-/// Retrieval-plane row: blob sha a lock references (git world, no colour).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LockObject {
-    pub src_path: String,
-    /// Pin `object` (path without `.md`).
-    pub key: String,
-    /// Blob sha (git object id).
-    pub blob_sha: String,
-}
-
-/// Every blob pinned by a `meridian-lock` in `docs`. Same parser as colours.
-/// Refused lock contributes nothing (damage named by grey lock-refused).
-/// Deduped by `(src_path, object, hash)` — whole-file lock pins same blob twice.
-#[must_use]
-pub fn lock_objects(docs: &model::Docs) -> Vec<LockObject> {
-    let mut out = Vec::new();
-    let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
-    for (path, doc) in docs {
-        let Ok(Some(found)) = lock::find(doc) else {
-            continue;
-        };
-        for pin in found.lock.pins {
-            if !seen.insert((path.clone(), pin.object.clone(), pin.hash.clone())) {
-                continue;
-            }
-            out.push(LockObject {
-                src_path: path.clone(),
-                key: pin.object,
-                blob_sha: pin.hash,
-            });
-        }
-    }
-    out
-}
-
 /// Whether the listing carries any red edge (finding signal).
 #[must_use]
 pub fn has_red(report: &WalkReport) -> bool {
@@ -1501,77 +1466,6 @@ mod tests {
         assert!(down.entries.is_empty(), "a refusal is nobody's dependent");
         let down_self = walk(&docs, "effect.md", Direction::Down, None).expect("down self");
         assert_eq!(down_self.entries, [] as [WalkEntry; 0]);
-    }
-
-    /// [`lock_objects`] dedupes by `(page, object, hash)` — whole-file lock
-    /// pins same blob twice; two rows would double-count debt.
-    #[test]
-    fn lock_objects_dedupes_one_blob_per_object_never_per_pin() {
-        let token = format!("fp1.span2.b3.{}", "0".repeat(64));
-        let mut whole_file = lock::Lock::new();
-        // Whole-file: body + frontmatter pins, one blob.
-        whole_file.upsert_pin(lock::PinEntry::new(
-            "vibe",
-            &"a".repeat(40),
-            lock::Selector::Path(Vec::new()),
-            &token,
-        ));
-        whole_file.upsert_pin(lock::PinEntry::new(
-            "vibe",
-            &"a".repeat(40),
-            lock::Selector::Properties(Vec::new()),
-            &token,
-        ));
-        // Control: distinct object must survive dedup.
-        whole_file.upsert_pin(lock::PinEntry::new(
-            "second",
-            &"b".repeat(40),
-            lock::Selector::Path(Vec::new()),
-            &token,
-        ));
-
-        let mut docs = BTreeMap::new();
-        docs.insert(
-            "effect.md".to_string(),
-            doc(&format!("# Effect\n\n{}\n", lock::render(&whole_file))),
-        );
-        docs.insert("plain.md".to_string(), doc("# Plain\n\nno lock here\n"));
-
-        let objects = lock_objects(&docs);
-        assert_eq!(
-            objects.len(),
-            2,
-            "three pins, two blobs — the whole-file lock is ONE debt: {objects:?}"
-        );
-        assert_eq!(objects[0].src_path, "effect.md");
-        assert_eq!(objects[0].key, "vibe");
-        assert_eq!(objects[0].blob_sha, "a".repeat(40));
-        assert_eq!(objects[1].key, "second");
-        assert_eq!(objects[1].blob_sha, "b".repeat(40));
-
-        // A page with no lock projects nothing at all.
-        let only_plain =
-            BTreeMap::from([("plain.md".to_string(), doc("# Plain\n\nno lock here\n"))]);
-        assert_eq!(lock_objects(&only_plain), [] as [LockObject; 0]);
-    }
-
-    /// A REFUSED lock projects no blobs — its plane is unreadable, and the
-    /// damage is already named by the grey `lock-refused` row the pin plane
-    /// projects for the same page. The gauge must never read a corrupt lock's
-    /// blobs as "none owed" WITHOUT that row beside it.
-    #[test]
-    fn a_refused_lock_projects_no_objects_but_still_projects_its_refusal_row() {
-        let malformed = "# Effect\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
-        let mut docs = BTreeMap::new();
-        docs.insert("effect.md".to_string(), doc(malformed));
-
-        assert!(
-            lock_objects(&docs).is_empty(),
-            "an unreadable plane is empty"
-        );
-        let rows = lock_pin_colors(&docs);
-        assert_eq!(rows.len(), 1, "the refusal is still visible: {rows:?}");
-        assert_eq!(color_tone(&rows[0].color), "grey");
     }
 
     /// The §12.1 verdict-plane law, as a family — the gate for the P0 where the
