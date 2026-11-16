@@ -38,13 +38,22 @@ pub(crate) const DRAIN_BOUND: Duration = Duration::from_secs(5);
 /// How long the resident waits for `adopted` after it passed its descriptors.
 const ADOPT_BOUND: Duration = Duration::from_secs(5);
 
-/// How long the successor waits before it asks again after `busy`.
+/// How long the successor waits before it asks again after the first `busy`;
+/// the wait doubles with each further one, up to [`BUSY_RETRY_MAX`].
 pub(crate) const BUSY_RETRY: Duration = Duration::from_secs(2);
 
-/// How long the successor keeps asking a resident that answers `busy`.
+/// The longest wait between two asks of a resident that answers `busy`.
 // `Duration::from_mins` is not const-stable at MSRV 1.96.
 #[allow(clippy::duration_suboptimal_units)]
-pub(crate) const BUSY_BOUND: Duration = Duration::from_secs(600);
+pub(crate) const BUSY_RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// How many `busy` answers the successor takes before it gives up. Each one
+/// held every caller of the resident for up to [`DRAIN_BOUND`].
+pub(crate) const BUSY_TRIES: u32 = 12;
+
+/// How long the successor waits before it asks again when the resident
+/// answered `warm` and named nothing new: it is building a drawer.
+pub(crate) const WARM_RETRY: Duration = Duration::from_millis(200);
 
 /// Descriptors per message: under every platform's `SCM_RIGHTS` ceiling.
 const FDS_PER_MESSAGE: usize = 64;
@@ -319,9 +328,19 @@ impl Succession {
     }
 
     /// Leave request mode at a request boundary, giving the connection up.
-    pub(crate) fn park(&self, reading: Reading, parked: Parked) {
-        self.live().parked.push(parked);
+    /// Gives both back when the handover was abandoned meanwhile: the caller
+    /// reads on. The flag is read under the lock [`resume_all`] clears it
+    /// under, so a connection is never parked after the parked were resumed.
+    pub(crate) fn park(&self, reading: Reading, parked: Parked) -> Option<(Reading, Parked)> {
+        let mut live = self.live();
+        if !self.quiescing() {
+            return Some((reading, parked));
+        }
+        live.parked.push(parked);
+        // `Reading` takes this lock to leave.
+        drop(live);
         drop(reading);
+        None
     }
 
     /// This daemon is stopping: close its copy of the listening socket, so
@@ -383,14 +402,34 @@ fn refuse(stream: &UnixStream, registry: &Registry, reason: &str) -> io::Result<
 /// Abandon a handover: read requests again and restart every parked
 /// connection on this daemon.
 fn resume_all(succession: &Succession, resume: &dyn Fn(Parked), why: &str) {
-    succession.quiesce.store(false, Ordering::SeqCst);
-    let parked = std::mem::take(&mut succession.live().parked);
+    let parked = {
+        let mut live = succession.live();
+        succession.quiesce.store(false, Ordering::SeqCst);
+        std::mem::take(&mut live.parked)
+    };
     timing::say!(
         "registry: handover abandoned ({why}); {} connection(s) resumed",
         parked.len()
     );
     for conn in parked {
         resume(conn);
+    }
+}
+
+/// Resumes this daemon when the handover thread unwinds before the commit: a
+/// panic there must not leave it holding the socket and reading nothing.
+struct ResumeOnPanic<'a> {
+    succession: &'a Succession,
+    resume: &'a dyn Fn(Parked),
+}
+
+impl Drop for ResumeOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() && !self.succession.handed() {
+            // The drain's exclusive hold was dropped by the same unwind.
+            self.succession.background.clear_poison();
+            resume_all(self.succession, self.resume, "the handover panicked");
+        }
     }
 }
 
@@ -487,6 +526,7 @@ pub(crate) fn grant(
     if succession.quiesce.swap(true, Ordering::SeqCst) {
         return refuse(stream, registry, "busy");
     }
+    let _resume_on_panic = ResumeOnPanic { succession, resume };
     let background = match drain(succession, registry, &claimed.warm) {
         Ok(background) => background,
         Err(reason) => {
@@ -566,12 +606,26 @@ pub(crate) enum Offer {
     },
 }
 
+/// The resident ended the exchange before the commit: `Absent` when nothing
+/// accepts on the socket any more, else `Busy`. The caller has closed every
+/// descriptor it received, the listening socket's copy among them.
+fn after_loss(socket: &Path) -> Offer {
+    if UnixStream::connect(socket).is_ok() {
+        Offer::Busy
+    } else {
+        Offer::Absent
+    }
+}
+
 /// Ask the daemon on `socket` to hand over to this process, which holds
 /// `warm` warm.
 ///
+/// Until the commit every received descriptor is a plain descriptor: closing
+/// one unlocks nothing and ends no connection the resident still serves.
+///
 /// # Errors
-/// The exchange failed in a way that leaves the resident's state unknown to
-/// this process: it must not serve.
+/// The resident does not speak `handover`, or descriptors were lost in
+/// transit: this process must not serve, and the resident serves on.
 pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
     let Ok(stream) = UnixStream::connect(socket) else {
         return Ok(Offer::Absent);
@@ -588,20 +642,26 @@ pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
     let mut fds: Vec<OwnedFd> = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
+    // One read; `false` when the resident closed or died instead.
+    let mut read = |fds: &mut Vec<OwnedFd>, bytes: &mut Vec<u8>| -> io::Result<bool> {
+        match recv_with_fds(&stream, &mut buf, fds) {
+            Ok(0) => Ok(false),
+            Ok(got) => {
+                bytes.extend_from_slice(&buf[..got]);
+                Ok(true)
+            }
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => Err(e),
+            Err(_) => Ok(false),
+        }
+    };
     let line_end = loop {
         if let Some(end) = bytes.iter().position(|b| *b == b'\n') {
             break end;
         }
-        let got = recv_with_fds(&stream, &mut buf, &mut fds)?;
-        if got == 0 {
-            // A resident that predates `handover` answers and closes, or one
-            // that died: either way nothing was passed.
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "the serving daemon closed the handover connection unanswered",
-            ));
+        if !read(&mut fds, &mut bytes)? {
+            // The resident died mid-drain; nothing was passed.
+            return Ok(after_loss(socket));
         }
-        bytes.extend_from_slice(&buf[..got]);
     };
     let answer: Answer = serde_json::from_slice(&bytes[..line_end]).map_err(|e| {
         io::Error::new(
@@ -621,12 +681,23 @@ pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
     // Continuation messages carry the descriptors past the first message's.
     let expected = 2 + answer.conns.len();
     while fds.len() < expected {
-        if recv_with_fds(&stream, &mut buf, &mut fds)? == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "the serving daemon closed the handover connection mid-grant",
-            ));
+        if !read(&mut fds, &mut bytes)? {
+            // The resident died mid-grant.
+            drop(fds);
+            return Ok(after_loss(socket));
         }
+    }
+
+    let adopted = (&stream).write_all(b"{\"adopted\":true}\n");
+    let mut word = Vec::new();
+    // `released`, `aborted`, or a close with neither: the resident died
+    // holding the grant, and these descriptors are the only live ones.
+    let _ = (&stream).read_to_end(&mut word);
+    if adopted.is_err() || String::from_utf8_lossy(&word).contains("\"aborted\"") {
+        // The resident gave the try up and serves on with its own copies, or
+        // died before it could commit.
+        drop(fds);
+        return Ok(after_loss(socket));
     }
     let mut fds = fds.into_iter();
     let listener = UnixListener::from(fds.next().expect("counted"));
@@ -641,18 +712,6 @@ pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
             rev: Rev::from_contract(Some(&state.rev)),
         })
         .collect();
-
-    (&stream).write_all(b"{\"adopted\":true}\n")?;
-    let mut word = Vec::new();
-    // `released`, `aborted`, or a close with neither: the resident died
-    // holding the grant, and these descriptors are the only live ones.
-    let _ = (&stream).read_to_end(&mut word);
-    if String::from_utf8_lossy(&word).contains("\"aborted\"") {
-        // The resident serves on with its own copies. Dropping the lock here
-        // must close, never unlock: the description is the resident's.
-        drop(singleton.into_held());
-        return Ok(Offer::Busy);
-    }
     Ok(Offer::Granted {
         listener,
         singleton,
@@ -683,6 +742,62 @@ mod tests {
         let mut byte = [0u8; 1];
         (&kept).read_exact(&mut byte).unwrap();
         assert_eq!(&byte, b"x");
+    }
+
+    /// Accept the successor's connection and read its request line.
+    fn asked(listener: &UnixListener) -> UnixStream {
+        let (stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        BufReader::new(&stream).read_line(&mut request).unwrap();
+        assert!(is_handover(&request), "{request}");
+        stream
+    }
+
+    #[test]
+    fn a_grant_the_resident_gave_up_on_unlocks_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let lock = DrawerLock::try_acquire(tmp.path()).unwrap().unwrap();
+
+        let offer = std::thread::scope(|scope| {
+            let asking = scope.spawn(|| ask(&socket, &[]));
+            let stream = asked(&listener);
+            // The resident stopped waiting for `adopted` before the successor
+            // wrote it: the successor's write fails with the grant in hand.
+            stream.shutdown(std::net::Shutdown::Read).unwrap();
+            send_with_fds(
+                &stream,
+                b"{\"status\":\"handover\",\"grant\":true}\n",
+                &[listener.as_raw_fd(), lock.held().as_raw_fd()],
+            )
+            .unwrap();
+            drop(stream);
+            asking.join().unwrap().unwrap()
+        });
+
+        assert!(matches!(offer, Offer::Busy), "{offer:?}");
+        assert!(
+            DrawerLock::try_acquire(tmp.path()).unwrap().is_none(),
+            "the resident still holds its lock"
+        );
+    }
+
+    #[test]
+    fn a_resident_that_dies_before_it_answers_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+
+        let offer = std::thread::scope(|scope| {
+            let asking = scope.spawn(|| ask(&socket, &[]));
+            let stream = asked(&listener);
+            drop(listener);
+            drop(stream);
+            asking.join().unwrap().unwrap()
+        });
+
+        assert!(matches!(offer, Offer::Absent), "{offer:?}");
     }
 
     #[test]

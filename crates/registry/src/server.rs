@@ -958,9 +958,10 @@ impl RunningServer {
     /// # Errors
     ///
     /// As [`RunningServer::start`]; a workspace the serving daemon holds warm
-    /// could not be warmed here; the serving daemon answered `busy` for
-    /// [`crate::succession::BUSY_BOUND`]; or the exchange failed. In every
-    /// case the serving daemon keeps serving.
+    /// could not be warmed here; the serving daemon answered `busy`
+    /// [`crate::succession::BUSY_TRIES`] times; or it does not speak
+    /// `handover`. In each of those the serving daemon keeps serving. An
+    /// error after the takeover committed leaves no daemon serving.
     pub fn succeed(config: Config) -> io::Result<Self> {
         let dir = prepare_dirs(&config)?;
         if UnixStream::connect(&config.socket_path).is_err() {
@@ -969,7 +970,8 @@ impl RunningServer {
         // Beside a serving daemon: its residency stores stay, and nothing
         // here writes the state file or a cache drawer until the commit.
         let registry = load_registry(&config, &dir, false)?;
-        let mut busy_since: Option<Instant> = None;
+        let mut busy = 0u32;
+        let mut retry = succession::BUSY_RETRY;
         loop {
             // Bring what is warm up to the disk, so the first currency pass
             // after the commit has little to fold.
@@ -986,21 +988,25 @@ impl RunningServer {
                     return Self::bind_and_serve(config, registry, singleton);
                 }
                 Offer::Warm(theirs) => {
-                    busy_since = None;
+                    if theirs.iter().all(|workspace| warm.contains(workspace)) {
+                        // Nothing new to warm: the serving daemon is building
+                        // a drawer. Wait for it instead of asking in a spin.
+                        thread::sleep(succession::WARM_RETRY);
+                    }
                     warm_beside(&registry, &theirs, &warm)?;
                 }
                 Offer::Busy => {
-                    let since = *busy_since.get_or_insert_with(Instant::now);
-                    if since.elapsed() >= succession::BUSY_BOUND {
+                    // Every `busy` held the serving daemon's callers for the
+                    // drain bound, so the tries are counted and spaced out.
+                    busy += 1;
+                    if busy >= succession::BUSY_TRIES {
                         return Err(io::Error::new(
                             io::ErrorKind::TimedOut,
-                            format!(
-                                "the serving daemon stayed busy for {}s and keeps serving",
-                                succession::BUSY_BOUND.as_secs()
-                            ),
+                            format!("the serving daemon answered busy {busy} times and keeps serving"),
                         ));
                     }
-                    thread::sleep(succession::BUSY_RETRY);
+                    thread::sleep(retry);
+                    retry = (retry * 2).min(succession::BUSY_RETRY_MAX);
                 }
                 Offer::Granted {
                     listener,
@@ -1016,13 +1022,17 @@ impl RunningServer {
                             .filter(|entry| entry.workspace.is_dir())
                             .collect(),
                     );
-                    clear_earlier_stores(&registry, &dir);
                     timing::say!(
                         "registry: took over from the serving daemon ({} workspace(s) warm, {} connection(s) carried)",
                         warm.len(),
                         conns.len()
                     );
-                    return Self::serve(config, registry, listener, singleton, conns);
+                    // Callers first: the predecessor's stores go once this
+                    // daemon accepts.
+                    let server =
+                        Self::serve(config, Arc::clone(&registry), listener, singleton, conns)?;
+                    clear_earlier_stores(&registry, &dir);
+                    return Ok(server);
                 }
             }
         }
@@ -1653,14 +1663,19 @@ fn serve_conn(
             drop(reader);
             drop(writer);
             stream.set_read_timeout(None)?;
-            ctx.succession.park(
-                reading,
-                Parked {
-                    stream,
-                    workspace: session.attached,
-                    rev: session.rev,
-                },
-            );
+            let parked = Parked {
+                stream,
+                workspace: session.attached,
+                rev: session.rev,
+            };
+            if let Some((reading, kept)) = ctx.succession.park(reading, parked) {
+                // The handover was abandoned in this instant: read on.
+                let session = Session {
+                    attached: kept.workspace,
+                    rev: kept.rev,
+                };
+                return spawn_conn(ctx, kept.stream, session, reading);
+            }
             return Ok(());
         }
         let eof = match reader.read_until(b'\n', &mut pending) {

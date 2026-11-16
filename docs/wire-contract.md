@@ -1394,7 +1394,9 @@ it is `mrd daemon`.
     the successor warms it and asks again.
   - `grant:false, reason:"busy"` — a request, a background save or a cache
     compaction was still running 5 s after the resident stopped reading new
-    requests. The resident has resumed; the successor asks again after 2 s.
+    requests. The resident has resumed; the successor asks again after 2 s,
+    then after twice as long each time up to 60 s, and exits at the twelfth
+    `busy`.
   - `grant:true` — the line carries open descriptors as `SCM_RIGHTS`
     ancillary data, in order: the listening socket, the singleton lock, then
     one per entry of `conns`, each `{"workspace":<bound root or null>,
@@ -1414,7 +1416,10 @@ it is `mrd daemon`.
   descriptor. The successor serves on `released`, or on a connection closed
   with neither word after its `adopted` (the resident died holding the
   grant). It then writes the pidfile and pointer, re-reads the state file and
-  accepts.
+  accepts. A resident that ends the exchange any earlier — it died, or it
+  gave the try up — passed nothing the successor keeps: the successor closes
+  what it received, which unlocks nothing, and asks again; once nothing
+  accepts on the socket it starts as `mrd daemon`, already warm.
 - **Why nothing is refused.** Neither the listening socket nor the lock is
   ever closed, re-bound or released: an flock belongs to the open file
   description, so the passed descriptor IS the held lock and no third daemon
@@ -1434,8 +1439,12 @@ it is `mrd daemon`.
   commit on.
 - **The sql cache does not warm beside** (`sql.duckdb` admits one process).
   The successor opens it on the first `sql` per workspace after the commit.
-- **Failure.** A successor that exits before `released` leaves the resident
-  serving, untouched. `handover` is admin plane: absent from `caps`.
+- **Failure.** A successor that exits before it writes `adopted` leaves the
+  resident serving, untouched. The resident commits on `adopted`: a successor
+  that fails after it and before it accepts leaves no daemon serving, a
+  daemon death like any other. A resident whose handover thread panics
+  resumes as after an abandoned try. `handover` is admin plane: absent from
+  `caps`.
 - **The binary on disk flips after the commit**, by whoever started the
   successor. A local client of the resident's build that dials between the
   commit and that flip refuses by the socket law above; a connection whose

@@ -552,9 +552,12 @@ mrd daemon run the registry daemon in the foreground. It first
  takes its socket, lock and idle connections
  (wire-contract §A.3, Succession), then prints
  `serving` on stdout; the daemon it replaced exits 0
- after that line. An exit before the line leaves the
- serving daemon untouched. With no daemon serving it
- starts as `mrd daemon` and prints the same line
+ by itself, before or after that line. A successor
+ that exits without the line failed, and the serving
+ daemon is untouched unless it had already handed
+ over and exited 0 — then no daemon serves. With no
+ daemon serving it starts as `mrd daemon` and prints
+ the same line
 mrd --version the build identity, one line: package version + the
  tree the build read — a bare commit where that tree
  was clean, `<commit>-dirty` where tracked content

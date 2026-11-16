@@ -146,8 +146,8 @@ pub(crate) fn run(successor: bool) -> Result<(), Fail> {
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     let cache_root = config.cache_root.clone();
     let server = if successor {
-        // No handler yet: a signal before the takeover ends this process and
-        // leaves the serving daemon untouched.
+        // No handler yet: a signal ends this process. Before the takeover
+        // commits that leaves the serving daemon untouched.
         let server = RunningServer::succeed(config).map_err(|e| {
             Fail::tool(format!(
                 "cannot succeed the serving registry daemon, which keeps serving: {e}"
