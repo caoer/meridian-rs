@@ -152,7 +152,9 @@ fn stderr_of(out: &Output) -> String {
 
 /// **The slow-live case.** Every probe the busy daemon is sent goes
 /// unanswered, and still no second daemon is launched: holding a connection is
-/// something only a live daemon does. The run still completes.
+/// something only a live daemon does. Nor is the corpus built in-process
+/// beside it: the daemon accepted the call and dropped it, so the run refuses
+/// (`docs/wire-contract.md` § A.10, the CLI ladder).
 #[test]
 fn a_busy_daemon_that_misses_its_ping_is_not_spawned_beside() {
     let sb = Sandbox::new();
@@ -170,8 +172,12 @@ fn a_busy_daemon_that_misses_its_ping_is_not_spawned_beside() {
     );
     assert_eq!(
         out.status.code(),
-        Some(0),
-        "the run still completes: {said}"
+        Some(2),
+        "a live daemon that dropped the call is a refusal: {said}"
+    );
+    assert!(
+        said.contains("did not complete it") && !said.contains("no daemon answered"),
+        "the run degraded past a live daemon instead of refusing: {said}"
     );
     assert!(
         !said.contains("could not be launched") && !said.contains("never bound its socket"),

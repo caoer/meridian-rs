@@ -28,10 +28,6 @@ use serde_json::{Value, json};
 
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 /// The identity this test's own compilation carries — the same crate stamp the
 /// `mrd` binary under test bakes (one `build.rs` run feeds every target).
 const OWN_BUILD: &str = env!("MRD_BUILD_SHA");
@@ -100,13 +96,12 @@ impl Sandbox {
     }
 
     fn mrd(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut command = Command::new(mrd_bin());
+        let mut command = common::mrd_command(&self.home, &self.cache_home);
         command
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE")
+            .env_remove("MRD_TIMING")
             // No auto-spawn may hide a test bug: a dead socket must reach the
             // in-process lane, not quietly start a real daemon.
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
@@ -151,12 +146,12 @@ fn serve_connection(stream: &UnixStream, walk: Walk, asked: &AtomicUsize) {
                         "revs_read":[{"path":"a.md","doc_rev":"b3:from-the-daemon"}]}}),
                     Walk::Vanish => return,
                     Walk::Miss => json!({"ok":false,"error":{
-                        "code":"file_not_found","recovery":"fix_request",
+                        "code":"file_not_found","recovery":"fix",
                         "path":"missing.md","message":"file_not_found: no file"}}),
                 }
             }
             _ => json!({"ok":false,"error":{
-                "code":"bad_request","recovery":"fix_request",
+                "code":"bad_request","recovery":"fix",
                 "message":"fake daemon: unexpected op"}}),
         };
         let mut out = serde_json::to_string(&answer).expect("encode");
@@ -260,10 +255,13 @@ fn a_second_in_process_build_waits_for_the_first() {
 
     let mut child = sb.mrd(&ws, &["walk", "a.md"]).spawn().expect("spawn mrd");
     std::thread::sleep(Duration::from_millis(1500));
-    assert!(
-        child.try_wait().expect("probe the child").is_none(),
-        "the second build ran beside the first instead of waiting for the gate"
-    );
+    if child.try_wait().expect("probe the child").is_some() {
+        let out = child.wait_with_output().expect("wait");
+        panic!(
+            "the second build ran beside the first instead of waiting for the gate: {}",
+            stderr_of(&out)
+        );
+    }
 
     drop(first);
     let out = child.wait_with_output().expect("wait");
