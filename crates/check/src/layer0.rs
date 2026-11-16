@@ -412,7 +412,8 @@ fn objects_in(
 /// stale one.
 ///
 /// All three states are counted as a READING; only the ORPHAN is a finding.
-/// The orphan check costs one `git hash-object` per non-anchored entry only.
+/// The orphan check hashes the non-anchored entries' files in one
+/// `git hash-object --stdin-paths` ([`git::Repo::blob_oids`]).
 fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> Result<(), String> {
     let asked = |e: git::GitFail| format!("the object store could not be asked: {e}");
     let repo = git::Repo::at(store_root.to_path_buf());
@@ -434,6 +435,9 @@ fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> 
     let oids: Vec<&str> = objects.iter().map(|o| o.blob_sha.as_str()).collect();
     let info = repo.object_info(&oids).map_err(asked)?;
 
+    // Classify first, so the orphan check below hashes every non-anchored
+    // file in ONE git call.
+    let mut unanchored: Vec<(&ObjectRef, ObjectAnchor)> = Vec::new();
     for ((object, present), hit) in objects.iter().zip(info).zip(at_head) {
         let facts = ObjectAnchorFacts {
             object_present: present.is_some(),
@@ -451,11 +455,20 @@ fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> 
             ObjectAnchor::PendingAnchor => plane.pending += 1,
             ObjectAnchor::NeverAnchored => plane.never += 1,
         }
-        // If the file still hashes to this blob, committing it anchors it — a
-        // lifecycle moment, not a defect. `rel` is the object's path half
-        // without `.md`, so the extension goes back on before git is asked —
-        // joined onto the store that owns the row, never the ambient root.
-        let live = match repo.blob_oid(&store_root.join(format!("{}.md", object.rel))) {
+        unanchored.push((object, state));
+    }
+
+    // If the file still hashes to this blob, committing it anchors it — a
+    // lifecycle moment, not a defect. `rel` is the object's path half
+    // without `.md`, so the extension goes back on before git is asked —
+    // relative to the store that owns the row, never the ambient root.
+    let files: Vec<PathBuf> = unanchored
+        .iter()
+        .map(|(o, _)| PathBuf::from(format!("{}.md", o.rel)))
+        .collect();
+    let files: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+    for ((object, state), live) in unanchored.into_iter().zip(repo.blob_oids(&files)) {
+        let live = match live {
             Ok(oid) if oid.eq_ignore_ascii_case(&object.blob_sha) => continue,
             Ok(oid) => oid,
             Err(e) => format!("the file could not be hashed ({e})"),

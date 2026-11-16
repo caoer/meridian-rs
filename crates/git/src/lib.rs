@@ -135,6 +135,67 @@ impl Repo {
         self.hash_object(path, false)
     }
 
+    /// [`Repo::blob_oid`] for each of `paths`, in input order — from ONE
+    /// `git hash-object --stdin-paths`, so a check over N files spawns git once,
+    /// not N times. Each path goes through its own filters, as it does alone.
+    ///
+    /// The batch takes the paths that are files on disk and fit one line. Any
+    /// other path, and every path when the batch itself fails (one unreadable
+    /// file ends that child), is asked alone — so each entry is exactly what
+    /// [`Repo::blob_oid`] answers for it, the refusal included.
+    pub fn blob_oids(&self, paths: &[&Path]) -> Vec<Result<String, GitFail>> {
+        let batched: Vec<bool> = paths
+            .iter()
+            .map(|path| {
+                let text = self.relative(path).to_string_lossy();
+                !text.contains('\n') && !text.contains('\r') && self.root.join(path).is_file()
+            })
+            .collect();
+        let mut answers = self
+            .hash_paths(paths, &batched)
+            .unwrap_or_default()
+            .into_iter();
+        paths
+            .iter()
+            .zip(&batched)
+            .map(|(path, batched)| match answers.next() {
+                Some(oid) if *batched => Ok(oid),
+                _ => self.blob_oid(path),
+            })
+            .collect()
+    }
+
+    /// One `hash-object --stdin-paths` over the paths marked in `take`: their
+    /// oids in order, or `None` when the child did not answer every one. The
+    /// answer is padded so it lines up with `paths`: an unmarked path holds an
+    /// empty placeholder the caller never reads.
+    fn hash_paths(&self, paths: &[&Path], take: &[bool]) -> Option<Vec<String>> {
+        const WHAT: &str = "hash-object --stdin-paths";
+        let mut stdin = Vec::new();
+        for (path, _) in paths.iter().zip(take).filter(|(_, take)| **take) {
+            stdin.extend_from_slice(self.relative(path).to_string_lossy().as_bytes());
+            stdin.push(b'\n');
+        }
+        if stdin.is_empty() || self.require_repo().is_err() {
+            return None;
+        }
+        let mut cmd = self.command();
+        cmd.args(["hash-object", "--stdin-paths"]);
+        let stdout = self.run_with_stdin(cmd, WHAT, stdin).ok()?;
+        let text = std::str::from_utf8(&stdout).ok()?;
+        let mut lines = text.lines();
+        let mut out = Vec::with_capacity(paths.len());
+        for take in take {
+            if *take {
+                let oid = lines.next().filter(|line| is_oid(line))?;
+                out.push(oid.to_ascii_lowercase());
+            } else {
+                out.push(String::new());
+            }
+        }
+        Some(out)
+    }
+
     /// The object id of `path`'s content, **written into the object database**
     /// (`git hash-object -w`) — the vibe eager write: the blob exists before any
     /// commit references it, so a pin can be verified against it immediately.

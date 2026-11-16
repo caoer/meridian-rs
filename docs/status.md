@@ -1251,6 +1251,11 @@ Debt never enters the findings verdict and never refuses a write; zero renders
 - **Every walk passes `--use-bitmap-index`.** A repository that carries a
   reachability bitmap answers from it; one without (a partial clone cannot
   build one) walks as before.
+- **The orphan check hashes its files in one child.** For every pin that is not
+  `anchored`, `mrd check` asks what the file hashes to now; one
+  `git hash-object --stdin-paths` answers all of them, each path through its own
+  filters. A path that child cannot take (no file there, a newline in the name)
+  is asked alone, so its finding names why.
 - **The anchoring questions never fetch.** The `HEAD:<path>` lookup and the
   presence query run with `GIT_NO_LAZY_FETCH=1`: in a partial clone an absent
   object answers `missing` from the local object database, and is never asked

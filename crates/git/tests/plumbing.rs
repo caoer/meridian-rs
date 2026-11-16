@@ -361,6 +361,50 @@ fn anchored_at_head_matches_the_blob_at_head_in_input_order() {
     assert_eq!(answers, vec![false]);
 }
 
+/// **Gate — N files are hashed by ONE git child, each as it hashes alone.** A
+/// path with no file behind it keeps its own refusal and costs the others
+/// nothing.
+#[cfg(unix)]
+#[test]
+fn blob_oids_hashes_every_file_in_one_child_in_input_order() {
+    let repo_dir = empty_repo();
+    let root = repo_dir.path();
+    write(root, "a.md", "a\n");
+    write(root, "b.md", "b b\n");
+    write(root, "c.md", "c c c\n");
+
+    let alone = Repo::at(root);
+    let expected: Vec<String> = ["a.md", "b.md", "c.md"]
+        .iter()
+        .map(|f| alone.blob_oid(Path::new(f)).expect("blob oid"))
+        .collect();
+
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("git-shim.sh");
+    let repo = Repo::at_with_program(root, &shim);
+    let paths = ["a.md", "gone.md", "b.md", "c.md"].map(Path::new);
+    let got = repo.blob_oids(&paths);
+
+    assert_eq!(got[0].as_ref().expect("a"), &expected[0]);
+    assert!(got[1].is_err(), "no file, so its own refusal: {:?}", got[1]);
+    assert_eq!(got[2].as_ref().expect("b"), &expected[1]);
+    assert_eq!(got[3].as_ref().expect("c"), &expected[2]);
+
+    let argv = fs::read_to_string(root.join("git-argv.log")).expect("shim log");
+    let hashes: Vec<&str> = argv.lines().filter(|l| l.contains("hash-object")).collect();
+    assert_eq!(
+        hashes
+            .iter()
+            .filter(|l| l.contains("--stdin-paths"))
+            .count(),
+        1,
+        "one child for the three files:\n{argv}"
+    );
+    assert_eq!(hashes.len(), 2, "plus one for the absent path:\n{argv}");
+}
+
 /// **Gate — the presence query never fetches.** In a partial clone the remote
 /// holds a blob the clone's filter left out; asking about it answers "absent
 /// here" and leaves it absent, where git's default would fetch it first.
