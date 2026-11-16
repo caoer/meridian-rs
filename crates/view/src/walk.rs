@@ -448,6 +448,12 @@ pub struct PinColor {
     pub declared_ref: String,
     /// Pinned `fp1.…` token; `None` on lock-refusal.
     pub fingerprint: Option<String>,
+    /// The lock row's object, verbatim; empty on lock-refusal.
+    pub object: String,
+    /// The pinned section's display spelling; empty on a whole-file row.
+    pub selector: String,
+    /// The recorded blob id, verbatim; `None` on lock-refusal.
+    pub blob_sha: Option<String>,
     pub color: Color,
 }
 
@@ -553,6 +559,9 @@ fn holder_pin_colors<W: PinWorld>(
             src_path: holder.to_owned(),
             declared_ref: item.declared_ref,
             fingerprint: item.fingerprint,
+            object: item.object,
+            selector: item.to_sel,
+            blob_sha: item.blob_sha,
             color,
         });
     }

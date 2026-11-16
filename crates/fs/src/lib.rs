@@ -2633,6 +2633,26 @@ pub fn domain_snapshot_with_excluded(
     Ok((files, folded, excluded))
 }
 
+/// The markdown under the root the hash domain does not carry, as
+/// [`domain_snapshot_with_excluded`] lists it, sorted — from the walk alone:
+/// no member is read.
+///
+/// # Errors
+/// I/O failure loading the domain config or traversing the root.
+pub fn excluded_markdown(root: &WorkspaceRoot) -> io::Result<Vec<ExcludedMarkdown>> {
+    let domain = domain::Domain::load(root)?;
+    let mut excluded = Vec::new();
+    walk_domain_dir(
+        &root.0,
+        &PathBuf::new(),
+        &domain,
+        &mut Vec::new(),
+        Some(&mut excluded),
+    )?;
+    excluded.sort();
+    Ok(excluded)
+}
+
 fn snapshot_listing(
     root: &WorkspaceRoot,
     excluded: Option<&mut Vec<ExcludedMarkdown>>,

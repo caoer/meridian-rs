@@ -872,6 +872,10 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         depth: Option<u32>,
     },
+    /// § A.13 the lock plane (v3-only, cap `pins`): every `meridian-lock` pin
+    /// the workspace declares, coloured. No parameters. Read-only; computed
+    /// per query, never stored.
+    Pins,
     /// § A.11 corpus SQL (v3-only, cap `sql`): one SQL statement over the
     /// workspace's fingerprint-pinned projection cache, served by the
     /// resident engine (sql lifecycle-B ruling, 2026-08-14 — which knowingly
@@ -1643,6 +1647,32 @@ pub struct WalkRow {
     pub teaching: Option<String>,
 }
 
+/// One § A.13 pin row: a `meridian-lock` pin with its colour, in the
+/// [`WalkRow`] colour spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinRow {
+    /// The page carrying the lock, workspace-relative.
+    pub holder: String,
+    /// The lock row's object, verbatim — `root:`-qualified across roots.
+    /// Absent on a `lock-refused` row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<String>,
+    /// The pinned section; absent on a whole-file row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// The recorded blob id, verbatim. Absent on a `lock-refused` row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    /// The color tone: `green` | `red` | `grey`.
+    pub color: String,
+    /// The stable reason word; absent exactly on green.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The reason's free-text detail, when the color model carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// One §2.4 rev citation: a doc the walk read, at the rev it read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalkCite {
@@ -1750,6 +1780,19 @@ pub enum ResponseBody {
         /// view-DML refusals). `None` = the rows are the answer.
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    },
+    /// § A.13 the lock plane. Shape-unique in this untagged enum: no other
+    /// body carries a `pins` key.
+    Pins {
+        /// The served generation's workspace fingerprint.
+        root: Root,
+        /// Holder path order, then lock order. Always serialized — a
+        /// workspace with no pin answers `[]`, never an absent key.
+        pins: Vec<PinRow>,
+        /// §12.1 enumerator clause: the markdown the hash domain left out
+        /// (the custom-ignore class). Omitted when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        excluded: Vec<String>,
     },
     /// The composed-read reply (v3-only): every fact at one engine snapshot —
     /// `file_rev` + ambient `root` (the atomicity witness), the host-face

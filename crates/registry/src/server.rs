@@ -2064,6 +2064,12 @@ fn dispatch_read(
             let engine = warm_engine_pinned(registry, ws)?;
             crate::walk_op::serve(registry, &engine, ws, &path, down.unwrap_or(false), depth)
         }
+        // § A.13 the lock plane — v3-only, read-only, the engine pinned as
+        // for `walk`.
+        Op::Pins if v3 => {
+            let engine = warm_engine_pinned(registry, ws)?;
+            crate::pins_op::serve(registry, &engine, ws)
+        }
         // Write path: bare meridian-fs commit via shared choke-point.
         // No rule packs (`&[]` ⇒ `verdicts: []`). Writes disk; warm engine
         // rebuilds on next read (fingerprint moved). Numbered on the workspace ring.
@@ -2375,6 +2381,7 @@ fn dispatch_read(
         | Op::Remove { .. }
         | Op::SpliceSet { .. }
         | Op::Walk { .. }
+        | Op::Pins
         | Op::Sql { .. }
         | Op::Mounts => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }

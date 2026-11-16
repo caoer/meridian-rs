@@ -42,6 +42,7 @@ mod feed;
 mod mounts;
 pub mod mw_sql;
 mod parsed_cache;
+mod pins_op;
 mod protocol;
 pub mod raw_store;
 mod registry;
