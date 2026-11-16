@@ -530,7 +530,11 @@ mrd cache clean [--all] reap stale / orphaned / retired drawers. "Orphaned"
  that could not be examined keeps its drawer and is
  listed as kept (`skipped_unexaminable` in `--json`),
  because that lookup authorizes a removal
-mrd daemon run the registry daemon in the foreground. At start
+mrd daemon run the registry daemon in the foreground. It first
+ raises its soft open-file limit to the hard one (on
+ macOS to `kern.maxfilesperproc` when that is lower)
+ and says both: `open-file limit: soft S -> N (hard
+ H)`. At start
  and then at most once a day (the `.last-gc` stamp,
  shared with `init` and `unregister`) it runs the
  automatic sweep: a drawer more than 30 days past its

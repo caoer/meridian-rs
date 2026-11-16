@@ -1699,8 +1699,11 @@ door (read, links, decorations, walk, sql, run, script) reads the engine
 through `DocumentCatalog` and `LockFacts`, so both forms answer the same
 bytes, and under a host a known member whose backing cannot be read is that
 door's member fault, never a read of the workspace file. A host-built
-generation takes no part in the §6.9 parsed snapshot, neither restored into
-nor saved from, and `Registry::reap_to_budget` does not estimate it from raw
+generation takes part in the §6.9 parsed snapshot through its slots: a cold
+start adopts the snapshot's verified records into cold slots, the prior of
+the pass above, and a save streams the generation's members, one retained body
+at a time (§6.9, Restore under a host and Saving under a host).
+`Registry::reap_to_budget` does not estimate a host-built generation from raw
 bytes: its bodies are the controller's, which sheds them to its own limit as
 their pins release, and its metadata is in the host floor, which the sweep
 evicts whole workspaces to meet (§6.4, the reaper under a host). `mrd daemon`
@@ -2008,6 +2011,17 @@ The existing witness check controls publication, so an older concurrent
 build cannot replace a newer engine. `WarmOutcome::Built.docs` continues to
 count actual parses, including zero when a cold engine restores completely.
 
+**Restore under a host.** With a residency host (§6.8, the engine's bodies)
+the adoption is streamed (`parse_cache::snapshot::scan`): each verified
+record the current leaf set wants is decoded, published as a cold slot over
+retained backing at every current path whose leaf is its digest, entered
+into the name index at the position a from-scratch build gives it, and
+dropped before the next record is read. The adopted slots, conditions,
+leaves and index are the prior of the §6.8 pass over slots, so the pass
+reads and parses exactly the leaves no record covered. A slot that cannot be
+published ends the adoption, and the build is the pass over the empty
+generation.
+
 **Storage and saving.** A streaming, checksummed snapshot keeps restore to
 one sequential file instead of one file per document. Entries are keyed by
 content digest and deduplicated within the workspace. Temporary writes are
@@ -2018,6 +2032,18 @@ are save opportunities. Skip a snapshot already saved at the same engine
 fingerprint. Do not periodically rewrite the whole parsed corpus for routine
 edits. An older snapshot is useful: the verified leaf set selects its unchanged
 members and ordinary incremental reconciliation absorbs later edits.
+
+**Saving under a host.** A host-built generation holds no document map to
+encode from, and its save hydrates only what the snapshot it replaces lacks
+(`parse_cache::snapshot::rewrite`). The save copies every document record of
+that snapshot whose digest the generation's leaf set still names, checksum
+verified and not decoded, then encodes each member no copied record covers
+from its retained backing, verified and parsed outside the allowance as the
+§6.8 pass parses a mover, one member at a time. The save takes no lease, so
+it never occupies allowance a serving request needs and leaves no body
+resident. A member whose backing cannot be read or verified is written as an
+abstention and parses at the next restore. The save opportunities and the same-fingerprint skip are those
+above.
 
 The smaller observation checkpoint may be coalesced in the background, only
 when dirty. Capture its journal cursor before its consistent memo snapshot;

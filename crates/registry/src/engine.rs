@@ -254,6 +254,16 @@ impl WorkspaceEngine {
         }
     }
 
+    /// [`Catalog::retained_document`] of a generation built under a residency
+    /// host; `None` for one that owns its documents.
+    #[must_use]
+    pub fn retained_document(&self, path: &str, digest: &[u8; 32]) -> Option<model::Document> {
+        match &self.bodies {
+            Bodies::Eager(..) => None,
+            Bodies::Resident(catalog) => catalog.retained_document(path, digest),
+        }
+    }
+
     /// This engine as the prior of the next incremental pass
     /// ([`fs::update_corpus`]) — its name index included, so the pass can
     /// share it. `None` for a generation built under a residency host.

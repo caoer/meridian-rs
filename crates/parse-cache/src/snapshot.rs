@@ -127,21 +127,120 @@ pub fn write(
             Entry::Unserved(why) => (1, why.as_bytes().to_vec()),
             Entry::Doc(_) => (2, Vec::new()),
         };
-        let sum = checksum(tag, &digest, &payload);
-        let len = (payload.len() as u64).to_le_bytes();
-        out.write_all(&[tag])?;
-        out.write_all(&digest)?;
-        out.write_all(&len)?;
-        out.write_all(&sum)?;
-        out.write_all(&payload)?;
-        stream.update(&[tag]);
-        stream.update(&digest);
-        stream.update(&len);
-        stream.update(&sum);
+        emit(&mut out, &mut stream, tag, &digest, &payload)?;
     }
     out.write_all(&[END])?;
     out.write_all(stream.finalize().as_bytes())?;
     Ok(encoded)
+}
+
+/// Write one record and fold its frame into the footer's stream hash.
+fn emit(
+    out: &mut impl Write,
+    stream: &mut blake3::Hasher,
+    tag: u8,
+    digest: &[u8; 32],
+    payload: &[u8],
+) -> io::Result<()> {
+    let sum = checksum(tag, digest, payload);
+    let len = (payload.len() as u64).to_le_bytes();
+    out.write_all(&[tag])?;
+    out.write_all(digest)?;
+    out.write_all(&len)?;
+    out.write_all(&sum)?;
+    out.write_all(payload)?;
+    stream.update(&[tag]);
+    stream.update(digest);
+    stream.update(&len);
+    stream.update(&sum);
+    Ok(())
+}
+
+/// What [`rewrite`] wrote: document records copied from the snapshot it
+/// replaces, and documents it encoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rewritten {
+    pub carried: usize,
+    pub encoded: usize,
+}
+
+/// Stream a deduplicated snapshot of a generation that holds no document
+/// map (merkle-spec §6.9, saving under a host). Every UTF-8-named leaf is a
+/// document unless `unserved` names it. A document record of `prior` (the
+/// snapshot this one replaces) whose digest `leaves` still names is copied,
+/// checksum verified and not decoded; `encode` is asked for the payload
+/// ([`crate::encode`]) of each remaining document by one of its paths and
+/// its digest, and `None` writes an abstention. At most one record's payload
+/// is held.
+///
+/// # Errors
+/// Propagates `out`'s stream errors, under [`write`]'s publication rule. A
+/// `prior` that is unreadable, incompatible or damaged only carries less.
+pub fn rewrite(
+    mut out: impl Write,
+    workspace: &Path,
+    fingerprint: &str,
+    unserved: &BTreeMap<String, String>,
+    leaves: &BTreeMap<PathBuf, [u8; 32]>,
+    prior: Option<impl Read>,
+    mut encode: impl FnMut(&str, &[u8; 32]) -> Option<Vec<u8>>,
+) -> io::Result<Rewritten> {
+    let mut documents = BTreeMap::new();
+    let mut conditions = BTreeMap::new();
+    for (path, digest) in leaves {
+        let Some(path) = path.to_str() else {
+            continue;
+        };
+        match unserved.get(path) {
+            Some(why) => {
+                conditions.entry(*digest).or_insert(why.as_str());
+            }
+            None => {
+                documents.entry(*digest).or_insert(path);
+            }
+        }
+    }
+    let header = header(workspace, fingerprint)?;
+    out.write_all(&header)?;
+    out.write_all(blake3::hash(&header).as_bytes())?;
+    let mut stream = blake3::Hasher::new();
+    stream.update(&header);
+    let mut written = Rewritten {
+        carried: 0,
+        encoded: 0,
+    };
+    if let Some(mut prior) = prior
+        && let Ok((_, prior_header)) = read_header(&mut prior, workspace)
+    {
+        let wanted: BTreeSet<_> = documents.keys().copied().collect();
+        records(
+            &mut prior,
+            &prior_header,
+            &wanted,
+            |tag, digest, payload| {
+                if tag == 0 && documents.remove(digest).is_some() {
+                    emit(&mut out, &mut stream, 0, digest, &payload)?;
+                    written.carried += 1;
+                }
+                Ok(true)
+            },
+        )?;
+    }
+    for (digest, path) in documents {
+        match encode(path, &digest) {
+            Some(payload) => {
+                written.encoded += 1;
+                emit(&mut out, &mut stream, 0, &digest, &payload)?;
+            }
+            None => emit(&mut out, &mut stream, 2, &digest, &[])?,
+        }
+    }
+    for (digest, why) in conditions {
+        emit(&mut out, &mut stream, 1, &digest, why.as_bytes())?;
+    }
+    out.write_all(&[END])?;
+    out.write_all(stream.finalize().as_bytes())?;
+    Ok(written)
 }
 
 fn read_header(input: &mut impl Read, workspace: &Path) -> io::Result<(String, Vec<u8>)> {
@@ -173,38 +272,38 @@ fn read_header(input: &mut impl Read, workspace: &Path) -> io::Result<(String, V
     Ok((fingerprint, expected))
 }
 
-/// Restore a usable prefix; current verified digests are the sole selection key.
+/// Walk the records after a verified `header`, handing `visit` each one whose
+/// digest `wanted` holds and whose checksum verifies: its tag, digest and
+/// payload. `visit` answers whether the record was sound. Returns whether the
+/// stream ended at a valid footer with every record sound; a damaged record is
+/// skipped, a broken frame ends the walk.
 ///
 /// # Errors
-/// A missing/incompatible/corrupt header is an error (the caller cold-builds).
-/// Record corruption and interrupted tails return a partial, safe prior.
-pub fn read(
-    mut input: impl Read,
-    workspace: &Path,
-    fresh: &BTreeMap<PathBuf, [u8; 32]>,
-) -> io::Result<Restored> {
-    let (fingerprint, header) = read_header(&mut input, workspace)?;
-    let wanted: BTreeSet<_> = fresh.values().copied().collect();
-    let mut objects = BTreeMap::new();
-    let mut invalid_utf8 = BTreeMap::new();
+/// Only what `visit` returns.
+fn records(
+    input: &mut impl Read,
+    header: &[u8],
+    wanted: &BTreeSet<[u8; 32]>,
+    mut visit: impl FnMut(u8, &[u8; 32], Vec<u8>) -> io::Result<bool>,
+) -> io::Result<bool> {
     let mut stream = blake3::Hasher::new();
-    stream.update(&header);
+    stream.update(header);
     let mut sound = true;
-    let complete = loop {
+    loop {
         let mut tag = [0];
         if input.read_exact(&mut tag).is_err() {
-            break false;
+            return Ok(false);
         }
         if tag[0] == END {
             let mut sum = [0; 32];
             let mut extra = [0];
-            break input.read_exact(&mut sum).is_ok()
+            return Ok(input.read_exact(&mut sum).is_ok()
                 && sum == *stream.finalize().as_bytes()
                 && input.read(&mut extra).is_ok_and(|n| n == 0)
-                && sound;
+                && sound);
         }
         if tag[0] > 2 {
-            break false;
+            return Ok(false);
         }
         let mut digest = [0; 32];
         let mut length = [0; 8];
@@ -213,18 +312,17 @@ pub fn read(
             || input.read_exact(&mut length).is_err()
             || input.read_exact(&mut sum).is_err()
         {
-            break false;
+            return Ok(false);
         }
         let Ok(len) = usize::try_from(u64::from_le_bytes(length)) else {
-            break false;
+            return Ok(false);
         };
         if len > crate::MAX_ENTRY_BYTES {
-            break false;
+            return Ok(false);
         }
         let retain = wanted.contains(&digest);
-        let Ok((payload, actual_sum)) = read_payload(&mut input, len, tag[0], &digest, retain)
-        else {
-            break false;
+        let Ok((payload, actual_sum)) = read_payload(input, len, tag[0], &digest, retain) else {
+            return Ok(false);
         };
         stream.update(&tag);
         stream.update(&digest);
@@ -234,30 +332,95 @@ pub fn read(
             sound = false;
             continue;
         }
-        if !retain {
-            continue;
+        if retain {
+            sound &= visit(tag[0], &digest, payload)?;
         }
-        match tag[0] {
-            0 => match crate::decode(&payload, &digest) {
-                Some(doc) => {
-                    objects.insert(digest, Arc::new(doc));
-                }
-                None => sound = false,
-            },
-            1 => match String::from_utf8(payload) {
-                Ok(why) if why.starts_with("is not UTF-8 (") => {
-                    invalid_utf8.insert(digest, why);
-                }
-                _ => sound = false,
-            },
-            2 => {
-                if !payload.is_empty() {
-                    sound = false;
-                }
+    }
+}
+
+/// One verified object of a snapshot, as [`scan`] hands it over.
+#[derive(Debug)]
+pub enum Object {
+    /// The document decoded from a record ([`crate::decode`]).
+    Doc(model::Document),
+    /// The condition of a member whose bytes are not UTF-8.
+    Unserved(String),
+}
+
+/// What [`scan`] read beside the objects it handed over.
+#[derive(Debug)]
+pub struct Scanned {
+    /// The saved engine stamp, never a statement about current disk.
+    pub fingerprint: String,
+    /// False after any damaged record or missing/invalid footer.
+    pub complete: bool,
+}
+
+/// Stream a snapshot's usable prefix: each verified object whose digest
+/// `wanted` holds is handed to `adopt` with that digest, once, and dropped
+/// before the next record is read (merkle-spec §6.9).
+///
+/// # Errors
+/// A missing/incompatible/corrupt header, or what `adopt` returns. Record
+/// corruption and interrupted tails end as `complete: false`.
+pub fn scan(
+    mut input: impl Read,
+    workspace: &Path,
+    wanted: &BTreeSet<[u8; 32]>,
+    mut adopt: impl FnMut(&[u8; 32], Object) -> io::Result<()>,
+) -> io::Result<Scanned> {
+    let (fingerprint, header) = read_header(&mut input, workspace)?;
+    let mut adopted = BTreeSet::new();
+    let complete = records(&mut input, &header, wanted, |tag, digest, payload| {
+        let object = match tag {
+            0 => crate::decode(&payload, digest).map(Object::Doc),
+            1 => String::from_utf8(payload)
+                .ok()
+                .filter(|why| why.starts_with("is not UTF-8 ("))
+                .map(Object::Unserved),
+            _ => return Ok(payload.is_empty()),
+        };
+        let Some(object) = object else {
+            return Ok(false);
+        };
+        if adopted.insert(*digest) {
+            adopt(digest, object)?;
+        }
+        Ok(true)
+    })?;
+    Ok(Scanned {
+        fingerprint,
+        complete,
+    })
+}
+
+/// Restore a usable prefix; current verified digests are the sole selection key.
+///
+/// # Errors
+/// A missing/incompatible/corrupt header is an error (the caller cold-builds).
+/// Record corruption and interrupted tails return a partial, safe prior.
+pub fn read(
+    input: impl Read,
+    workspace: &Path,
+    fresh: &BTreeMap<PathBuf, [u8; 32]>,
+) -> io::Result<Restored> {
+    let wanted: BTreeSet<_> = fresh.values().copied().collect();
+    let mut objects = BTreeMap::new();
+    let mut invalid_utf8 = BTreeMap::new();
+    let Scanned {
+        fingerprint,
+        complete,
+    } = scan(input, workspace, &wanted, |digest, object| {
+        match object {
+            Object::Doc(doc) => {
+                objects.insert(*digest, Arc::new(doc));
             }
-            _ => unreachable!(),
+            Object::Unserved(why) => {
+                invalid_utf8.insert(*digest, why);
+            }
         }
-    };
+        Ok(())
+    })?;
     let mut restored = Restored {
         docs: Docs::new(),
         unserved: BTreeMap::new(),

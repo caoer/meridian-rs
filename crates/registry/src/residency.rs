@@ -792,6 +792,19 @@ impl Resident {
         })
     }
 
+    /// Verify and parse this version from its retained backing outside the
+    /// allowance: no reservation is taken and no body is kept.
+    ///
+    /// # Errors
+    /// What [`hydration::document`] refuses.
+    pub fn parse_retained(&self) -> Result<model::Document, HydrationError> {
+        let bytes = self.0.source.read().map_err(HydrationError::Source)?;
+        hydration::document(&Selected {
+            identity: self.0.identity,
+            bytes,
+        })
+    }
+
     fn load(&self, raw: Option<SharedBytes>) -> Result<Body, LoadError> {
         let bytes = raw
             .map_or_else(|| self.0.source.read(), Ok)

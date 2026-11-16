@@ -432,6 +432,182 @@ fn observation_checkpoint_stamping_skips_a_busy_parsed_drawer() {
     completion.expect("observation stamping must not wait for the optional cache lock");
 }
 
+/// A registry whose generations are built through a residency host over its
+/// own backing store under `home`, as each daemon start has.
+fn hosted(home: &Path, backing: &str) -> Registry {
+    hosted_with(home, backing).0
+}
+
+/// [`hosted`] with its host.
+fn hosted_with(home: &Path, backing: &str) -> (Registry, Arc<crate::residency::Host>) {
+    let host = Arc::new(crate::residency::Host::new(
+        crate::residency::controller::Controller::new(2 << 30),
+        crate::raw_store::RawStore::new(&home.join(backing)).unwrap(),
+    ));
+    let registry = registry(home).with_residency(Some(Arc::clone(&host)));
+    (registry, host)
+}
+
+/// A workspace whose members carry every fact a slot records: an alias, a
+/// link into another mount root, and bytes that are not UTF-8.
+fn hosted_fixture(home: &Path) -> PathBuf {
+    let ws = home.join("ws");
+    disk::create_dir_all(&ws).unwrap();
+    disk::write(ws.join("a.md"), "# A\n").unwrap();
+    disk::write(
+        ws.join("b.md"),
+        "---\naliases: [bee]\n---\n# B\n\n[[a]] and [[other:page]]\n",
+    )
+    .unwrap();
+    disk::write(ws.join("bad.md"), [0xff]).unwrap();
+    workspace::canonicalize(&ws).unwrap()
+}
+
+/// What a generation's catalog answers without leasing a body.
+fn facts(engine: &WorkspaceEngine) -> impl PartialEq + std::fmt::Debug {
+    use model::catalog::DocumentCatalog as _;
+    use view::walk::LockFacts as _;
+    (
+        engine.at_fingerprint.clone(),
+        engine.leaves.clone(),
+        engine.unserved.clone(),
+        (*engine.index).clone(),
+        engine
+            .revisions()
+            .map(|(path, rev)| (path.to_owned(), rev.clone()))
+            .collect::<Vec<_>>(),
+        engine.link_roots(),
+        engine.lock_roots(),
+    )
+}
+
+/// One member's leased bytes.
+fn leased_raw(engine: &WorkspaceEngine, path: &str) -> String {
+    use model::catalog::DocumentCatalog as _;
+    let lease = engine.pin(path).unwrap().expect("a member");
+    lease.document().unwrap().raw.as_str().to_owned()
+}
+
+/// Under a residency host a cold start adopts the saved snapshot into slots
+/// and parses only the movers: none when nothing moved, then an edit and an
+/// addition while a rename adopts its record (merkle-spec §6.9, restore
+/// under a host). The adopted generation answers what the built one did.
+#[test]
+fn a_host_restart_adopts_the_snapshot_and_parses_only_the_movers() {
+    let home = tempfile::tempdir().unwrap();
+    let ws = hosted_fixture(home.path());
+    let (built, host) = hosted_with(home.path(), "backing-1");
+    built.register(&ws);
+    assert_eq!(
+        built.warm_or_build(&ws).unwrap(),
+        WarmOutcome::Built { docs: 2 }
+    );
+    built.save_pending_parsed();
+    assert!(
+        crate::parsed_cache::path(&built.cache_root, &ws).is_file(),
+        "a host-built generation saves its snapshot after a cold build"
+    );
+    let report = host.controller.report();
+    assert_eq!(
+        (report.bodies, report.reserved, report.pinned),
+        (0, 0, 0),
+        "the save encodes from retained backing and takes no allowance: {report:?}"
+    );
+    let original = built.engine_snapshot(&ws).unwrap();
+    let b_raw = leased_raw(&original, "b.md");
+
+    let restarted = hosted(home.path(), "backing-2");
+    restarted.register(&ws);
+    assert_eq!(
+        restarted.warm_or_build(&ws).unwrap(),
+        WarmOutcome::Built { docs: 0 },
+        "an unchanged restart parses nothing"
+    );
+    let adopted = restarted.engine_snapshot(&ws).unwrap();
+    assert!(adopted.eager_docs().is_none(), "its bodies are leased");
+    assert_eq!(facts(&adopted), facts(&original));
+    assert_eq!(leased_raw(&adopted, "b.md"), b_raw);
+    drop((adopted, restarted, original, built));
+
+    disk::write(ws.join("a.md"), "# Changed\n").unwrap();
+    disk::rename(ws.join("b.md"), ws.join("renamed.md")).unwrap();
+    disk::write(ws.join("new.md"), "# New\n").unwrap();
+    let moved = hosted(home.path(), "backing-3");
+    moved.register(&ws);
+    assert_eq!(
+        moved.warm_or_build(&ws).unwrap(),
+        WarmOutcome::Built { docs: 2 },
+        "the edit and the addition parse; the rename adopts its record"
+    );
+    let engine = moved.engine_snapshot(&ws).unwrap();
+    assert_eq!(
+        engine.at_fingerprint,
+        fs::domain_snapshot(&fs::WorkspaceRoot(ws.clone()))
+            .unwrap()
+            .1
+    );
+    assert_eq!(leased_raw(&engine, "renamed.md"), b_raw);
+    assert_eq!(leased_raw(&engine, "a.md"), "# Changed\n");
+    assert_eq!(
+        engine.index.resolve_linkpath("bee", "a.md").as_deref(),
+        Some("renamed.md"),
+        "the adopted member is indexed under its current path"
+    );
+    assert_eq!(engine.index.resolve_linkpath("b", "a.md"), None);
+
+    // The cold start queued a save: the snapshot now holds the movers too.
+    moved.save_pending_parsed();
+    drop((engine, moved));
+    let settled = hosted(home.path(), "backing-4");
+    settled.register(&ws);
+    assert_eq!(
+        settled.warm_or_build(&ws).unwrap(),
+        WarmOutcome::Built { docs: 0 }
+    );
+}
+
+/// A host save copies the records of the snapshot it replaces and reads only
+/// the members none covers (merkle-spec §6.9, saving under a host): with
+/// every retained body unreadable the unchanged member's record is still in
+/// the new snapshot, and the mover, whose backing could not be read, is the
+/// one member the next start parses.
+#[test]
+fn a_host_save_carries_the_replaced_snapshots_records_without_reading_their_members() {
+    let home = tempfile::tempdir().unwrap();
+    let ws = hosted_fixture(home.path());
+    let built = hosted(home.path(), "backing-1");
+    built.register(&ws);
+    built.warm_or_build(&ws).unwrap();
+    built.save_pending_parsed();
+    drop(built);
+
+    disk::write(ws.join("a.md"), "# Changed\n").unwrap();
+    let restarted = hosted(home.path(), "backing-2");
+    restarted.register(&ws);
+    assert_eq!(
+        restarted.warm_or_build(&ws).unwrap(),
+        WarmOutcome::Built { docs: 1 }
+    );
+    for store in disk::read_dir(home.path().join("backing-2")).unwrap() {
+        for segment in disk::read_dir(store.unwrap().path()).unwrap() {
+            disk::write(segment.unwrap().path(), []).unwrap();
+        }
+    }
+    let file = crate::parsed_cache::path(&restarted.cache_root, &ws);
+    let before = disk::read(&file).unwrap();
+    restarted.save_pending_parsed();
+    assert_ne!(disk::read(&file).unwrap(), before, "the save ran");
+    drop(restarted);
+
+    let next = hosted(home.path(), "backing-3");
+    next.register(&ws);
+    assert_eq!(
+        next.warm_or_build(&ws).unwrap(),
+        WarmOutcome::Built { docs: 1 },
+        "b.md's record was carried; a.md was written as an abstention"
+    );
+}
+
 /// Run only on an explicitly copied corpus; the marker is a custody receipt.
 /// The normal test suite stays small. The caller controls OS cache conditions.
 #[test]
@@ -483,6 +659,61 @@ fn durable_corpus_restore_measurement() {
     );
     eprintln!(
         "durable-cache-bench raw_bytes={raw_bytes} snapshot_bytes={snapshot_bytes} fingerprint={} semantic_generation={}",
+        fingerprint.0,
+        parse_cache::GENERATION
+    );
+}
+
+/// [`durable_corpus_restore_measurement`] under a residency host: the cold
+/// build, the first save (every member parsed), the adopting restart, and a
+/// save over the snapshot it adopted with one member moved.
+#[test]
+#[ignore = "set MRD_BENCH_CORPUS to an owned corpus copy with .durable-cache-benchmark marker"]
+fn hosted_corpus_restore_measurement() {
+    let ws = PathBuf::from(std::env::var_os("MRD_BENCH_CORPUS").expect("owned corpus copy"));
+    assert!(ws.join(".durable-cache-benchmark").is_file());
+    let home = tempfile::tempdir().unwrap();
+    let ws = workspace::canonicalize(&ws).unwrap();
+    let reg = hosted(home.path(), "backing-1");
+    reg.register(&ws);
+    let began = Instant::now();
+    let first = reg.warm_or_build(&ws).unwrap();
+    let cold = began.elapsed();
+    let began = Instant::now();
+    reg.save_checkpoints();
+    let save = began.elapsed();
+    let fingerprint = reg.engine_snapshot(&ws).unwrap().at_fingerprint.clone();
+    let file = crate::parsed_cache::path(&reg.cache_root, &ws);
+    let snapshot_bytes = disk::metadata(&file).unwrap().len();
+    drop(reg);
+
+    let restarted = hosted(home.path(), "backing-2");
+    restarted.register(&ws);
+    let began = Instant::now();
+    let second = restarted.warm_or_build(&ws).unwrap();
+    let restore = began.elapsed();
+    assert_eq!(second, WarmOutcome::Built { docs: 0 });
+    assert_eq!(
+        restarted.engine_snapshot(&ws).unwrap().at_fingerprint,
+        fingerprint
+    );
+    let probe = ws.join("durable-cache-benchmark-mover.md");
+    disk::write(&probe, "# Mover\n").unwrap();
+    let third = restarted.warm_or_build(&ws).unwrap();
+    assert_eq!(third, WarmOutcome::Built { docs: 1 });
+    let began = Instant::now();
+    restarted.save_checkpoints();
+    let resave = began.elapsed();
+    disk::remove_file(&probe).unwrap();
+    eprintln!(
+        "hosted-cache-bench first={first:?} restored={second:?} mover={third:?} cold_s={:.3} save_s={:.3} restore_s={:.3} resave_s={:.3}",
+        cold.as_secs_f64(),
+        save.as_secs_f64(),
+        restore.as_secs_f64(),
+        resave.as_secs_f64()
+    );
+    eprintln!(
+        "hosted-cache-bench snapshot_bytes={snapshot_bytes} fingerprint={} semantic_generation={}",
         fingerprint.0,
         parse_cache::GENERATION
     );
