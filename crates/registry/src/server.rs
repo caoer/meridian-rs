@@ -740,9 +740,11 @@ fn warm_beside(registry: &Arc<Registry>, theirs: &[PathBuf], ours: &[PathBuf]) -
         .collect();
     let mut first = Ok(());
     for build in builds {
-        let outcome = build
-            .join()
-            .unwrap_or_else(|_| Err(io::Error::other("a warm beside the serving daemon panicked")));
+        let outcome = build.join().unwrap_or_else(|_| {
+            Err(io::Error::other(
+                "a warm beside the serving daemon panicked",
+            ))
+        });
         if first.is_ok() {
             first = outcome;
         }
@@ -1664,7 +1666,12 @@ fn serve_conn(
         let eof = match reader.read_until(b'\n', &mut pending) {
             Ok(0) => true,
             Ok(_) => !pending.ends_with(b"\n"),
-            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
                 continue;
             }
             Err(e) => return Err(e),

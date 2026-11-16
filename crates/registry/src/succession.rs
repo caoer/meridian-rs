@@ -210,7 +210,9 @@ pub(crate) fn recv_with_fds(
                 let bytes = (*header).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
                 let data = libc::CMSG_DATA(header);
                 for slot in 0..bytes / size_of::<RawFd>() {
-                    let fd = std::ptr::read_unaligned(data.add(slot * size_of::<RawFd>()).cast::<RawFd>());
+                    let fd = std::ptr::read_unaligned(
+                        data.add(slot * size_of::<RawFd>()).cast::<RawFd>(),
+                    );
                     #[cfg(not(any(target_os = "linux", target_os = "android")))]
                     libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
                     fds.push(OwnedFd::from_raw_fd(fd));
@@ -501,8 +503,8 @@ pub(crate) fn grant(
         // The commit: `adopted` inside the bound, or this daemon serves on.
         stream.set_read_timeout(Some(ADOPT_BOUND))?;
         let mut word = String::new();
-        let adopted = BufReader::new(stream).read_line(&mut word).is_ok()
-            && word.contains("\"adopted\"");
+        let adopted =
+            BufReader::new(stream).read_line(&mut word).is_ok() && word.contains("\"adopted\"");
         Ok(adopted)
     })();
     if !matches!(sent, Ok(true)) {

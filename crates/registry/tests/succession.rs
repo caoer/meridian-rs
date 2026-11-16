@@ -253,7 +253,11 @@ fn a_successor_that_never_adopts_leaves_the_daemon_serving() {
     );
     drop(dying);
 
-    assert_eq!(held.toc()["ok"], json!(true), "the parked connection resumed");
+    assert_eq!(
+        held.toc()["ok"],
+        json!(true),
+        "the parked connection resumed"
+    );
     assert_eq!(Conn::open(&socket).hello(&ws), "old", "a fresh dial");
     assert!(!old.handed_over());
     old.shutdown();
