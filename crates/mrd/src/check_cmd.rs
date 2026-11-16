@@ -17,9 +17,10 @@
 //! `write_history: not-assessed` line naming the narrowing (what the green
 //! stopped covering; the WHY is docs/`--help` teaching — report-voice pass).
 //!
-//! Pin colours come from `view::walk::lock_pin_colors`, the same call `mrd
-//! status`'s lock axis makes over the same corpus build, so the planes agree by
-//! construction.
+//! Pin colours come from the one pin computer `mrd status`'s lock axis reads —
+//! as rows from the resident daemon's `pins` door (`docs/wire-contract.md`
+//! § A.13), or coloured in this process when a staged interval diverges from
+//! the worktree, an armed query fires, or no daemon serves the workspace.
 //!
 //! # The interval this verb spans
 //! - **`worktree`** — the bytes on disk. Always assessed.
@@ -61,10 +62,9 @@
 //! never a tracked path, so fence coverage is per-checkout and opt-in; a fresh
 //! clone being unfenced is a supported state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use check::{CoreReport, GREY_CANNOT_ASSESS, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED};
 use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
@@ -97,59 +97,55 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical.clone());
 
-    // One read of the worktree, whose bytes feed the fold and the corpus: a second read
-    // would let the two planes describe two different worktrees.
     let domain = fs::domain::Domain::load(&root)
         .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
     let paths = workspace_paths(&canonical, &cwd, &parsed.paths)?;
-    crate::build_gate::enter();
-    // The same walk lists the markdown the domain does NOT carry: the note
-    // below and the out-of-domain pin holders both read that one list.
-    let (worktree_files, worktree_fold, outside) = fs::domain_snapshot_with_excluded(&root)
-        .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
 
     // The second interval, only when asked for: absent divergence the two intervals
     // coincide and one pass answers both.
-    let interval = if parsed.staged {
-        staged_interval(&root, &domain, &worktree_files)
+    let probe = if parsed.staged {
+        probe_staged(&root, &domain)
     } else {
-        Interval::NotAsked
+        StagedProbe::Settled(Interval::NotAsked)
+    };
+    // The armed plane — red rows and armed queries. The commit gate stays the pin
+    // plane alone, so it runs no query.
+    let settled_armed = if parsed.commit_gate {
+        Some(None)
+    } else {
+        crate::check_armed::settled_without_corpus(&root).map(Some)
     };
 
-    // The corpora are built before the mount table, because they say which roots the
-    // table must build; each interval's corpus is built exactly once.
-    let worktree_docs = build_corpus(worktree_files);
-    // `check` assesses every pin the corpus carries — a population the caller
-    // did not name — so it owes the enumerator clause (§12.1): it may exclude
-    // what its attestation cannot reach, never SILENTLY. Voiced once, for the
-    // worktree interval: the excluded population is domain-derived, and both
-    // intervals stand under the same domain.
-    crate::voice_excluded_listed(&outside, &worktree_docs);
-    let staged_docs = match &interval {
-        Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())),
+    // Two readings need this process to hold the corpus: a staged interval whose
+    // index bytes diverge from the worktree, and an armed query. Every other check
+    // takes its pin rows from the resident daemon (`wire-contract.md` § A.13).
+    let served = match (&probe, &settled_armed) {
+        (StagedProbe::Settled(_), Some(_)) => {
+            let served = crate::pins_lane::from_daemon(&canonical, parsed.format)?;
+            if served.is_none() {
+                crate::engine::voice_degrade(&crate::engine::EngineSource::Ephemeral);
+            }
+            served
+        }
         _ => None,
     };
-
-    // The real mount table, through the one loader `mrd walk` uses. The table is whole;
-    // only the corpora narrow, to the roots this check's own lock addresses name.
-    let mut needed = crate::walk_cmd::lock_addressed_roots(&worktree_docs);
-    if let Some(docs) = &staged_docs {
-        needed.append(&mut crate::walk_cmd::lock_addressed_roots(docs));
-    }
-    let mounts = crate::walk_cmd::load_mounts_for(&needed);
-
-    // The pins the workspace DECLARES outside the hash domain. Read once: the
-    // two intervals differ in which bytes were HASHED, and an excluded page's
-    // bytes are hashed in neither.
-    //
-    // ⚠️ DECLARED BLIND SPOT: these bytes come from the WORKTREE for both
-    // intervals. A holder that is BOTH domain-excluded AND staged-modified is
-    // read at its worktree bytes under `--commit-gate`, so a pin ROW added or
-    // removed in the index alone is not seen. Strictly more than today, where
-    // the row does not exist at either interval; named rather than assumed.
-    let excluded = excluded_holders(&root, &outside);
-
-    let mut worktree = assess(&root, &mounts, &worktree_docs, &domain, &excluded, &paths);
+    let (interval, mut worktree, staged, armed) = match (served, probe, settled_armed) {
+        (Some(plane), StagedProbe::Settled(interval), Some(armed)) => {
+            crate::voice_excluded_note(&plane.excluded);
+            let worktree = assess_rows(
+                &root,
+                &domain,
+                &plane.rows,
+                &mounted_stores(&plane.rows),
+                &paths,
+            )?;
+            (interval, worktree, None, armed)
+        }
+        (_, probe, _) => {
+            let built = assess_in_process(&root, &domain, probe, &paths, parsed.commit_gate)?;
+            (built.interval, built.worktree, built.staged, built.armed)
+        }
+    };
     // The run ledger is engine state outside every interval (wire-contract
     // §6.1), so the G3 orphan lint reads it once, from disk, for the worktree.
     worktree.report.orphans = check::orphan::orphaned_runs(&root).map_err(|e| {
@@ -159,22 +155,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
-    let staged = match (&interval, &staged_docs) {
-        (Interval::Diverges(bytes), Some(docs)) => Some(Assessed {
-            paths: bytes.paths.clone(),
-            report: assess(&root, &mounts, docs, &domain, &excluded, &paths).report,
-        }),
-        _ => None,
-    };
-
     let gate = parsed
         .commit_gate
         .then(|| build_gate(&interval, &worktree, staged.as_ref(), parsed.require_pins));
 
-    // The armed plane — red rows and armed queries — over the worktree snapshot.
-    // The commit gate stays the pin plane alone, so it runs no query.
-    let armed = (!parsed.commit_gate)
-        .then(|| crate::check_armed::assess(&root, &worktree_docs, &domain, &worktree_fold.0));
     let armed_findings = armed
         .as_ref()
         .map(|plane| plane.findings(&paths))
@@ -714,40 +698,184 @@ struct StagedBytes {
     files: fs::DomainFiles,
 }
 
-/// Assess one interval: colour its pins through the one computer with the real mount
-/// table, and run the layer-0 core over its bytes. The two intervals differ only in
-/// which bytes built the corpus, which is this function's argument.
-fn assess(
+/// Everything the in-process lane read.
+struct Built {
+    interval: Interval,
+    worktree: Assessed,
+    staged: Option<Assessed>,
+    armed: Option<crate::check_armed::ArmedPlane>,
+}
+
+/// The in-process lane: one read of the worktree, whose bytes feed the fold, the
+/// corpus, every interval's pin rows and the armed queries.
+fn assess_in_process(
     root: &fs::WorkspaceRoot,
-    mounts: &crate::walk_cmd::Mounts,
-    docs: &model::Docs,
     domain: &fs::domain::Domain,
-    excluded_holders: &model::Docs,
+    probe: StagedProbe,
     paths: &[String],
-) -> Assessed {
-    // The same domain the snapshot was taken under — the colour plane must be
-    // filtered by the filter that built its corpus, never by a second reading.
-    let corpus = mounts.rooted(docs, domain, root);
-    let colouring = timing::phase("check.pins");
-    let mut pins = pin_rows(&corpus, mounts.set(), excluded_holders);
-    colouring.stop();
-    // `-- PATH…`: a pin counts where its holding page lies under the paths.
-    pins.retain(|pin| crate::check_armed::under(paths, &pin.src_path));
+    commit_gate: bool,
+) -> Result<Built, Fail> {
+    crate::build_gate::enter();
+    // The same walk lists the markdown the domain does NOT carry: the note
+    // below and the out-of-domain pin holders both read that one list.
+    let (worktree_files, worktree_fold, outside) = fs::domain_snapshot_with_excluded(root)
+        .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
+    let interval = staged_interval(probe, domain, &worktree_files);
+
+    // The corpora are built before the mount table, because they say which roots the
+    // table must build; each interval's corpus is built exactly once.
+    let worktree_docs = build_corpus(worktree_files);
+    // `check` assesses every pin the corpus carries — a population the caller
+    // did not name — so it owes the enumerator clause (§12.1): it may exclude
+    // what its attestation cannot reach, never SILENTLY. Voiced once, for the
+    // worktree interval: the excluded population is domain-derived, and both
+    // intervals stand under the same domain.
+    crate::voice_excluded_listed(&outside, &worktree_docs);
+    let staged_docs = match &interval {
+        Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())),
+        _ => None,
+    };
+
+    // The real mount table, through the one loader `mrd walk` uses. The table is whole;
+    // only the corpora narrow, to the roots this check's own lock addresses name.
+    let mut needed = crate::walk_cmd::lock_addressed_roots(&worktree_docs);
+    if let Some(docs) = &staged_docs {
+        needed.append(&mut crate::walk_cmd::lock_addressed_roots(docs));
+    }
+    let mounts = crate::walk_cmd::load_mounts_for(&needed);
     // D-F: each MOUNTED root's store answers durability for the form-3 rows
     // that name it — the map is the loaded corpora's own (name, bound path)
     // pairs, so the store asked is the tree the row was coloured against.
-    let mounted: BTreeMap<addr::MountName, std::path::PathBuf> = mounts
+    let mounted: BTreeMap<addr::MountName, PathBuf> = mounts
         .corpora
         .iter()
         .map(|m| (m.name.clone(), m.root.clone()))
         .collect();
+
+    // The pins the workspace DECLARES outside the hash domain. Read once: the
+    // two intervals differ in which bytes were HASHED, and an excluded page's
+    // bytes are hashed in neither.
+    //
+    // ⚠️ DECLARED BLIND SPOT: these bytes come from the WORKTREE for both
+    // intervals. A holder that is BOTH domain-excluded AND staged-modified is
+    // read at its worktree bytes under `--commit-gate`, so a pin ROW added or
+    // removed in the index alone is not seen. Strictly more than today, where
+    // the row does not exist at either interval; named rather than assumed.
+    let excluded = excluded_holders(root, &outside);
+
+    // One interval's rows: coloured through the one computer with the real mount
+    // table, under the same domain its snapshot was taken under.
+    let rows_of = |docs: &model::Docs| {
+        let corpus = mounts.rooted(docs, domain, root);
+        let colouring = timing::phase("check.pins");
+        let colors =
+            view::walk::lock_pin_colors_rooted_with_sources(&corpus, mounts.set(), &excluded);
+        colouring.stop();
+        crate::pins_lane::rows(colors)
+    };
+    let worktree = assess_rows(root, domain, &rows_of(&worktree_docs), &mounted, paths)?;
+    let staged = match (&interval, &staged_docs) {
+        (Interval::Diverges(bytes), Some(docs)) => Some(Assessed {
+            paths: bytes.paths.clone(),
+            report: assess_rows(root, domain, &rows_of(docs), &mounted, paths)?.report,
+        }),
+        _ => None,
+    };
+    // The armed plane over the worktree snapshot.
+    let armed = (!commit_gate)
+        .then(|| crate::check_armed::assess(root, &worktree_docs, domain, &worktree_fold.0));
+    Ok(Built {
+        interval,
+        worktree,
+        staged,
+        armed,
+    })
+}
+
+/// Assess one interval off its pin rows — the resident daemon's
+/// (`wire-contract.md` § A.13) or this process's own, one shape: sort the
+/// colours and run the layer-0 core's anchoring questions.
+fn assess_rows(
+    root: &fs::WorkspaceRoot,
+    domain: &fs::domain::Domain,
+    rows: &[wire::PinRow],
+    mounted: &BTreeMap<addr::MountName, PathBuf>,
+    paths: &[String],
+) -> Result<Assessed, Fail> {
+    let mut pins = Vec::new();
+    // `-- PATH…`: a pin counts where its holding page lies under the paths.
+    for row in rows
+        .iter()
+        .filter(|row| crate::check_armed::under(paths, &row.holder))
+    {
+        let class =
+            check::PinClass::of_words(&row.color, row.reason.as_deref()).ok_or_else(|| {
+                Fail::tool(format!(
+                    "the pin row of `{}` carries the colour `{}`, which this build does not know",
+                    row.holder, row.color
+                ))
+            })?;
+        pins.push(PinRow {
+            src_path: row.holder.clone(),
+            declared_ref: crate::pins_lane::declared_ref(row),
+            class,
+            label: crate::pins_lane::label(row),
+        });
+    }
+    // The anchoring questions are asked for the hashed corpus's holders.
+    let objects: Vec<check::LockObject> = rows
+        .iter()
+        .filter(|row| crate::pins_lane::holder_in_domain(domain, row))
+        .filter_map(|row| {
+            Some(check::LockObject {
+                src_path: row.holder.clone(),
+                key: row.object.clone()?,
+                hash: row.hash.clone()?,
+            })
+        })
+        .collect();
     let core = timing::phase("check.core");
-    let report = check::core_of(root, &check::lock_objects(docs), &pins, &mounted);
+    let report = check::core_of(root, &objects, &pins, mounted);
     core.stop();
-    Assessed {
+    Ok(Assessed {
         paths: Vec::new(),
         report,
+    })
+}
+
+/// Each bound root the rows' objects name, with its path — the stores the
+/// anchoring questions are asked of when the daemon coloured the rows.
+fn mounted_stores(rows: &[wire::PinRow]) -> BTreeMap<addr::MountName, PathBuf> {
+    let needed: BTreeSet<addr::MountName> = rows
+        .iter()
+        .filter_map(|row| {
+            addr::Addr::parse(row.object.as_deref()?)
+                .ok()?
+                .root()
+                .cloned()
+        })
+        .collect();
+    if needed.is_empty() {
+        return BTreeMap::new();
     }
+    let env = config::Env::from_process();
+    let Some(table) = config::resolve(&env)
+        .ok()
+        .and_then(|resolution| resolution.bind(&env).ok())
+    else {
+        return BTreeMap::new();
+    };
+    table
+        .mounts()
+        .iter()
+        .filter_map(|mount| {
+            let name = addr::MountName::parse(mount.name()).ok()?;
+            if !needed.contains(&name) || mount.state().refuses() {
+                return None;
+            }
+            Some((name, mount.canonical_path()?.to_path_buf()))
+        })
+        .collect()
 }
 
 /// The markdown under the root the hash domain does NOT carry, parsed as pin
@@ -795,63 +923,61 @@ fn build_corpus(files: fs::DomainFiles) -> model::Docs {
     docs
 }
 
-/// The interval the commit spans: the worktree snapshot with the index's bytes
-/// overlaid, or a coinciding/absent interval when the index carries nothing the
-/// worktree does not.
+/// What git says about the interval a commit spans, before any corpus is read.
 ///
 /// `git` commits the index, not the worktree — the two part company on `git add` +
 /// edit, `git add -p`, `git commit <pathspec>`, `git stash`, and any concurrent
 /// writer between `git add` and hook fire. A workspace that is not a git repository
 /// has one interval, a supported state.
-fn staged_interval(
-    root: &fs::WorkspaceRoot,
-    domain: &fs::domain::Domain,
-    worktree_files: &fs::DomainFiles,
-) -> Interval {
+enum StagedProbe {
+    /// The interval is settled without the index's bytes.
+    Settled(Interval),
+    /// The index carries other bytes for these domain paths.
+    Diverges {
+        divergence: Vec<git::StagedPath>,
+        paths: Vec<String>,
+    },
+}
+
+fn probe_staged(root: &fs::WorkspaceRoot, domain: &fs::domain::Domain) -> StagedProbe {
     let repo = git::Repo::at(&root.0);
     let divergence = match repo.staged_divergence() {
         Ok(divergence) => divergence,
         // No repository, no index, nothing a commit here could record.
-        Err(git::GitFail::NotARepo { .. }) => return Interval::NoRepository,
+        Err(git::GitFail::NotARepo { .. }) => return StagedProbe::Settled(Interval::NoRepository),
         // Inside a repository and git could not answer — never the worktree answer
         // wearing a wider label.
-        Err(other) => return Interval::CannotAsk(other.to_string()),
+        Err(other) => return StagedProbe::Settled(Interval::CannotAsk(other.to_string())),
     };
-    if divergence.is_empty() {
-        return Interval::Coincides;
-    }
-
-    let (files, _fold) = fs::overlay_snapshot(worktree_files, &divergence, domain);
     let paths = divergence
         .iter()
         .filter(|(rel, _)| domain.contains(Path::new(rel)))
         .map(|(rel, _)| rel.clone())
         .collect::<Vec<_>>();
     if paths.is_empty() {
-        // Everything that diverges is outside the hash domain — code, assets, a lock
-        // file — so there is nothing here a second assessment could say.
-        return Interval::Coincides;
+        // Nothing diverges, or everything that does is outside the hash domain —
+        // code, assets, a lock file — so there is nothing here a second assessment
+        // could say.
+        return StagedProbe::Settled(Interval::Coincides);
     }
-    Interval::Diverges(StagedBytes { paths, files })
+    StagedProbe::Diverges { divergence, paths }
 }
 
-/// Colour every `meridian-lock` pin in the corpus through the one pin computer —
-/// `view::walk::lock_pin_colors_rooted`, exactly what `mrd status`'s lock axis reads
-/// and what colours a `mrd walk` listing — so the three planes agree by construction.
-fn pin_rows(
-    corpus: &model::RootedCorpus<'_>,
-    mounts: &addr::MountSet,
-    excluded_holders: &model::Docs,
-) -> Vec<PinRow> {
-    view::walk::lock_pin_colors_rooted_with_sources(corpus, mounts, excluded_holders)
-        .into_iter()
-        .map(|pin| PinRow {
-            src_path: pin.src_path,
-            declared_ref: pin.declared_ref,
-            label: view::walk::color_label(&pin.color),
-            class: check::PinClass::of(&pin.color),
-        })
-        .collect()
+/// The interval the commit spans: the worktree snapshot with the index's bytes
+/// overlaid, or the settled interval when the index carries nothing the worktree
+/// does not.
+fn staged_interval(
+    probe: StagedProbe,
+    domain: &fs::domain::Domain,
+    worktree_files: &fs::DomainFiles,
+) -> Interval {
+    match probe {
+        StagedProbe::Settled(interval) => interval,
+        StagedProbe::Diverges { divergence, paths } => {
+            let (files, _fold) = fs::overlay_snapshot(worktree_files, &divergence, domain);
+            Interval::Diverges(StagedBytes { paths, files })
+        }
+    }
 }
 
 /// The parsed `check` invocation: the output format (the `--core` flag names

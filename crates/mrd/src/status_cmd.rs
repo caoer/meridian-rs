@@ -73,7 +73,8 @@ use receipt::anchor::{AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts,
 use registry::residency::SqlEscalations;
 use registry::residency::controller::Report as ResidencyReport;
 use serde_json::json;
-use view::walk::{color_detail, color_label, color_reason, color_tone};
+use view::walk::{color_label, color_tone};
+use wire::PinRow;
 
 use crate::{Fail, Format, current_dir};
 
@@ -302,7 +303,7 @@ struct LockAxis {
     /// The worst-of color across those rows — `None` when there are none. Not a
     /// color: a vault with no lock pins has nothing to verify, and green there
     /// would claim an attestation nobody made.
-    rollup: Option<Color>,
+    rollup: Option<PinRow>,
     /// Set when the corpus itself could not be read — reported as such rather
     /// than as an empty (falsely clean) axis.
     unreadable: Option<String>,
@@ -312,21 +313,21 @@ impl LockAxis {
     /// Roll up `colors` worst-of: red (a measured defect) over grey (never
     /// measured) over green. Grey above green is load-bearing — one unverifiable
     /// pin must not hide inside a green fleet.
-    fn roll_up(colors: &[Color]) -> LockAxis {
-        let rollup = colors.iter().max_by_key(|c| Self::severity(c)).cloned();
+    fn roll_up(rows: &[PinRow]) -> LockAxis {
+        let rollup = rows.iter().max_by_key(|row| Self::severity(row)).cloned();
         LockAxis {
-            rows: colors.len(),
+            rows: rows.len(),
             rollup,
             unreadable: None,
         }
     }
 
-    /// The worst-of rank of one color: green 0 < grey 1 < red 2.
-    fn severity(color: &Color) -> u8 {
-        match color {
-            Color::Green => 0,
-            Color::Grey(_) => 1,
-            Color::Red(_) => 2,
+    /// The worst-of rank of one row: green 0 < grey 1 < red 2.
+    fn severity(row: &PinRow) -> u8 {
+        match row.color.as_str() {
+            "green" => 0,
+            "red" => 2,
+            _ => 1,
         }
     }
 
@@ -337,11 +338,11 @@ impl LockAxis {
         if let Some(detail) = &self.unreadable {
             return format!("unreadable ({detail})");
         }
-        let Some(color) = &self.rollup else {
+        let Some(worst) = &self.rollup else {
             return "none".to_owned();
         };
         let unit = if self.rows == 1 { "pin" } else { "pins" };
-        format!("{} [{} {unit}]", color_label(color), self.rows)
+        format!("{} [{} {unit}]", crate::pins_lane::label(worst), self.rows)
     }
 }
 
@@ -506,9 +507,9 @@ impl StatusReport {
                 // never an absent field a reader could mistake for "not checked".
                 "lock": {
                     "pins": self.lock.rows,
-                    "color": self.lock.rollup.as_ref().map(color_tone),
-                    "reason": self.lock.rollup.as_ref().and_then(color_reason),
-                    "detail": self.lock.rollup.as_ref().and_then(color_detail),
+                    "color": self.lock.rollup.as_ref().map(|worst| &worst.color),
+                    "reason": self.lock.rollup.as_ref().and_then(|worst| worst.reason.as_ref()),
+                    "detail": self.lock.rollup.as_ref().and_then(|worst| worst.detail.as_ref()),
                     "label": self.lock.render(),
                     "unreadable": self.lock.unreadable,
                 },
@@ -572,61 +573,65 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
     }
 }
 
-/// Read both `meridian-lock` planes of the workspace over one corpus build: the
+/// Read both `meridian-lock` planes of the workspace off one row list: the
 /// claim plane's pin colors rolled up worst-of ([`LockAxis`]) and the retrieval
-/// plane's unreachable blobs ([`VibeDebt`]). The one place status leaves the
-/// O(armed) set — the same builder `mrd walk` uses, so the two cannot disagree.
+/// plane's unreachable blobs ([`VibeDebt`]). The rows are the resident
+/// daemon's (`wire-contract.md` § A.13), or this process's own build when no
+/// daemon serves the workspace — the one place status leaves the O(armed) set.
 fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
-    let docs = match crate::walk_cmd::build_docs(workspace) {
-        Ok(docs) => docs,
-        Err(fail) => {
-            let axis = LockAxis {
-                rows: 0,
-                rollup: None,
-                unreadable: Some(fail.message.clone()),
-            };
-            return (axis, VibeDebt::unknown(fail.message));
-        }
+    let unreadable = |message: String| {
+        let axis = LockAxis {
+            rows: 0,
+            rollup: None,
+            unreadable: Some(message.clone()),
+        };
+        (axis, VibeDebt::unknown(message))
     };
-    // The real mount table, through the one loader `mrd walk` and `mrd check`
-    // use, so the planes agree by construction. The corpora are narrowed to the
-    // roots this corpus's own lock addresses name; the table itself is not.
-    let mounts = crate::walk_cmd::load_mounts_for(&crate::walk_cmd::lock_addressed_roots(&docs));
-    // The hash domain rides with the corpus: without it every out-of-domain pin
+    // The hash domain rides with the rows: without it every out-of-domain pin
     // rolls the lock axis red (decision 0034). Unreadable is reported, never
     // defaulted — a default domain claims everything is hashed.
     let domain = match crate::walk_cmd::load_domain(workspace) {
         Ok(domain) => domain,
-        Err(fail) => {
-            let axis = LockAxis {
-                rows: 0,
-                rollup: None,
-                unreadable: Some(fail.message.clone()),
-            };
-            return (axis, VibeDebt::unknown(fail.message));
-        }
+        Err(fail) => return unreadable(fail.message),
     };
-    // The root the corpus was built from, for the same reason the domain rides
-    // with it: without a disk to read, an out-of-domain pin whose target is GONE
-    // greys instead of reddening (decision 0049). Unreadable is reported here
-    // too — a face that cannot resolve its root cannot answer the lock axis.
-    let root = match crate::walk_cmd::workspace_root(workspace) {
-        Ok(root) => root,
-        Err(fail) => {
-            let axis = LockAxis {
-                rows: 0,
-                rollup: None,
-                unreadable: Some(fail.message.clone()),
-            };
-            return (axis, VibeDebt::unknown(fail.message));
+    // A refusal is this axis's `unreadable`, so no error frame is printed
+    // beside the report.
+    let rows = match crate::pins_lane::from_daemon(workspace, Format::Human) {
+        Ok(Some(plane)) => plane.rows,
+        Ok(None) => {
+            crate::engine::voice_degrade(&crate::engine::EngineSource::Ephemeral);
+            match rows_in_process(workspace, &domain) {
+                Ok(rows) => rows,
+                Err(fail) => return unreadable(fail.message),
+            }
         }
+        Err(fail) => return unreadable(fail.message),
     };
-    let corpus = mounts.rooted(&docs, &domain, &root);
-    let colors: Vec<Color> = view::walk::lock_pin_colors_rooted(&corpus, mounts.set())
+    // The lock axis reads the hashed corpus's holders.
+    let rows: Vec<PinRow> = rows
         .into_iter()
-        .map(|p| p.color)
+        .filter(|row| crate::pins_lane::holder_in_domain(&domain, row))
         .collect();
-    (LockAxis::roll_up(&colors), vibe_debt(workspace, &docs))
+    (LockAxis::roll_up(&rows), vibe_debt(workspace, &rows))
+}
+
+/// The in-process lane's rows: one corpus build, coloured by the builder
+/// `mrd walk` uses, so the two cannot disagree.
+fn rows_in_process(workspace: &Path, domain: &fs::domain::Domain) -> Result<Vec<PinRow>, Fail> {
+    let docs = crate::walk_cmd::build_docs(workspace)?;
+    // The real mount table, through the one loader `mrd walk` and `mrd check`
+    // use. The corpora are narrowed to the roots this corpus's own lock
+    // addresses name; the table itself is not.
+    let mounts = crate::walk_cmd::load_mounts_for(&crate::walk_cmd::lock_addressed_roots(&docs));
+    // The root the corpus was built from: without a disk to read, an
+    // out-of-domain pin whose target is GONE greys instead of reddening
+    // (decision 0049).
+    let root = crate::walk_cmd::workspace_root(workspace)?;
+    let corpus = mounts.rooted(&docs, domain, &root);
+    Ok(crate::pins_lane::rows(view::walk::lock_pin_colors_rooted(
+        &corpus,
+        mounts.set(),
+    )))
 }
 
 /// Which object store one pinned blob belongs to: the ambient workspace
@@ -647,7 +652,7 @@ type StoreKey = Option<addr::MountName>;
 /// that root's repository ([`StoreKey`]). A value that is not an object id, or a
 /// key that names no store, is unknown, never skipped — a dropped entry would
 /// read a corrupt retrieval plane as a true zero.
-fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
+fn vibe_debt(workspace: &Path, rows: &[PinRow]) -> VibeDebt {
     // Dedupe is keyed by store, never globally: the same oid under two roots is
     // two objects in two databases.
     let mut seen: HashSet<(StoreKey, String)> = HashSet::new();
@@ -655,16 +660,20 @@ fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
     let mut stores: Vec<(StoreKey, Vec<(String, PathBuf)>)> = Vec::new();
     let mut malformed: Vec<String> = Vec::new();
     let mut unaddressable: Vec<String> = Vec::new();
-    for object in view::walk::lock_objects(docs) {
-        let oid = object.blob_sha.to_ascii_lowercase();
+    for row in rows {
+        // A lock-refused row declares no blob.
+        let (Some(key), Some(hash)) = (&row.object, &row.hash) else {
+            continue;
+        };
+        let oid = hash.to_ascii_lowercase();
         if !git::is_oid(&oid) {
-            malformed.push(format!("{} pin `{}`", object.src_path, object.key));
+            malformed.push(format!("{} pin `{key}`", row.holder));
             continue;
         }
         // The refusal is carried, never swallowed — falling back to the ambient
         // store would ask the wrong database and answer confidently.
-        let Ok(addr) = addr::Addr::parse(&object.key) else {
-            unaddressable.push(format!("{} pin `{}`", object.src_path, object.key));
+        let Ok(addr) = addr::Addr::parse(key) else {
+            unaddressable.push(format!("{} pin `{key}`", row.holder));
             continue;
         };
         let store: StoreKey = addr.root().cloned();
@@ -962,6 +971,23 @@ mod tests {
     use model::selector::GreyReason;
     use serde_json::Value;
 
+    /// The wire row of one colour, as either lane hands it to the axis.
+    fn row(color: &Color) -> PinRow {
+        registry::pin_row(view::walk::PinColor {
+            src_path: "claim.md".to_owned(),
+            declared_ref: "source.md".to_owned(),
+            fingerprint: None,
+            object: "source".to_owned(),
+            selector: String::new(),
+            blob_sha: None,
+            color: color.clone(),
+        })
+    }
+
+    fn axis(colors: &[Color]) -> LockAxis {
+        LockAxis::roll_up(&colors.iter().map(row).collect::<Vec<_>>())
+    }
+
     // ── the grey render fixtures (U6.2 full color law) ───────────────────────
 
     #[test]
@@ -1007,7 +1033,7 @@ mod tests {
 
     /// Compose the axes without an IO edge.
     fn compose(pin: Color, anchor_axis: &str, mode: Mode) -> String {
-        report(pin, LockAxis::roll_up(&[]), anchor_axis, mode).composed_line()
+        report(pin, axis(&[]), anchor_axis, mode).composed_line()
     }
 
     /// A pure [`StatusReport`] with no IO edge.
@@ -1047,40 +1073,33 @@ mod tests {
         });
         let red = Color::Red(RedReason::Drifted);
 
+        assert_eq!(axis(&[]).rollup, None, "no pins is not a color");
         assert_eq!(
-            LockAxis::roll_up(&[]).rollup,
-            None,
-            "no pins is not a color"
+            axis(&[Color::Green, Color::Green]).rollup,
+            Some(row(&Color::Green))
         );
         assert_eq!(
-            LockAxis::roll_up(&[Color::Green, Color::Green]).rollup,
-            Some(Color::Green)
-        );
-        assert_eq!(
-            LockAxis::roll_up(&[Color::Green, grey.clone()]).rollup,
-            Some(grey.clone()),
+            axis(&[Color::Green, grey.clone()]).rollup,
+            Some(row(&grey)),
             "a grey pin must not roll up green",
         );
         assert_eq!(
-            LockAxis::roll_up(&[Color::Green, grey, red.clone()]).rollup,
-            Some(red),
+            axis(&[Color::Green, grey, red.clone()]).rollup,
+            Some(row(&red)),
             "a measured red outranks an unmeasured grey",
         );
-        assert_eq!(
-            LockAxis::roll_up(&[Color::Green, Color::Green, Color::Green]).rows,
-            3
-        );
+        assert_eq!(axis(&[Color::Green, Color::Green, Color::Green]).rows, 3);
     }
 
     #[test]
     fn the_lock_axis_renders_every_case() {
-        assert_eq!(LockAxis::roll_up(&[]).render(), "none");
+        assert_eq!(axis(&[]).render(), "none");
         assert_eq!(
-            LockAxis::roll_up(&[Color::Green, Color::Green]).render(),
+            axis(&[Color::Green, Color::Green]).render(),
             "green [2 pins]"
         );
         assert_eq!(
-            LockAxis::roll_up(&[Color::Grey(GreyReason::LockRefused {
+            axis(&[Color::Grey(GreyReason::LockRefused {
                 reason: "more than one meridian-lock block on the page".to_owned(),
             })])
             .render(),
@@ -1102,7 +1121,7 @@ mod tests {
         let empty: Value = serde_json::from_str(
             &report(
                 Color::Green,
-                LockAxis::roll_up(&[]),
+                axis(&[]),
                 "at-tip (anchor as-known)",
                 Mode::Off,
             )
@@ -1120,7 +1139,7 @@ mod tests {
         let drifted: Value = serde_json::from_str(
             &report(
                 Color::Green,
-                LockAxis::roll_up(&[Color::Grey(GreyReason::UnverifiableFingerprint {
+                axis(&[Color::Grey(GreyReason::UnverifiableFingerprint {
                     unknown: vec!["version"],
                 })]),
                 "at-tip (anchor as-known)",
@@ -1146,7 +1165,7 @@ mod tests {
 
         let clean = report(
             Color::Green,
-            LockAxis::roll_up(&[]),
+            axis(&[]),
             "at-tip (anchor as-known)",
             Mode::Off,
         );
@@ -1190,7 +1209,7 @@ mod tests {
 
         let owed = report_with_debt(
             Color::Green,
-            LockAxis::roll_up(&[Color::Green]),
+            axis(&[Color::Green]),
             "at-tip (anchor as-known)",
             Mode::Off,
             one,
@@ -1217,7 +1236,7 @@ mod tests {
         let v: Value = serde_json::from_str(
             &report_with_debt(
                 Color::Green,
-                LockAxis::roll_up(&[]),
+                axis(&[]),
                 "at-tip (anchor as-known)",
                 Mode::Off,
                 unknown,
@@ -1239,7 +1258,7 @@ mod tests {
     fn vibe_debt_is_never_a_finding() {
         let owed = report_with_debt(
             Color::Green,
-            LockAxis::roll_up(&[]),
+            axis(&[]),
             "at-tip (anchor as-known)",
             Mode::Block,
             VibeDebt {
@@ -1282,7 +1301,7 @@ mod tests {
 
     #[test]
     fn the_human_line_discloses_that_forced_writes_are_not_tracked() {
-        let report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);
+        let report = report(Color::Green, axis(&[]), "at-tip", Mode::Off);
         let out = report.render_human();
         assert!(
             out.contains("forced-since-realise: not-tracked"),
@@ -1301,7 +1320,7 @@ mod tests {
 
     #[test]
     fn the_json_face_discloses_rather_than_zeroing() {
-        let report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);
+        let report = report(Color::Green, axis(&[]), "at-tip", Mode::Off);
         let v: Value = serde_json::from_str(&report.json()).expect("json");
         let forced = &v["armed_rules"]["forced_since_realise"];
         assert_eq!(forced["tracked"], serde_json::json!(false));
@@ -1326,7 +1345,7 @@ mod tests {
 
     #[test]
     fn the_finding_predicate_is_drift_and_fault_only() {
-        let mut report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);
+        let mut report = report(Color::Green, axis(&[]), "at-tip", Mode::Off);
         assert!(!report.has_findings(), "a clean workspace exits 0");
         report.drifted = 1;
         assert!(report.has_findings(), "drift is still a finding");
