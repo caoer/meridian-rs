@@ -220,7 +220,11 @@ fn a_successor_says_serving_and_the_daemon_it_replaced_exits_zero() {
 
     let mut new = sb.daemon(true);
     assert_eq!(new.first_line(), "serving\n", "the successor's one line");
-    assert_eq!(sb.pidfile(), new.child.id(), "the pidfile names the successor");
+    assert_eq!(
+        sb.pidfile(),
+        new.child.id(),
+        "the pidfile names the successor"
+    );
 
     // The replaced daemon exits by itself and says nothing on stdout.
     let status = old.exit();
@@ -229,13 +233,25 @@ fn a_successor_says_serving_and_the_daemon_it_replaced_exits_zero() {
 
     // Its exit took nothing with it: one ask each, no retry through warming.
     let carried = toc(&held);
-    assert_eq!(carried["ok"], json!(true), "the carried connection: {carried}");
+    assert_eq!(
+        carried["ok"],
+        json!(true),
+        "the carried connection: {carried}"
+    );
     let fresh = toc(&sb.dial());
     assert_eq!(fresh["ok"], json!(true), "a fresh dial: {fresh}");
-    assert_eq!(sb.pidfile(), new.child.id(), "the pidfile after the old exit");
+    assert_eq!(
+        sb.pidfile(),
+        new.child.id(),
+        "the pidfile after the old exit"
+    );
 
     let (status, rest) = new.stop();
-    assert_eq!(status.code(), Some(0), "a SIGTERM ends it cleanly: {status}");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a SIGTERM ends it cleanly: {status}"
+    );
     assert_eq!(rest, "", "stdout carries nothing after `serving`");
 }
 
@@ -248,6 +264,10 @@ fn a_successor_with_no_daemon_serving_starts_as_the_daemon() {
     drop(sb.dial());
 
     let (status, rest) = only.stop();
-    assert_eq!(status.code(), Some(0), "a SIGTERM ends it cleanly: {status}");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a SIGTERM ends it cleanly: {status}"
+    );
     assert_eq!(rest, "");
 }
