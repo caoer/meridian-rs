@@ -47,7 +47,9 @@ clone:
 
 steps:
   - name: publish mrd (linux-arm64, keyed by commit)
-    image: "meridian-ci:2026-10-25"
+    # The registry ref by tag and digest, as ci.yaml's rust_image: pull: false pulls it
+    # when absent, so the lane never rests on a hand-made local tag on the host.
+    image: "git.0xdao.app/caoer115/meridian-ci:2026-10-25@sha256:a90d95ee033608d591bc7a7cfa2239082f7c38a00bd364dfdd87a1dc0116fa6d"
     pull: false
     environment:
       CARGO_HOME: /ci-cache/meridian-rs/cargo
