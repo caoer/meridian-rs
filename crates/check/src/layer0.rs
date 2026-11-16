@@ -14,7 +14,7 @@
 //! in transcript JSONL.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fs::WorkspaceRoot;
 use model::selector::Color;
@@ -414,17 +414,17 @@ fn objects_in(
 /// All three states are counted as a READING; only the ORPHAN is a finding.
 /// The orphan check costs one `git hash-object` per non-anchored entry only.
 fn ask_store(
-    store_root: &std::path::Path,
+    store_root: &Path,
     objects: &[ObjectRef],
     plane: &mut PinPlane,
 ) -> Result<(), String> {
     let asked = |e: git::GitFail| format!("the object store could not be asked: {e}");
     let repo = git::Repo::at(store_root.to_path_buf());
-    let paths: Vec<std::path::PathBuf> = objects
+    let paths: Vec<PathBuf> = objects
         .iter()
-        .map(|o| std::path::PathBuf::from(format!("{}.md", o.rel)))
+        .map(|o| PathBuf::from(format!("{}.md", o.rel)))
         .collect();
-    let asks: Vec<(&str, &std::path::Path)> = objects
+    let asks: Vec<(&str, &Path)> = objects
         .iter()
         .zip(&paths)
         .map(|(o, p)| (o.blob_sha.as_str(), p.as_path()))
