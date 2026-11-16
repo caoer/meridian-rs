@@ -742,7 +742,7 @@ fn assess(
         .map(|m| (m.name.clone(), m.root.clone()))
         .collect();
     let core = timing::phase("check.core");
-    let report = check::core_of(root, docs, &pins, &mounted);
+    let report = check::core_of(root, &check::lock_objects(docs), &pins, &mounted);
     core.stop();
     Assessed {
         paths: Vec::new(),

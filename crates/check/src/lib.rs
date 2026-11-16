@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 use fs::WorkspaceRoot;
 
 pub use layer0::{
-    ClaimFinding, GREY_CANNOT_ASSESS, OrphanedBlob, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED,
-    claims_realised, pin_plane,
+    ClaimFinding, GREY_CANNOT_ASSESS, LockObject, OrphanedBlob, PinPlane, PinRow,
+    WRITE_HISTORY_NOT_ASSESSED, claims_realised, lock_objects, pin_plane,
 };
 // Layer 1 exports no armed-input or fault type of its own: the input is
 // `policy::ArmedRule` and a fault is `policy::ArmedFault::Unevaluable`.
@@ -167,7 +167,7 @@ pub fn core(
     let drifted_claims = claims_realised(root, claims).map_err(CoreError::Claim)?;
     Ok(CoreReport {
         drifted_claims,
-        pins: pin_plane(root, docs, pins, mounted),
+        pins: pin_plane(root, &lock_objects(docs), pins, mounted),
         orphans: orphan::orphaned_runs(root).map_err(CoreError::RunLedger)?,
     })
 }
@@ -175,7 +175,9 @@ pub fn core(
 /// [`core`] over an INTERVAL the caller holds the bytes of — the same verdict, on
 /// a snapshot that is not the worktree.
 ///
-/// `docs` and `pins` are the corpus built from that interval's bytes. `root` is
+/// `objects` and `pins` are the lock rows and pin colours of that interval's
+/// corpus — read off one generation, in this process ([`lock_objects`]) or by
+/// the resident daemon (`wire-contract.md` § A.13). `root` is
 /// used for the OBJECT STORE alone — blob reachability is a property of the
 /// repository, not of an interval.
 ///
@@ -191,13 +193,13 @@ pub fn core(
 #[must_use]
 pub fn core_of(
     root: &WorkspaceRoot,
-    docs: &model::Docs,
+    objects: &[LockObject],
     pins: &[PinRow],
     mounted: &BTreeMap<addr::MountName, std::path::PathBuf>,
 ) -> CoreReport {
     CoreReport {
         drifted_claims: Vec::new(),
-        pins: pin_plane(root, docs, pins, mounted),
+        pins: pin_plane(root, objects, pins, mounted),
         orphans: Vec::new(),
     }
 }

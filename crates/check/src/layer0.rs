@@ -231,14 +231,14 @@ impl PinPlane {
     }
 }
 
-/// Read the pin plane over `docs`: sort the caller's pin colours, then ask
-/// each object store the corpus pins into — THIS root's for bare objects, and
+/// Read the pin plane over one corpus's lock rows: sort the caller's pin
+/// colours, then ask each object store the corpus pins into — THIS root's for bare objects, and
 /// every MOUNTED root's for the form-3 objects that name it (cross-root
 /// design D-F: one rev-list + cat-file pair per root, only when that root has
 /// rows).
 ///
-/// `docs` must be the SAME corpus build the pin colours came from, or the two
-/// halves describe two different corpora. `mounted` maps each bound root name
+/// `objects` must come from the SAME corpus generation the pin colours came
+/// from, or the two halves describe two different corpora. `mounted` maps each bound root name
 /// to its canonical path; a form-3 object whose root is NOT in the map is
 /// skipped and STATED ([`PinPlane::out_of_jurisdiction`]) — unmounted is a
 /// sight line, never a silent drop.
@@ -251,7 +251,7 @@ impl PinPlane {
 #[must_use]
 pub fn pin_plane(
     root: &WorkspaceRoot,
-    docs: &model::Docs,
+    objects: &[LockObject],
     pins: &[PinRow],
     mounted: &BTreeMap<addr::MountName, PathBuf>,
 ) -> PinPlane {
@@ -279,7 +279,7 @@ pub fn pin_plane(
             Color::Green => {}
         }
     }
-    match objects_in(docs, mounted) {
+    match objects_in(objects, mounted) {
         Err(detail) => plane.cannot_ask = Some(detail),
         Ok(grouped) => {
             plane.out_of_jurisdiction = grouped.unmounted;
@@ -325,77 +325,104 @@ struct GroupedObjects {
     unmounted: Vec<String>,
 }
 
-/// Every pinned blob the corpus declares, or the reason the plane is unread.
+/// One pinned blob as its lock row declares it: the R4 per-pin `hash` and the
+/// object it is the blob OF, both verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockObject {
+    /// The page whose `meridian-lock` block declares this object.
+    pub src_path: String,
+    /// The pin's `object`, verbatim (rooted for a form-3 row).
+    pub key: String,
+    /// The recorded blob id, verbatim.
+    pub hash: String,
+}
+
+/// Every pinned blob `docs` declares, in page order then lock order.
 ///
 /// [`lock::find`] is the parser — the same owner the listing surfaces use. A
 /// page whose lock REFUSED contributes nothing: its damage is already named by
 /// the grey `lock-refused` pin row the same page projects, and naming one
 /// defect twice is how a reader comes to believe there are two.
+#[must_use]
+pub fn lock_objects(docs: &model::Docs) -> Vec<LockObject> {
+    let mut out = Vec::new();
+    for (path, doc) in docs {
+        let Ok(Some(found)) = lock::find(doc) else {
+            continue;
+        };
+        for pin in found.lock.pins {
+            out.push(LockObject {
+                src_path: path.clone(),
+                key: pin.object,
+                hash: pin.hash,
+            });
+        }
+    }
+    out
+}
+
+/// The pinned blobs grouped by the store that must answer, or the reason the
+/// plane is unread.
 ///
 /// The whole-file lock (`path: []` and `properties: []` on one object)
 /// declares the same blob twice, so rows are deduped by `(object, hash)` —
 /// two rows would ask git one question twice and report one orphan as two
 /// findings.
 fn objects_in(
-    docs: &model::Docs,
+    objects: &[LockObject],
     mounted: &BTreeMap<addr::MountName, PathBuf>,
 ) -> Result<GroupedObjects, String> {
     let mut out = GroupedObjects::default();
-    let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
-    for (path, doc) in docs {
-        let Ok(Some(found)) = lock::find(doc) else {
-            continue;
-        };
-        for pin in found.lock.pins {
-            let key = pin.object;
-            // Jurisdiction is decided on STRUCTURE (which root does this
-            // object's address name), never on failure — a behavioural skip
-            // would let a broken store hide inside the exemption. A form-3
-            // object routes to its own root's store when that root is
-            // MOUNTED; an unmounted root's rows are skipped and STATED.
-            let owner = match addr::Addr::parse(&key) {
-                Ok(addr) => match addr.root() {
-                    Some(name) if mounted.contains_key(name) => {
-                        Some((name.clone(), addr.path().to_owned()))
-                    }
-                    Some(name) => {
-                        out.unmounted
-                            .push(format!("`{path}` pin `{key}` (root `{name}`, unmounted)"));
-                        continue;
-                    }
-                    None => None,
-                },
-                Err(e) => {
-                    return Err(format!(
-                        "`{path}` pin `{key}` is not an address, so WHICH git to ask is \
-                         unknown: {e}"
-                    ));
+    let mut seen: BTreeSet<(&str, &str, String)> = BTreeSet::new();
+    for object in objects {
+        let (path, key) = (&object.src_path, &object.key);
+        // Jurisdiction is decided on STRUCTURE (which root does this
+        // object's address name), never on failure — a behavioural skip
+        // would let a broken store hide inside the exemption. A form-3
+        // object routes to its own root's store when that root is
+        // MOUNTED; an unmounted root's rows are skipped and STATED.
+        let owner = match addr::Addr::parse(key) {
+            Ok(addr) => match addr.root() {
+                Some(name) if mounted.contains_key(name) => {
+                    Some((name.clone(), addr.path().to_owned()))
                 }
-            };
-            let oid = pin.hash.to_ascii_lowercase();
-            if !git::is_oid(&oid) {
+                Some(name) => {
+                    out.unmounted
+                        .push(format!("`{path}` pin `{key}` (root `{name}`, unmounted)"));
+                    continue;
+                }
+                None => None,
+            },
+            Err(e) => {
                 return Err(format!(
-                    "`{path}` pin `{key}` has a hash that is not an object id, so git cannot be \
-                     asked about it"
+                    "`{path}` pin `{key}` is not an address, so WHICH git to ask is \
+                     unknown: {e}"
                 ));
             }
-            if !seen.insert((path.clone(), key.clone(), oid.clone())) {
-                continue;
-            }
-            match owner {
-                Some((name, rel)) => out.foreign.entry(name).or_default().push(ObjectRef {
-                    src_path: path.clone(),
-                    key: key.clone(),
-                    rel,
-                    blob_sha: oid,
-                }),
-                None => out.ambient.push(ObjectRef {
-                    src_path: path.clone(),
-                    rel: key.clone(),
-                    key,
-                    blob_sha: oid,
-                }),
-            }
+        };
+        let oid = object.hash.to_ascii_lowercase();
+        if !git::is_oid(&oid) {
+            return Err(format!(
+                "`{path}` pin `{key}` has a hash that is not an object id, so git cannot be \
+                 asked about it"
+            ));
+        }
+        if !seen.insert((path, key, oid.clone())) {
+            continue;
+        }
+        match owner {
+            Some((name, rel)) => out.foreign.entry(name).or_default().push(ObjectRef {
+                src_path: path.clone(),
+                key: key.clone(),
+                rel,
+                blob_sha: oid,
+            }),
+            None => out.ambient.push(ObjectRef {
+                src_path: path.clone(),
+                rel: key.clone(),
+                key: key.clone(),
+                blob_sha: oid,
+            }),
         }
     }
     Ok(out)
@@ -576,7 +603,7 @@ mod tests {
 
         let unattested = pin_plane(
             &root,
-            &docs,
+            &lock_objects(&docs),
             &[pin(Color::Grey(
                 model::selector::GreyReason::OutsideHashDomain {
                     path: "drafts/tmp.md".to_string(),
@@ -604,7 +631,7 @@ mod tests {
 
         let blind = pin_plane(
             &root,
-            &docs,
+            &lock_objects(&docs),
             &[pin(Color::Grey(model::selector::GreyReason::Ambiguous))],
             &BTreeMap::new(),
         );
@@ -623,7 +650,7 @@ mod tests {
 
         let red = pin_plane(
             &root,
-            &docs,
+            &lock_objects(&docs),
             &[pin(Color::Red(model::selector::RedReason::Drifted))],
             &BTreeMap::new(),
         );
@@ -635,7 +662,7 @@ mod tests {
 
         let grey = pin_plane(
             &root,
-            &docs,
+            &lock_objects(&docs),
             &[pin(Color::Grey(model::selector::GreyReason::Ambiguous))],
             &BTreeMap::new(),
         );
@@ -643,7 +670,12 @@ mod tests {
         assert!(grey.cannot_assess(), "grey names itself");
         assert!(!grey.is_green(), "and it is never green");
 
-        let green = pin_plane(&root, &docs, &[pin(Color::Green)], &BTreeMap::new());
+        let green = pin_plane(
+            &root,
+            &lock_objects(&docs),
+            &[pin(Color::Green)],
+            &BTreeMap::new(),
+        );
         assert!(green.is_green(), "a green pin leaves nothing to report");
     }
 
@@ -694,7 +726,7 @@ mod tests {
     fn an_unaskable_object_store_is_grey_never_an_empty_clean_reading() {
         let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = corpus("claim.md", &pin_page("source", &"a".repeat(40)));
-        let plane = pin_plane(&root, &docs, &[], &BTreeMap::new());
+        let plane = pin_plane(&root, &lock_objects(&docs), &[], &BTreeMap::new());
         assert!(
             plane.cannot_ask.is_some(),
             "there is no repository at /nonexistent — the question could not be put"
@@ -713,7 +745,7 @@ mod tests {
     fn a_corpus_that_references_no_blob_asks_nothing_and_stays_green() {
         let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = corpus("claim.md", "# Claim\n\nno lock at all.\n");
-        let plane = pin_plane(&root, &docs, &[], &BTreeMap::new());
+        let plane = pin_plane(&root, &lock_objects(&docs), &[], &BTreeMap::new());
         assert!(
             plane.cannot_ask.is_none(),
             "git was never asked, so there is nothing it could not answer"
@@ -729,8 +761,8 @@ mod tests {
         let root = WorkspaceRoot(PathBuf::from("/nonexistent"));
         let docs = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
 
-        let grouped =
-            objects_in(&docs, &BTreeMap::new()).expect("a cross-root pin is not an error");
+        let grouped = objects_in(&lock_objects(&docs), &BTreeMap::new())
+            .expect("a cross-root pin is not an error");
         assert!(
             grouped.ambient.is_empty(),
             "the ambient store is never asked about another root's blob: {:?}",
@@ -753,7 +785,7 @@ mod tests {
         );
 
         // The disclosure reaches the PLANE, which is what the faces render.
-        let plane = pin_plane(&root, &docs, &[], &BTreeMap::new());
+        let plane = pin_plane(&root, &lock_objects(&docs), &[], &BTreeMap::new());
         assert_eq!(
             plane.out_of_jurisdiction.len(),
             1,
@@ -776,7 +808,7 @@ mod tests {
 
         // ARM 1 — AMBIENT pin, unaskable store: greys. Fails CLOSED.
         let ambient = corpus("claim.md", &pin_page("source", &"a".repeat(40)));
-        let ambient_plane = pin_plane(&root, &ambient, &[], &BTreeMap::new());
+        let ambient_plane = pin_plane(&root, &lock_objects(&ambient), &[], &BTreeMap::new());
         assert!(
             ambient_plane.cannot_ask.is_some(),
             "a broken AMBIENT store is still grey — the exemption must not cover it"
@@ -785,7 +817,7 @@ mod tests {
 
         // ARM 2 — CROSS-ROOT pin, same unaskable store: scoped out, never asked.
         let cross = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
-        let cross_plane = pin_plane(&root, &cross, &[], &BTreeMap::new());
+        let cross_plane = pin_plane(&root, &lock_objects(&cross), &[], &BTreeMap::new());
         assert!(
             cross_plane.cannot_ask.is_none(),
             "the cross-root blob was never this plane's to ask about"
@@ -835,7 +867,7 @@ mod tests {
             alpha.clone(),
         )]);
 
-        let plane = pin_plane(&root, &docs, &[], &mounted);
+        let plane = pin_plane(&root, &lock_objects(&docs), &[], &mounted);
         assert!(
             plane.out_of_jurisdiction.is_empty(),
             "a MOUNTED root's rows are asked, not stated as outside: {:?}",
@@ -849,7 +881,7 @@ mod tests {
 
         // The counter-arm: the same corpus with the root NOT mounted stays a
         // stated skip — mounting is what converts the sight line into a read.
-        let unmounted = pin_plane(&root, &docs, &[], &BTreeMap::new());
+        let unmounted = pin_plane(&root, &lock_objects(&docs), &[], &BTreeMap::new());
         assert_eq!(unmounted.out_of_jurisdiction.len(), 1);
         assert_eq!(unmounted.asked(), 0, "nothing was asked without the mount");
 
@@ -859,7 +891,7 @@ mod tests {
             addr::MountName::parse("alpha").expect("a name"),
             PathBuf::from("/nonexistent-store"),
         )]);
-        let grey = pin_plane(&root, &docs, &[], &broken);
+        let grey = pin_plane(&root, &lock_objects(&docs), &[], &broken);
         assert!(
             grey.cannot_ask
                 .as_deref()
@@ -874,8 +906,8 @@ mod tests {
     #[test]
     fn a_value_that_is_not_an_object_id_is_reported_never_skipped() {
         let docs = corpus("claim.md", &pin_page("source", "not-an-oid"));
-        let detail =
-            objects_in(&docs, &BTreeMap::new()).expect_err("git cannot be asked about a non-oid");
+        let detail = objects_in(&lock_objects(&docs), &BTreeMap::new())
+            .expect_err("git cannot be asked about a non-oid");
         assert!(
             detail.contains("not an object id"),
             "and it says why: {detail}"
@@ -903,7 +935,7 @@ mod tests {
              blocks on one page"
         );
         assert!(
-            objects_in(&docs, &BTreeMap::new())
+            objects_in(&lock_objects(&docs), &BTreeMap::new())
                 .expect("a refusal is not this reader's error")
                 .ambient
                 .is_empty(),
