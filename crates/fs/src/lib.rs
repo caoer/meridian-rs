@@ -499,7 +499,7 @@ fn collect_declined_markdown(
 /// I/O failure traversing the root.
 pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    walk_domain_dir(&root.0, &PathBuf::new(), domain, &mut out)?;
+    walk_domain_dir(&root.0, &PathBuf::new(), domain, &mut out, None)?;
     out.sort();
     Ok(out)
 }
@@ -570,11 +570,69 @@ pub fn backstop_movers(
     Ok(movers)
 }
 
+/// One markdown file under the root that the hash domain does not carry, as
+/// [`domain_snapshot_with_excluded`]'s walk lists it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExcludedMarkdown {
+    /// The workspace-relative path.
+    pub rel: String,
+    /// Whether the file is in [`declined_markdown`]'s class — excluded by a
+    /// custom ignore rule, so on a dot-free path. The other class is the
+    /// dot-segment one.
+    pub declined: bool,
+}
+
+/// Record `rel` when it is markdown the domain excludes for `why`. A non-UTF-8
+/// path is skipped: wire paths are UTF-8.
+fn note_excluded(rel: &Path, why: domain::ExclusionReason, out: &mut Vec<ExcludedMarkdown>) {
+    if why == domain::ExclusionReason::NonMarkdown {
+        return;
+    }
+    if let Some(rel) = rel.to_str() {
+        out.push(ExcludedMarkdown {
+            rel: rel.to_owned(),
+            // The dot rule is checked before the custom rules, so a custom
+            // ignore is only ever the answer on a dot-free path.
+            declined: why == domain::ExclusionReason::CustomIgnore,
+        });
+    }
+}
+
+/// Everything under a directory the domain walk does not enter — a
+/// dot-prefixed or pruned one — listed for [`ExcludedMarkdown`]. Each file is
+/// still asked of the domain, so the list holds exactly the markdown
+/// [`domain::Domain::contains`] refuses. A directory that will not list
+/// contributes nothing: these files are outside the hashed walk.
+fn walk_excluded_dir(
+    abs_dir: &Path,
+    rel_dir: &Path,
+    domain: &domain::Domain,
+    out: &mut Vec<ExcludedMarkdown>,
+) {
+    let Ok(entries) = fs::read_dir(abs_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let rel = rel_dir.join(entry.file_name());
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            walk_excluded_dir(&entry.path(), &rel, domain, out);
+        } else if file_type.is_file()
+            && let Some(why) = domain.exclusion(&rel)
+        {
+            note_excluded(&rel, why, out);
+        }
+    }
+}
+
 fn walk_domain_dir(
     abs_dir: &Path,
     rel_dir: &Path,
     domain: &domain::Domain,
     out: &mut Vec<PathBuf>,
+    mut excluded: Option<&mut Vec<ExcludedMarkdown>>,
 ) -> io::Result<()> {
     for entry in list_dir(abs_dir, rel_dir)? {
         let entry = entry.map_err(|e| corpus_listing_refusal(&e, rel_dir, "cannot be listed"))?;
@@ -585,15 +643,22 @@ fn walk_domain_dir(
             .map_err(|e| corpus_listing_refusal(&e, &rel, "cannot be identified"))?;
         if file_type.is_dir() {
             // Dot-segment: structurally outside the hash domain at any depth.
-            if domain::dot_segment(&name.to_string_lossy()) {
+            if domain::dot_segment(&name.to_string_lossy()) || domain.prunes_dir(&rel) {
+                if let Some(excluded) = excluded.as_deref_mut() {
+                    walk_excluded_dir(&entry.path(), &rel, domain, excluded);
+                }
                 continue;
             }
-            if domain.prunes_dir(&rel) {
-                continue;
+            walk_domain_dir(&entry.path(), &rel, domain, out, excluded.as_deref_mut())?;
+        } else if file_type.is_file() {
+            match domain.exclusion(&rel) {
+                None => out.push(rel),
+                Some(why) => {
+                    if let Some(excluded) = excluded.as_deref_mut() {
+                        note_excluded(&rel, why, excluded);
+                    }
+                }
             }
-            walk_domain_dir(&entry.path(), &rel, domain, out)?;
-        } else if file_type.is_file() && domain.contains(&rel) {
-            out.push(rel);
         }
     }
     Ok(())
@@ -2547,6 +2612,31 @@ pub fn served_root(leaves: &[(&[u8], [u8; 32])], domain: u32) -> model::MerkleRo
 pub fn domain_snapshot_with_leaves(
     root: &WorkspaceRoot,
 ) -> io::Result<(DomainFiles, BTreeMap<PathBuf, [u8; 32]>, model::MerkleRoot)> {
+    snapshot_listing(root, None)
+}
+
+/// [`domain_snapshot`] plus every markdown file under the root the domain does
+/// NOT carry, sorted by path — listed by the snapshot's own walk, which
+/// otherwise steps over them. A caller that owes both the corpus and the
+/// excluded population (the domain-excluded note, the out-of-domain pin
+/// holders) takes this instead of walking the tree again for each.
+///
+/// # Errors
+/// As [`domain_snapshot`]. An excluded directory that will not list is not an
+/// error: it contributes nothing.
+pub fn domain_snapshot_with_excluded(
+    root: &WorkspaceRoot,
+) -> io::Result<(DomainFiles, model::MerkleRoot, Vec<ExcludedMarkdown>)> {
+    let mut excluded = Vec::new();
+    let (files, _leaves, folded) = snapshot_listing(root, Some(&mut excluded))?;
+    excluded.sort();
+    Ok((files, folded, excluded))
+}
+
+fn snapshot_listing(
+    root: &WorkspaceRoot,
+    excluded: Option<&mut Vec<ExcludedMarkdown>>,
+) -> io::Result<(DomainFiles, BTreeMap<PathBuf, [u8; 32]>, model::MerkleRoot)> {
     FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
     // The three phases a timing reader acts on (`run-plane.md` § Timing
     // phases). They are emitted HERE, not at a door, because every caller of
@@ -2554,7 +2644,9 @@ pub fn domain_snapshot_with_leaves(
     let whole = timing::phase("snapshot");
     let walk = timing::phase("snapshot.walk");
     let domain = domain::Domain::load(root)?;
-    let rels = hash_domain(root, &domain)?;
+    let mut rels = Vec::new();
+    walk_domain_dir(&root.0, &PathBuf::new(), &domain, &mut rels, excluded)?;
+    rels.sort();
     walk.stop();
     let read = timing::phase("snapshot.read");
     let members = read_and_digest_members(root, &rels, PARALLEL_READ_FLOOR)?;

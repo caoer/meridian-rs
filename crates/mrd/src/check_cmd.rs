@@ -103,7 +103,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
     let paths = workspace_paths(&canonical, &cwd, &parsed.paths)?;
     crate::build_gate::enter();
-    let (worktree_files, worktree_fold) = fs::domain_snapshot(&root)
+    // The same walk lists the markdown the domain does NOT carry: the note
+    // below and the out-of-domain pin holders both read that one list.
+    let (worktree_files, worktree_fold, outside) = fs::domain_snapshot_with_excluded(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
 
     // The second interval, only when asked for: absent divergence the two intervals
@@ -122,7 +124,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // what its attestation cannot reach, never SILENTLY. Voiced once, for the
     // worktree interval: the excluded population is domain-derived, and both
     // intervals stand under the same domain.
-    crate::voice_excluded(&root, &worktree_docs);
+    crate::voice_excluded_listed(&outside, &worktree_docs);
     let staged_docs = match &interval {
         Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())),
         _ => None,
@@ -145,7 +147,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // read at its worktree bytes under `--commit-gate`, so a pin ROW added or
     // removed in the index alone is not seen. Strictly more than today, where
     // the row does not exist at either interval; named rather than assumed.
-    let excluded = excluded_holders(&root, &domain);
+    let excluded = excluded_holders(&root, &outside);
 
     let mut worktree = assess(&root, &mounts, &worktree_docs, &domain, &excluded, &paths);
     // The run ledger is engine state outside every interval (wire-contract
@@ -726,7 +728,9 @@ fn assess(
     // The same domain the snapshot was taken under — the colour plane must be
     // filtered by the filter that built its corpus, never by a second reading.
     let corpus = mounts.rooted(docs, domain, root);
+    let colouring = timing::phase("check.pins");
     let mut pins = pin_rows(&corpus, mounts.set(), excluded_holders);
+    colouring.stop();
     // `-- PATH…`: a pin counts where its holding page lies under the paths.
     pins.retain(|pin| crate::check_armed::under(paths, &pin.src_path));
     // D-F: each MOUNTED root's store answers durability for the form-3 rows
@@ -737,9 +741,12 @@ fn assess(
         .iter()
         .map(|m| (m.name.clone(), m.root.clone()))
         .collect();
+    let core = timing::phase("check.core");
+    let report = check::core_of(root, docs, &pins, &mounted);
+    core.stop();
     Assessed {
         paths: Vec::new(),
-        report: check::core_of(root, docs, &pins, &mounted),
+        report,
     }
 }
 
@@ -763,24 +770,17 @@ fn assess(
 /// widens a population the caller already gets nothing from, so a failure to
 /// read one leaves the assessment exactly where it stands today. It is never
 /// counted as an absence of pins.
-fn excluded_holders(root: &fs::WorkspaceRoot, domain: &fs::domain::Domain) -> model::Docs {
-    let Ok(all) = fs::walk(root) else {
-        return BTreeMap::new();
-    };
+fn excluded_holders(root: &fs::WorkspaceRoot, outside: &[fs::ExcludedMarkdown]) -> model::Docs {
+    let reading = timing::phase("check.excluded");
     let mut files: fs::DomainFiles = Vec::new();
-    for rel in all {
-        if domain.contains(&rel) {
-            continue;
-        }
-        let Some(rel_str) = rel.to_str() else {
+    for md in outside {
+        let Ok(bytes) = std::fs::read(root.0.join(&md.rel)) else {
             continue;
         };
-        let Ok(bytes) = std::fs::read(root.0.join(&rel)) else {
-            continue;
-        };
-        files.push((rel_str.to_owned(), bytes));
+        files.push((md.rel.clone(), bytes));
     }
     let (_index, docs, _unserved) = fs::build_corpus(files);
+    reading.stop();
     docs
 }
 

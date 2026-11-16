@@ -315,3 +315,63 @@ fn dot_declined_markdown_is_the_dot_class_and_only_the_dot_class() {
         "declined_markdown stays blind to the dot class (F11)"
     );
 }
+
+/// The snapshot's own listing of the markdown outside the domain is the two
+/// populations its callers used to walk for separately: every md
+/// `Domain::contains` refuses (the out-of-domain pin holders), and — the
+/// `declined` ones — exactly [`fs::declined_markdown`]. The snapshot itself is
+/// the one [`fs::domain_snapshot`] takes.
+#[test]
+fn the_snapshot_lists_the_excluded_markdown_its_walk_steps_over() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root_path = tmp.path();
+    write(
+        root_path,
+        "meridian/domain.md",
+        "---\nversion: 2\nignore:\n  - \"scratch/\"\n  - \"notes/drop.md\"\n---\n\n# Domain\n",
+    );
+    write(root_path, "keep.md", "# in\n");
+    write(root_path, "notes/plan.md", "# in\n");
+    write(
+        root_path,
+        "notes/drop.md",
+        "# ignored file in a walked dir\n",
+    );
+    write(root_path, "scratch/a.md", "# under a pruned dir\n");
+    write(
+        root_path,
+        "scratch/.deep/b.md",
+        "# dot dir under a pruned dir\n",
+    );
+    write(root_path, "scratch/x.txt", "not markdown\n");
+    write(root_path, ".hidden/h.md", "# dot dir\n");
+    write(root_path, "a/.loose.md", "# dot file\n");
+
+    let root = WorkspaceRoot(root_path.to_path_buf());
+    let domain = Domain::load(&root).unwrap();
+    let (files, folded, excluded) = fs::domain_snapshot_with_excluded(&root).unwrap();
+
+    let (plain_files, plain_folded) = fs::domain_snapshot(&root).unwrap();
+    assert_eq!((files, folded), (plain_files, plain_folded));
+
+    let outside: Vec<String> = walk(&root)
+        .unwrap()
+        .into_iter()
+        .filter(|rel| !domain.contains(rel))
+        .map(|rel| rel.to_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        excluded.iter().map(|md| md.rel.clone()).collect::<Vec<_>>(),
+        outside,
+        "every md the domain refuses, sorted"
+    );
+    assert_eq!(outside.len(), 5, "the fixture's five: {outside:?}");
+
+    let declined: Vec<String> = excluded
+        .iter()
+        .filter(|md| md.declined)
+        .map(|md| md.rel.clone())
+        .collect();
+    assert_eq!(declined, fs::declined_markdown(&root).unwrap());
+    assert_eq!(declined, vec!["notes/drop.md", "scratch/a.md"]);
+}

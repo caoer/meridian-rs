@@ -1054,7 +1054,7 @@ cap bounds the prose; it never re-scopes what was excluded.
 
 | voice | population | complete list |
 |---|---|---|
-| **The domain-excluded note** — `mrd sql`, `mrd walk --down`, `mrd check`, pageless `mrd repair` | walk law (`fs::declined_markdown`, the one `fs::domain::dot_segment` predicate spelling §12.1 rule 2): custom-ignore class only, never a dot-prefixed path | `excluded` of bare `mrd links --json` — the complete §12.1 outside-domain enumeration (§4.6) |
+| **The domain-excluded note** — `mrd sql`, `mrd walk --down`, `mrd check`, pageless `mrd repair` | walk law (`fs::declined_markdown`, the one `fs::domain::dot_segment` predicate spelling §12.1 rule 2): custom-ignore class only, never a dot-prefixed path. `mrd check` reads that class from its snapshot's own walk (`fs::domain_snapshot_with_excluded`), which lists every markdown file outside the domain once, for this note and for the out-of-domain pin holders alike | `excluded` of bare `mrd links --json` — the complete §12.1 outside-domain enumeration (§4.6) |
 | **The `links` face itself** — bare `mrd links` | its own answer's `excluded` key, projected through that same predicate: a dot-segment member leaves the count and the sample | the same `excluded` key, byte-identical |
 | **The `mrd retire` human render** | CAP class: `retire` certifies absence, so the population is lawfully COMPLETE, dot paths included, and stays so on `files_excluded` | `files_excluded`; the count stays the full population |
 | **The `mrd rules` undecidable line** — `cannot be answered` | CAP class, genuinely UNBOUNDED: `register` refuses on `FrontmatterUnparsed` **before** any tag is read (`policy/src/registration.rs`), so every excluded file with a malformed frontmatter block lands here | `not_offered.undecidable`; `not_offered` carries all three declined populations complete |
@@ -1769,6 +1769,9 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
 | `daemon.dial` | `total` | `mrd::engine::answer_links` | hello+links on the resident daemon, or the degrade decision; includes the `ensure_daemon` auto-spawn poll up to `SPAWN_READY_TIMEOUT` (5 s) |
 | `snapshot` / `snapshot.*` | `total` OR `links.read` | `fs::domain_snapshot_with_leaves` | hash-domain walk + digest + fold. Once per mounted root on the in-process lanes (`mount_corpus::build_in_process`); a daemon folds a mounted root once, when its resident engine is first warmed |
 | `corpus.build` | `total` OR `links.read` | `fs::build_corpus` | UTF-8 + `syntax::parse` of every member. Once per mounted root on the in-process lanes: the workspace build in `total`, each mount build in `links.read`. Also `sql` / `check` / `walk` / `repair` / `retire` / daemon under their own `cmd=` — a daemon-served `walk` or `sql` parses a mounted root once, on the engine's cold warm, never per call |
+| `check.excluded` | `total` | `mrd::check_cmd` | reading and parsing the out-of-domain pin holders the snapshot walk listed |
+| `check.pins` | `total` | `mrd::check_cmd::assess` | colouring every pin in the interval |
+| `check.core` | `total` | `mrd::check_cmd::assess` | the layer-0 core over the coloured pins, the anchoring questions to git included |
 | `links.read` | `total` | `mrd::engine::in_process_links` | everything from the mount narrow to the v3 re-key |
 | `json.render` | `total` | `mrd::engine::run_command` | `serde_json::to_string_pretty` of the envelope |
 | `json.write` | `total` | same | `println!("{text}")` — stdout is a `LineWriter`, so the trailing newline flushes the envelope inside this span |

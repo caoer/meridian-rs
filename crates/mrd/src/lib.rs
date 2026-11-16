@@ -122,6 +122,18 @@ pub(crate) fn voice_unserved(unserved: &std::collections::BTreeMap<String, Strin
 /// the complete machine-readable list; it never required prose to be unbounded.
 /// Cap convention borrowed from [`model::selector::NEAREST_SHOWN`], which this
 /// site should have followed from the start.
+/// [`voice_excluded`] over a population the caller's own snapshot walk already
+/// listed ([`fs::domain_snapshot_with_excluded`]) — the same class, the same
+/// `docs` filter, no second walk of the root.
+pub(crate) fn voice_excluded_listed(listed: &[fs::ExcludedMarkdown], docs: &model::Docs) {
+    let excluded: Vec<String> = listed
+        .iter()
+        .filter(|md| md.declined && !docs.contains_key(&md.rel))
+        .map(|md| md.rel.clone())
+        .collect();
+    voice_excluded_note(&excluded);
+}
+
 pub(crate) fn voice_excluded(root: &fs::WorkspaceRoot, docs: &model::Docs) {
     let Ok(declined) = fs::declined_markdown(root) else {
         return;
