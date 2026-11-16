@@ -68,6 +68,34 @@ impl DrawerLock {
     }
 }
 
+impl DrawerLock {
+    /// Give the lock away with its descriptor: the returned file still holds
+    /// the flock, and nothing here unlocks it. A lock belongs to the open file
+    /// description, so a process that receives this descriptor (or a copy of
+    /// it) holds the lock, and closing this copy afterwards releases nothing
+    /// while that process keeps its own.
+    #[must_use]
+    pub fn into_held(self) -> File {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `this` is never dropped, so `dir` is moved out exactly once
+        // and the explicit unlock in `Drop` never runs.
+        unsafe { std::ptr::read(&raw const this.dir) }
+    }
+
+    /// Adopt a descriptor that already holds the lock ([`Self::into_held`]'s
+    /// other end). The caller vouches for it; nothing is locked here.
+    #[must_use]
+    pub fn from_held(dir: File) -> Self {
+        DrawerLock { dir }
+    }
+
+    /// The locked directory's descriptor, for passing to another process.
+    #[must_use]
+    pub fn held(&self) -> &File {
+        &self.dir
+    }
+}
+
 fn flock(drawer_dir: &Path, op: libc::c_int) -> io::Result<DrawerLock> {
     let dir = File::open(drawer_dir)?;
     // SAFETY: `dir` owns a valid open fd for the duration of the call; `flock`
@@ -97,6 +125,21 @@ mod tests {
             DrawerLock::try_acquire(dir.path()).unwrap().is_some(),
             "released lock is re-acquirable"
         );
+    }
+
+    #[test]
+    fn a_lock_given_away_stays_held_until_its_new_owner_drops_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = DrawerLock::acquire(dir.path()).unwrap();
+        // A copy of the descriptor is what another process receives.
+        let passed = held.held().try_clone().unwrap();
+        drop(held.into_held());
+        assert!(
+            DrawerLock::try_acquire(dir.path()).unwrap().is_none(),
+            "giving the lock away must not release it"
+        );
+        drop(DrawerLock::from_held(passed));
+        assert!(DrawerLock::try_acquire(dir.path()).unwrap().is_some());
     }
 
     #[test]

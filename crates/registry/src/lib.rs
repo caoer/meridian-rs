@@ -55,6 +55,7 @@ mod server;
 mod sql_compact;
 mod sql_op;
 mod state;
+mod succession;
 // Fixture support, never on the production surface: `test-support` is enabled
 // by the dev-dependency edges alone (this crate's own, and `mrd`'s), so a
 // consumer that merely depends on `registry` never compiles it and never grows

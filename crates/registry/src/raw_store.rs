@@ -122,6 +122,12 @@ pub struct RawStoreStats {
 }
 
 impl RawStore {
+    /// This store's own directory under the backing parent.
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        &self.directory.0
+    }
+
     /// Quiescent Rust heap census of required-backing bookkeeping. This
     /// excludes the inline `RawStore`, payload on disk, native file/lock
     /// resources, and the temporary work of taking the census.

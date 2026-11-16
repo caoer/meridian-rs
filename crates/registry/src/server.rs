@@ -60,6 +60,7 @@ use crate::registry::{
 };
 use crate::ring::SubGuard;
 use crate::state::StateStore;
+use crate::succession::{self, Offer, Parked, Reading, Succession};
 use crate::{
     DEFAULT_IDLE_EXIT, DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_PREWARM_QUIET_MAX,
     DEFAULT_PUSH_WRITE_TIMEOUT, DEFAULT_REAP_INTERVAL, DEFAULT_SUB_IDLE_WRITE_TIMEOUT, now_secs,
@@ -603,29 +604,171 @@ fn parse_residency_host_bytes(raw: &std::ffi::OsStr) -> io::Result<u64> {
 }
 
 /// The residency host a daemon serves through: the one a fixture injected,
-/// else the one [`Config::residency_host_bytes`] asks for, or none. Call it
-/// holding the singleton lock ([`install_host`]).
+/// else the one [`Config::residency_host_bytes`] asks for, or none. `clear`
+/// only holding the singleton lock ([`install_host`]).
 fn residency_for(
     config: &Config,
     registry_dir: &Path,
+    clear: bool,
 ) -> io::Result<Option<Arc<crate::residency::Host>>> {
     Ok(match (&config.residency, config.residency_host_bytes) {
         (Some(host), _) => Some(Arc::clone(host)),
         (None, 0) => None,
-        (None, bytes) => Some(Arc::new(install_host(registry_dir, bytes)?)),
+        (None, bytes) => Some(Arc::new(install_host(registry_dir, bytes, clear)?)),
     })
+}
+
+/// Prepare the registry directory and the socket's parent (0700, refused when
+/// world-writable) and return the registry directory.
+fn prepare_dirs(config: &Config) -> io::Result<PathBuf> {
+    let dir = config.registry_dir().to_path_buf();
+    prepare_dir(&dir)?;
+    // The socket no longer lives in the registry directory (short-sock
+    // law): its parent gets the same 0700 + world-writable refusal before
+    // the bind.
+    if let Some(sock_dir) = config.socket_path.parent()
+        && sock_dir != dir
+    {
+        prepare_dir(sock_dir)?;
+    }
+    Ok(dir)
+}
+
+/// Singleton: an exclusive flock on the registry directory. A held lock
+/// means another daemon owns this socket — refuse rather than race the
+/// state file.
+fn take_singleton(dir: &Path) -> io::Result<DrawerLock> {
+    DrawerLock::try_acquire(dir)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "another meridian registry daemon is already running for {}",
+                dir.display()
+            ),
+        )
+    })
+}
+
+/// Load the state file into a registry. `owner` is a daemon holding the
+/// singleton lock: it clears the residency stores an earlier process left.
+fn load_registry(config: &Config, dir: &Path, owner: bool) -> io::Result<Arc<Registry>> {
+    let store = StateStore::new(config.state_path.clone());
+    // A registration whose directory is gone is not reloaded — HYGIENE,
+    // not memory: a registration is ~150 bytes and warms nothing by
+    // itself, but the set only ever grows, `list` reports workspaces
+    // that cannot exist, and every sweep iterates candidates that can
+    // never warm. A gone directory cannot be adopted (resolve
+    // canonicalizes through it), so the entry is dropped here and falls
+    // out of the state file at the next persist. A temporarily-unmounted
+    // volume therefore loses its registration and gets it back on the
+    // next `hello` — acceptable and intended.
+    let (entries, gone): (Vec<_>, Vec<_>) = store
+        .load()
+        .into_iter()
+        .partition(|entry| entry.workspace.is_dir());
+    if !gone.is_empty() {
+        timing::say!(
+            "registry: not reloading {} registration(s) whose directory is gone",
+            gone.len()
+        );
+    }
+    // Born parked when the fixture asked for it: the floor goes up inside
+    // the constructor, so no wall time exists between the activity clock
+    // starting and the park — the reaper spawned later cannot observe an
+    // unparked clock.
+    let registry = Registry::new_shared(
+        store,
+        config.cache_root.clone(),
+        entries,
+        config.activity_park,
+        residency_for(config, dir, owner)?,
+    );
+    // The middleware door's ctx.sql backend (armed-plane Part A2) —
+    // installed before the first frame can reach a write.
+    crate::mw_sql::install();
+    Ok(registry)
+}
+
+/// Remove the residency stores other processes left under the registry
+/// directory, keeping this daemon's own: what [`install_host`] does at an
+/// ordinary start, done by a successor once the lock is its own.
+fn clear_earlier_stores(registry: &Registry, registry_dir: &Path) {
+    let Some(own) = registry.residency_store_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(registry_dir.join("backing")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path != own
+            && entry.file_name().to_string_lossy().starts_with("raw-")
+            && let Err(e) = std::fs::remove_dir_all(&path)
+        {
+            timing::say!(
+                "registry: cannot remove an earlier residency store {} ({e})",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Warm every workspace of `theirs` this daemon does not hold in `ours`, one
+/// thread each: the serving daemon answers its callers meanwhile.
+fn warm_beside(registry: &Arc<Registry>, theirs: &[PathBuf], ours: &[PathBuf]) -> io::Result<()> {
+    let builds: Vec<_> = theirs
+        .iter()
+        .filter(|workspace| !ours.contains(workspace))
+        .map(|workspace| {
+            let registry = Arc::clone(registry);
+            let workspace = workspace.clone();
+            thread::spawn(move || {
+                let outcome = registry.warm_or_build(&workspace);
+                match &outcome {
+                    Ok(outcome) => timing::say!(
+                        "registry: warm beside the serving daemon for {} ({outcome:?})",
+                        workspace.display()
+                    ),
+                    Err(e) => timing::say!(
+                        "registry: cannot warm {} beside the serving daemon ({e})",
+                        workspace.display()
+                    ),
+                }
+                outcome.map(drop)
+            })
+        })
+        .collect();
+    let mut first = Ok(());
+    for build in builds {
+        let outcome = build.join().unwrap_or_else(|_| {
+            Err(io::Error::other(
+                "a warm beside the serving daemon panicked",
+            ))
+        });
+        if first.is_ok() {
+            first = outcome;
+        }
+    }
+    first
 }
 
 /// The residency host a daemon with budget `bytes` serves through
 /// (merkle-spec §6.4): one controller with that limit and one raw store under
-/// `<registry-dir>/backing/`. Call it holding the singleton lock: every store
-/// directory an earlier process left there is removed first.
-fn install_host(registry_dir: &Path, bytes: u64) -> io::Result<crate::residency::Host> {
+/// `<registry-dir>/backing/`. `clear` holding the singleton lock: every store
+/// directory an earlier process left there is removed first. A successor
+/// warming beside the lock's holder leaves them and clears at its commit
+/// ([`clear_earlier_stores`]).
+fn install_host(
+    registry_dir: &Path,
+    bytes: u64,
+    clear: bool,
+) -> io::Result<crate::residency::Host> {
     let backing = registry_dir.join("backing");
     std::fs::create_dir_all(&backing)?;
     for entry in std::fs::read_dir(&backing)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir()
+        if clear
+            && entry.file_type()?.is_dir()
             && entry.file_name().to_string_lossy().starts_with("raw-")
             && let Err(e) = std::fs::remove_dir_all(entry.path())
         {
@@ -761,9 +904,10 @@ pub struct RunningServer {
     /// no other pid ([`RunningServer::successor_owns_files`]).
     socket_file: Option<(u64, u64)>,
     drain_cold_builds: Duration,
-    // The singleton flock, held for the daemon's whole lifetime; dropping it
-    // releases the guard so a successor can start.
-    _singleton: DrawerLock,
+    /// The singleton flock and a copy of the listening socket, held until
+    /// this daemon stops or hands both to a successor
+    /// ([`crate::succession`]), with the quiesce state its threads share.
+    succession: Arc<Succession>,
 }
 
 impl RunningServer {
@@ -786,69 +930,127 @@ impl RunningServer {
             "{}",
             config.drain_budget_hazard().unwrap_or_default()
         );
-        let dir = config.registry_dir().to_path_buf();
-        prepare_dir(&dir)?;
-        // The socket no longer lives in the registry directory (short-sock
-        // law): its parent gets the same 0700 + world-writable refusal before
-        // the bind.
-        if let Some(sock_dir) = config.socket_path.parent()
-            && sock_dir != dir
-        {
-            prepare_dir(sock_dir)?;
-        }
+        let dir = prepare_dirs(&config)?;
+        let singleton = take_singleton(&dir)?;
+        let registry = load_registry(&config, &dir, true)?;
+        Self::bind_and_serve(config, registry, singleton)
+    }
 
-        // Singleton: an exclusive flock on the registry directory. A held lock
-        // means another daemon owns this socket — refuse rather than race the
-        // state file.
-        let Some(singleton) = DrawerLock::try_acquire(&dir)? else {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!(
-                    "another meridian registry daemon is already running for {}",
-                    dir.display()
-                ),
-            ));
-        };
-
-        let store = StateStore::new(config.state_path.clone());
-        // A registration whose directory is gone is not reloaded — HYGIENE,
-        // not memory: a registration is ~150 bytes and warms nothing by
-        // itself, but the set only ever grows, `list` reports workspaces
-        // that cannot exist, and every sweep iterates candidates that can
-        // never warm. A gone directory cannot be adopted (resolve
-        // canonicalizes through it), so the entry is dropped here and falls
-        // out of the state file at the next persist. A temporarily-unmounted
-        // volume therefore loses its registration and gets it back on the
-        // next `hello` — acceptable and intended.
-        let (entries, gone): (Vec<_>, Vec<_>) = store
-            .load()
-            .into_iter()
-            .partition(|entry| entry.workspace.is_dir());
-        if !gone.is_empty() {
-            timing::say!(
-                "registry: not reloading {} registration(s) whose directory is gone",
-                gone.len()
-            );
-        }
-        // Born parked when the fixture asked for it: the floor goes up inside
-        // the constructor, so no wall time exists between the activity clock
-        // starting and the park — the reaper spawned below cannot observe an
-        // unparked clock.
-        let registry = Registry::new_shared(
-            store,
-            config.cache_root.clone(),
-            entries,
-            config.activity_park,
-            residency_for(&config, &dir)?,
-        );
-
-        // The middleware door's ctx.sql backend (armed-plane Part A2) —
-        // installed before the first frame can reach a write.
-        crate::mw_sql::install();
+    /// Bind the socket under a held singleton lock and serve `registry`.
+    fn bind_and_serve(
+        config: Config,
+        registry: Arc<Registry>,
+        singleton: DrawerLock,
+    ) -> io::Result<Self> {
         // We hold the singleton lock, so any existing socket is a stale leftover
         // from a crashed predecessor — remove it before binding.
         let _ = std::fs::remove_file(&config.socket_path);
         let listener = UnixListener::bind(&config.socket_path)?;
+        Self::serve(config, registry, listener, singleton, Vec::new())
+    }
+
+    /// Start a daemon that replaces the one serving `config`'s cache root
+    /// without a window (`docs/wire-contract.md` §A.3, Succession): warm
+    /// beside it from the same cache root, then take its listening socket,
+    /// singleton lock and idle connections. With no daemon serving this is
+    /// [`RunningServer::start`].
+    ///
+    /// # Errors
+    ///
+    /// As [`RunningServer::start`]; a workspace the serving daemon holds warm
+    /// could not be warmed here; the serving daemon answered `busy`
+    /// [`crate::succession::BUSY_TRIES`] times; or it does not speak
+    /// `handover`. In each of those the serving daemon keeps serving. An
+    /// error after the takeover committed leaves no daemon serving.
+    pub fn succeed(config: Config) -> io::Result<Self> {
+        let dir = prepare_dirs(&config)?;
+        if UnixStream::connect(&config.socket_path).is_err() {
+            return Self::start(config);
+        }
+        // Beside a serving daemon: its residency stores stay, and nothing
+        // here writes the state file or a cache drawer until the commit.
+        let registry = load_registry(&config, &dir, false)?;
+        let mut busy = 0u32;
+        let mut retry = succession::BUSY_RETRY;
+        loop {
+            // Bring what is warm up to the disk, so the first currency pass
+            // after the commit has little to fold.
+            let mut warm = registry.warm_workspaces();
+            for workspace in &warm {
+                registry.warm_or_build(workspace)?;
+            }
+            warm = registry.warm_workspaces();
+            match succession::ask(&config.socket_path, &warm)? {
+                Offer::Absent => {
+                    // The serving daemon went away while this one warmed.
+                    let singleton = take_singleton(&dir)?;
+                    clear_earlier_stores(&registry, &dir);
+                    return Self::bind_and_serve(config, registry, singleton);
+                }
+                Offer::Warm(theirs) => {
+                    if theirs.iter().all(|workspace| warm.contains(workspace)) {
+                        // Nothing new to warm: the serving daemon is building
+                        // a drawer. Wait for it instead of asking in a spin.
+                        thread::sleep(succession::WARM_RETRY);
+                    }
+                    warm_beside(&registry, &theirs, &warm)?;
+                }
+                Offer::Busy => {
+                    // Every `busy` held the serving daemon's callers for the
+                    // drain bound, so the tries are counted and spaced out.
+                    busy += 1;
+                    if busy >= succession::BUSY_TRIES {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            format!(
+                                "the serving daemon answered busy {busy} times and keeps serving"
+                            ),
+                        ));
+                    }
+                    thread::sleep(retry);
+                    retry = (retry * 2).min(succession::BUSY_RETRY_MAX);
+                }
+                Offer::Granted {
+                    listener,
+                    singleton,
+                    conns,
+                } => {
+                    // Registrations the predecessor took since this daemon
+                    // loaded the state file.
+                    registry.adopt_entries(
+                        StateStore::new(config.state_path.clone())
+                            .load()
+                            .into_iter()
+                            .filter(|entry| entry.workspace.is_dir())
+                            .collect(),
+                    );
+                    timing::say!(
+                        "registry: took over from the serving daemon ({} workspace(s) warm, {} connection(s) carried)",
+                        warm.len(),
+                        conns.len()
+                    );
+                    // Callers first: the predecessor's stores go once this
+                    // daemon accepts.
+                    let server =
+                        Self::serve(config, Arc::clone(&registry), listener, singleton, conns)?;
+                    clear_earlier_stores(&registry, &dir);
+                    return Ok(server);
+                }
+            }
+        }
+    }
+
+    /// Serve `registry` on `listener` under `singleton`: publish the pidfile
+    /// and the socket pointer, spawn the accept and background threads, and
+    /// resume the connections a predecessor passed.
+    fn serve(
+        config: Config,
+        registry: Arc<Registry>,
+        listener: UnixListener,
+        singleton: DrawerLock,
+        carried: Vec<Parked>,
+    ) -> io::Result<Self> {
+        let dir = config.registry_dir().to_path_buf();
         listener.set_nonblocking(true)?;
         let socket_file = seal_socket(&config.socket_path);
 
@@ -883,29 +1085,38 @@ impl RunningServer {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let exit_requested = Arc::new(AtomicBool::new(false));
-        let accept = spawn_accept(
-            listener,
-            registry.clone(),
-            shutdown.clone(),
-            PushDeadlines {
+        let succession = Arc::new(Succession::new(listener.try_clone()?, singleton));
+        let conns = Arc::new(ConnCtx {
+            registry: registry.clone(),
+            shutdown: shutdown.clone(),
+            deadlines: PushDeadlines {
                 write: config.push_write_timeout,
                 idle_write: config.sub_idle_write_timeout,
             },
-            config.build_sha.clone().map(Arc::from),
-        );
+            build_sha: config.build_sha.clone().map(Arc::from),
+            succession: succession.clone(),
+        });
+        // Connections a predecessor passed resume before the first accept:
+        // their callers have waited longest.
+        for parked in carried {
+            resume_conn(&conns, parked);
+        }
+        let accept = spawn_accept(listener, conns);
         let reaper = spawn_reaper(
             registry.clone(),
             shutdown.clone(),
+            succession.clone(),
             &config,
             exit_requested.clone(),
         );
         let prewarm = spawn_prewarm(
             registry.clone(),
             shutdown.clone(),
+            succession.clone(),
             config.prewarm_interval,
             config.prewarm_quiet_max,
         );
-        let saver = spawn_saver(registry.clone(), shutdown.clone());
+        let saver = spawn_saver(registry.clone(), shutdown.clone(), succession.clone());
 
         Ok(RunningServer {
             shutdown,
@@ -919,7 +1130,7 @@ impl RunningServer {
             socket_pointer,
             socket_file,
             drain_cold_builds: config.drain_cold_builds,
-            _singleton: singleton,
+            succession,
         })
     }
 
@@ -940,6 +1151,15 @@ impl RunningServer {
         self.exit_requested.load(Ordering::SeqCst)
     }
 
+    /// Has this daemon handed its socket, lock and connections to a
+    /// successor ([`RunningServer::succeed`])? It serves nothing from then
+    /// on; the host process exits, and [`shutdown`](Self::shutdown) then
+    /// saves nothing and removes nothing.
+    #[must_use]
+    pub fn handed_over(&self) -> bool {
+        self.succession.handed()
+    }
+
     /// The shared registry, for in-process inspection and driving the reaper
     /// with an injected clock (tests, and the CLI daemon that owns the loop).
     #[must_use]
@@ -957,6 +1177,16 @@ impl RunningServer {
         if self.shutdown.swap(true, Ordering::SeqCst) {
             return; // already stopped
         }
+        // The listener closes first: the succession's copy here, the accept
+        // loop's own when that thread ends. The singleton lock is released
+        // last, after the final save.
+        self.succession.close_listener();
+        self.stop_serving();
+        self.succession.release_singleton();
+    }
+
+    fn stop_serving(&mut self) {
+        let handed = self.succession.handed();
         if let Some(handle) = self.accept.take() {
             let _ = handle.join();
         }
@@ -978,6 +1208,11 @@ impl RunningServer {
         // tightest client flock-wait of 5 s) and shutdown continues.
         if !self.registry.drain_cold_builds(self.drain_cold_builds) {
             timing::say!("registry: shutdown while a drawer rebuild is still in flight");
+        }
+        // A successor holds the socket, the lock, the state file and the
+        // cache drawers: nothing here is this daemon's to save or remove.
+        if handed {
+            return;
         }
         // Capture in-memory last_use bumps that resolve made without persisting.
         self.registry.flush();
@@ -1110,52 +1345,110 @@ struct PushDeadlines {
     idle_write: Duration,
 }
 
-/// Spawn the accept loop: non-blocking `accept`, one detached thread per
-/// connection, polling the shutdown flag between idle polls.
-fn spawn_accept(
-    listener: UnixListener,
+/// What every connection thread of one daemon shares.
+struct ConnCtx {
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
     deadlines: PushDeadlines,
     build_sha: Option<Arc<str>>,
-) -> JoinHandle<()> {
+    succession: Arc<Succession>,
+}
+
+/// One connection's negotiated state: the workspace its `hello` bound
+/// (canonical) and the contract rev (one epoch, one rev; v2 is the frozen
+/// default). The whole of what a successor needs to carry a connection on.
+#[derive(Debug, Default)]
+struct Session {
+    attached: Option<PathBuf>,
+    rev: Rev,
+}
+
+/// Whether the accept loop may take a connection now.
+enum Pass<G> {
+    /// Accept; `G` rides the accepted connection.
+    Go(G),
+    /// Not now: a handover is draining this daemon.
+    Wait,
+    /// Never again: this daemon handed over.
+    Stop,
+}
+
+/// Spawn the accept loop: non-blocking `accept`, one detached thread per
+/// connection, polling the shutdown flag between idle polls.
+fn spawn_accept(listener: UnixListener, ctx: Arc<ConnCtx>) -> JoinHandle<()> {
     thread::spawn(move || {
-        let dispatch = |stream: UnixStream| {
-            let registry = registry.clone();
-            let shutdown = shutdown.clone();
-            let build_sha = build_sha.clone();
-            thread::Builder::new()
-                .spawn(move || {
-                    if let Err(e) = serve_conn(
-                        &stream,
-                        &registry,
-                        &shutdown,
-                        deadlines,
-                        build_sha.as_deref(),
-                    ) {
-                        timing::say!("registry: connection error ({e})");
-                    }
-                })
-                .map(drop)
+        let enter = || {
+            if ctx.succession.handed() {
+                Pass::Stop
+            } else {
+                ctx.succession.enter().map_or(Pass::Wait, Pass::Go)
+            }
         };
-        accept_loop(&listener, &shutdown, dispatch);
+        let dispatch = |stream: UnixStream, reading: Reading| {
+            spawn_conn(&ctx, stream, Session::default(), reading)
+        };
+        accept_loop(&listener, &ctx.shutdown, enter, dispatch);
     })
 }
 
+/// Serve one connection on its own detached thread.
+fn spawn_conn(
+    ctx: &Arc<ConnCtx>,
+    stream: UnixStream,
+    session: Session,
+    reading: Reading,
+) -> io::Result<()> {
+    let ctx = Arc::clone(ctx);
+    thread::Builder::new()
+        .spawn(move || {
+            if let Err(e) = serve_conn(&ctx, stream, session, reading) {
+                timing::say!("registry: connection error ({e})");
+            }
+        })
+        .map(drop)
+}
+
+/// Carry on a connection that left request mode at a request boundary: one a
+/// predecessor passed, or this daemon's own after an abandoned handover.
+fn resume_conn(ctx: &Arc<ConnCtx>, parked: Parked) {
+    let session = Session {
+        attached: parked.workspace,
+        rev: parked.rev,
+    };
+    let reading = ctx.succession.enter_held();
+    if let Err(e) = spawn_conn(ctx, parked.stream, session, reading) {
+        timing::say!("registry: cannot resume a carried connection ({e}); it is dropped");
+    }
+}
+
 /// The accept loop proper, generic over how an accepted connection is
-/// dispatched.
+/// dispatched and over the gate each pass takes first.
 ///
 /// **Fault containment (R2/S2):** a dispatch failure (thread exhaustion) drops
 /// that one connection and keeps accepting. `thread::spawn` panics on a failed
 /// spawn, and that panic would unwind this loop while the daemon still holds
 /// the listener and the singleton flock, so the spawn is fallible
 /// (`thread::Builder`) and its error is a `continue`.
-fn accept_loop(
+fn accept_loop<G>(
     listener: &UnixListener,
     shutdown: &AtomicBool,
-    dispatch: impl Fn(UnixStream) -> io::Result<()>,
+    enter: impl Fn() -> Pass<G>,
+    dispatch: impl Fn(UnixStream, G) -> io::Result<()>,
 ) {
     loop {
+        // The gate comes before the accept: a connection is taken only by a
+        // daemon that will read it (`Succession::enter`).
+        let gate = match enter() {
+            Pass::Go(gate) => gate,
+            Pass::Wait => {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                thread::sleep(ACCEPT_POLL);
+                continue;
+            }
+            Pass::Stop => return,
+        };
         match listener.accept() {
             Ok((stream, _)) => {
                 // The accepted stream inherits the listener's non-blocking
@@ -1165,19 +1458,21 @@ fn accept_loop(
                     timing::say!("registry: cannot set connection blocking ({e})");
                     continue;
                 }
-                if let Err(e) = dispatch(stream) {
+                if let Err(e) = dispatch(stream, gate) {
                     timing::say!(
                         "registry: cannot spawn connection thread ({e}); dropping this connection — the daemon keeps accepting"
                     );
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                drop(gate);
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
                 thread::sleep(ACCEPT_POLL);
             }
             Err(e) => {
+                drop(gate);
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
@@ -1197,6 +1492,7 @@ fn accept_loop(
 fn spawn_reaper(
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
+    succession: Arc<Succession>,
     config: &Config,
     exit_requested: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
@@ -1213,6 +1509,11 @@ fn spawn_reaper(
             if elapsed < reap_interval {
                 continue;
             }
+            // A handover holds background work still; the pass comes round
+            // again at the next tick.
+            let Some(_pass) = succession.background_pass() else {
+                continue;
+            };
             elapsed = Duration::ZERO;
             let reaped = registry.reap(now_secs(), threshold_secs);
             if !reaped.is_empty() {
@@ -1264,6 +1565,7 @@ fn spawn_reaper(
 fn spawn_prewarm(
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
+    succession: Arc<Succession>,
     interval: Duration,
     quiet_max: Duration,
 ) -> JoinHandle<()> {
@@ -1277,6 +1579,9 @@ fn spawn_prewarm(
             if elapsed < delay {
                 continue;
             }
+            let Some(_pass) = succession.background_pass() else {
+                continue;
+            };
             elapsed = Duration::ZERO;
             let rebuilt = registry.prewarm();
             if !rebuilt.is_empty() {
@@ -1297,7 +1602,11 @@ fn spawn_prewarm(
 
 /// One bounded saver: queued work is a workspace identity, never an engine
 /// pin. Polling is short for shutdown; the small checkpoint cadence is 60s.
-fn spawn_saver(registry: Arc<Registry>, shutdown: Arc<AtomicBool>) -> JoinHandle<()> {
+fn spawn_saver(
+    registry: Arc<Registry>,
+    shutdown: Arc<AtomicBool>,
+    succession: Arc<Succession>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut checkpoint_at = Instant::now();
         while !shutdown.load(Ordering::SeqCst) {
@@ -1305,6 +1614,9 @@ fn spawn_saver(registry: Arc<Registry>, shutdown: Arc<AtomicBool>) -> JoinHandle
             if shutdown.load(Ordering::SeqCst) {
                 break;
             }
+            let Some(_pass) = succession.background_pass() else {
+                continue;
+            };
             registry.save_pending_parsed();
             if checkpoint_at.elapsed() >= Duration::from_mins(1) {
                 registry.save_observation_checkpoints();
@@ -1331,35 +1643,130 @@ fn next_prewarm_delay(
 /// Serve one connection: the request-line loop over the accepted socket, then —
 /// if a `sub` armed the connection — the push plane.
 fn serve_conn(
-    stream: &UnixStream,
-    registry: &Registry,
-    shutdown: &AtomicBool,
-    deadlines: PushDeadlines,
-    build_sha: Option<&str>,
+    ctx: &Arc<ConnCtx>,
+    stream: UnixStream,
+    mut session: Session,
+    reading: Reading,
 ) -> io::Result<()> {
-    let reader = BufReader::new(stream.try_clone()?);
+    let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream.try_clone()?;
-    match serve_lines(registry, reader, &mut writer, build_sha)? {
-        ServeOutcome::Eof => Ok(()),
-        // U20b framing: the request loop is left for good; the connection is
-        // push-only from here. Desync is unrepresentable. Dual planes ⇒ two
-        // connections.
-        ServeOutcome::Armed {
-            workspace,
-            rev,
-            from_seq,
-            guard,
-        } => push_loop(
-            &workspace,
-            registry,
-            &mut writer,
-            rev,
-            from_seq,
-            guard,
-            shutdown,
-            deadlines,
-        ),
+    // The wait for a request line ticks, so a connection between two
+    // requests can leave for a successor (`docs/wire-contract.md` §A.3).
+    stream.set_read_timeout(Some(succession::PARK_TICK))?;
+    // One request line, kept across ticks: `read_until` appends what it
+    // consumed before a timeout, so nothing read is lost.
+    let mut pending: Vec<u8> = Vec::new();
+    loop {
+        // A request boundary: no byte of a next request has been read here,
+        // so whoever reads this socket next reads it whole. A handover parks
+        // the connection exactly here — between two requests of a busy
+        // caller as well as in an idle one's wait.
+        if ctx.succession.quiescing() && pending.is_empty() && reader.buffer().is_empty() {
+            drop(reader);
+            drop(writer);
+            stream.set_read_timeout(None)?;
+            let parked = Parked {
+                stream,
+                workspace: session.attached,
+                rev: session.rev,
+            };
+            if let Some((reading, kept)) = ctx.succession.park(reading, parked) {
+                // The handover was abandoned in this instant: read on.
+                let session = Session {
+                    attached: kept.workspace,
+                    rev: kept.rev,
+                };
+                return spawn_conn(ctx, kept.stream, session, reading);
+            }
+            return Ok(());
+        }
+        let eof = match reader.read_until(b'\n', &mut pending) {
+            Ok(0) => true,
+            Ok(_) => !pending.ends_with(b"\n"),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let line = String::from_utf8(std::mem::take(&mut pending))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let line = line.strip_suffix('\n').unwrap_or(&line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if !line.trim().is_empty() {
+            if succession::is_handover(line) {
+                // The driver is not a request in flight: the drain waits for
+                // every other connection, never for this one.
+                drop(reading);
+                stream.set_read_timeout(None)?;
+                let resume = |parked: Parked| resume_conn(ctx, parked);
+                succession::grant(&ctx.succession, &ctx.registry, &stream, line, &resume)?;
+                return Ok(());
+            }
+            let armed = serve_one(
+                &ctx.registry,
+                &mut session,
+                line,
+                &mut writer,
+                ctx.build_sha.as_deref(),
+            )?;
+            // U20b framing: the request loop is left for good; the connection
+            // is push-only from here. Desync is unrepresentable. Dual planes ⇒
+            // two connections.
+            if let Some(ArmedSub { from_seq, guard }) = armed {
+                let workspace = session
+                    .attached
+                    .take()
+                    .expect("an accepted sub proves a bound workspace");
+                // A push connection is no request in flight either.
+                drop(reading);
+                return push_loop(
+                    &workspace,
+                    &ctx.registry,
+                    &mut writer,
+                    session.rev,
+                    from_seq,
+                    guard,
+                    &ctx.shutdown,
+                    &ctx.succession,
+                    ctx.deadlines,
+                );
+            }
+        }
+        if eof {
+            return Ok(());
+        }
     }
+}
+
+/// Serve one request line: count it, dispatch it, write the one response
+/// line. `Some` when an accepted `sub` armed the connection for push.
+fn serve_one(
+    registry: &Registry,
+    session: &mut Session,
+    line: &str,
+    writer: &mut impl Write,
+    build_sha: Option<&str>,
+) -> io::Result<Option<ArmedSub>> {
+    // Activity clock: every frame counts, before dispatch, success or not.
+    registry.note_request();
+    // Set by an accepted `sub` only — carries the claim into `push_loop`.
+    let mut armed: Option<ArmedSub> = None;
+    let out = handle_line(
+        registry,
+        &mut session.attached,
+        &mut session.rev,
+        &mut armed,
+        line,
+        build_sha,
+    );
+    writer.write_all(out.as_bytes())?;
+    writer.flush()?;
+    Ok(armed)
 }
 
 /// How the request-line loop of one connection ended.
@@ -1418,36 +1825,22 @@ pub fn serve_lines(
     writer: &mut impl Write,
     build_sha: Option<&str>,
 ) -> io::Result<ServeOutcome> {
-    // Bound workspace (canonical), set by `hello`. Per-connection.
-    let mut attached: Option<PathBuf> = None;
-    // Negotiated contract rev (one epoch, one rev). Default v2 = frozen path.
-    let mut rev = Rev::V2;
+    let mut session = Session::default();
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        // Activity clock: every frame counts, before dispatch, success or not.
-        registry.note_request();
-        // Set by an accepted `sub` only — carries the claim into `push_loop`.
-        let mut armed: Option<ArmedSub> = None;
-        let out = handle_line(
-            registry,
-            &mut attached,
-            &mut rev,
-            &mut armed,
-            &line,
-            build_sha,
-        );
-        writer.write_all(out.as_bytes())?;
-        writer.flush()?;
-        if let Some(ArmedSub { from_seq, guard }) = armed {
-            let workspace = attached
+        if let Some(ArmedSub { from_seq, guard }) =
+            serve_one(registry, &mut session, &line, writer, build_sha)?
+        {
+            let workspace = session
+                .attached
                 .take()
                 .expect("an accepted sub proves a bound workspace");
             return Ok(ServeOutcome::Armed {
                 workspace,
-                rev,
+                rev: session.rev,
                 from_seq,
                 guard,
             });
@@ -1502,8 +1895,9 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
     reason = "ownership is the mechanism: the push plane HOLDS the subscription \
               claim, and returning from this function is what releases it"
 )]
-// One §6.7 seam (the shared currency instrument) rides beside the seven the
-// push plane always took — the retire_cmd/view precedent.
+// One §6.7 seam (the shared currency instrument) and the succession state
+// ride beside the seven the push plane always took — the retire_cmd/view
+// precedent.
 #[allow(clippy::too_many_arguments)]
 fn push_loop(
     ws: &Path,
@@ -1513,6 +1907,7 @@ fn push_loop(
     from_seq: u64,
     guard: SubGuard,
     shutdown: &AtomicBool,
+    succession: &Succession,
     deadlines: PushDeadlines,
 ) -> io::Result<()> {
     // The guard's ring is the epoch the `sub` was acked on — and the claim has
@@ -1530,7 +1925,9 @@ fn push_loop(
     let mut delivered = from_seq;
     // R2b: zero frames written for this long ⇒ drop. Any frame resets it.
     let mut last_write = Instant::now();
-    while !shutdown.load(Ordering::SeqCst) {
+    // A handed-over daemon ends its subs: the client's redial reaches the
+    // successor and resyncs by fingerprint (§7.1).
+    while !shutdown.load(Ordering::SeqCst) && !succession.handed() {
         // Detection failure never ends the sub; log and retry next cycle.
         if let Err(e) = ring.detect(&ws_root, registry) {
             timing::say!("registry: watch reconcile ({}): {e:?}", ws.display());
@@ -2716,7 +3113,7 @@ mod settle_race_tests;
 /// down with it.
 #[cfg(test)]
 mod accept_containment_tests {
-    use super::accept_loop;
+    use super::{Pass, accept_loop};
     use std::io;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::Arc;
@@ -2739,10 +3136,15 @@ mod accept_containment_tests {
         let loop_shutdown = shutdown.clone();
         let loop_seen = seen.clone();
         let accept = thread::spawn(move || {
-            accept_loop(&listener, &loop_shutdown, |_stream: UnixStream| {
-                loop_seen.fetch_add(1, Ordering::SeqCst);
-                Err(io::Error::other("cannot spawn connection thread"))
-            });
+            accept_loop(
+                &listener,
+                &loop_shutdown,
+                || Pass::Go(()),
+                |_stream: UnixStream, ()| {
+                    loop_seen.fetch_add(1, Ordering::SeqCst);
+                    Err(io::Error::other("cannot spawn connection thread"))
+                },
+            );
         });
 
         let deadline = Instant::now() + Duration::from_secs(5);

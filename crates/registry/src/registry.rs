@@ -1691,6 +1691,64 @@ impl Registry {
         Ok(ColdGate::Serve)
     }
 
+    /// The workspaces with a resident engine: the set a successor daemon
+    /// must hold warm before this one hands over (wire-contract §A.3).
+    #[must_use]
+    pub fn warm_workspaces(&self) -> Vec<PathBuf> {
+        self.engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The directory of this daemon's residency store, when it has a host.
+    pub(crate) fn residency_store_dir(&self) -> Option<PathBuf> {
+        self.residency
+            .as_ref()
+            .map(|host| host.store.directory().to_path_buf())
+    }
+
+    /// Is no background drawer rebuild in flight?
+    pub(crate) fn cold_builds_idle(&self) -> bool {
+        self.cold_builds
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .in_flight
+            .is_empty()
+    }
+
+    /// Close every open sql cache, so another process can open the files.
+    /// `false`, closing nothing, while a query or a compaction holds one.
+    pub(crate) fn close_sql_stores(&self) -> bool {
+        let mut stores = self
+            .sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if stores
+            .values()
+            .any(|handle| Arc::strong_count(&handle.store) > 1)
+        {
+            return false;
+        }
+        stores.clear();
+        true
+    }
+
+    /// Take in registrations another daemon wrote to the state file since
+    /// this one loaded it: a successor does this when it takes over.
+    pub(crate) fn adopt_entries(&self, entries: Vec<WorkspaceEntry>) {
+        {
+            let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            for entry in entries {
+                map.entry(entry.workspace.clone())
+                    .or_insert_with(|| Slot::new(entry));
+            }
+        }
+        self.persist();
+    }
+
     /// Block until no background drawer rebuild is in flight, or `timeout`.
     ///
     /// Does **not** kick a rebuild. Daemon shutdown and the e2e fixtures call
