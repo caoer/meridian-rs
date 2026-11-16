@@ -463,8 +463,9 @@ mrd skill hook emit the commit-fence contract to stdout: the markdown
  IS the contract, the reader places it; writes no file,
  has no --json face (see § mrd skill hook)
 mrd status [--cwd PATH] [--json]
- the bare drift + freshness summary (pure-local,
- O(armed), fetch-less)
+ the bare drift + freshness summary (fetch-less;
+ the lock planes ride the resident daemon,
+ wire-contract § A.13)
 mrd status --residency [--json]
  only a running daemon's residency controller report:
  one request, never a spawn, no workspace resolved or
@@ -1092,6 +1093,16 @@ CURRENT tree. `check` answers at-rest truth, writing nothing and minting no
 receipt. `status = freshness, check = validity`: this verb answers "what
 lies?".
 
+**Where the pin plane is read.** A `check` that reads the pin plane alone —
+`--core`, and `--commit-gate` when the index carries nothing the worktree does
+not — takes its pin rows from the resident daemon's `pins` door
+(`wire-contract.md` § A.13) and builds no corpus; the daemon re-observes the
+root on disk before it answers, so the rows are the current tree's. The
+anchoring questions are still asked of git by the CLI. A `check` that runs the
+armed plane's queries, or whose staged interval diverges from the worktree,
+builds the corpus in its own process, as does any `check` on a workspace no
+daemon serves.
+
 **Write history is not assessed: the engine keeps no memory.** History is pinned
 to git at lock, and anything between locks is not history. So chain continuity
 and last-receipt-vs-live are **not checked here at all: not grey, NOT
@@ -1277,9 +1288,12 @@ Debt never enters the findings verdict and never refuses a write; zero renders
 
 #### The residency line
 
-Bare `status` sends no request of its own; resolving an unanchored tree may
-ask a running daemon for a registered ancestor (§ The resolution ladder), as
-every verb does. `mrd status --residency` is a separate reading: it resolves
+Bare `status` sends the resident daemon one request, `pins`
+(`wire-contract.md` § A.13), for its lock planes — the `lock` axis and
+`vibe-debt` — and builds the corpus in its own process only when no daemon
+serves the workspace; the git questions those planes ask stay in the CLI.
+Resolving an unanchored tree may also ask a running daemon for a registered
+ancestor (§ The resolution ladder), as every verb does. `mrd status --residency` is a separate reading: it resolves
 no workspace, builds no corpus and prints only one line, the running daemon's
 residency controller report (`node-rev-merkle-spec.md` §6.4, the report's
 door), in bytes. The report is machine-wide, and the summary's corpus build and
@@ -1416,8 +1430,10 @@ the daemon also carves a sub-root.
 ### The in-process build gate — one whole-corpus build at a time
 
 A verb that builds a whole corpus in its own process — the daemonless lanes of
-`walk`, `links` and `sql`, and `status`, `check`, `repair`, `retire` and `test
---corpus`, which always build one — first takes an exclusive `flock` on the
+`walk`, `links`, `sql`, `status` and `check`, the two `check` readings no
+daemon can answer (a staged interval that diverges from the worktree, and the
+armed plane's queries: `wire-contract.md` § A.13), and `repair`, `retire` and
+`test --corpus`, which always build one — first takes an exclusive `flock` on the
 directory `<socket-stem>.build/` beside the daemon's socket, and holds it until
 the process exits. A second such process waits for the first and says so on
 stderr:

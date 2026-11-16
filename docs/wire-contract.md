@@ -215,7 +215,7 @@ A connection opens with `hello`: the client names the proto it speaks and itself
   "fingerprint":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}}
 ```
 
-`caps` is the complete set; no version sniffing. **v2** and **v3** name two served cap sets, never two constitutions: a frozen v2 session keeps its caps byte-identical, and a negotiated v3 session is pushed the additions this document marks v3-only. Shown: the sixteen-cap core; the daemon's base set (`crates/registry/src/server.rs` `CAPS`) adds `splice.fields`, `run.fields`, `run.ambient` — nineteen (v2 spelling identical minus the fingerprint renames). A negotiated v3 session is pushed twenty-four more: `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.pin.retire`, `splice.set`, `splice.fields`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `mounts.alias`, `hello.identity`, `script`, `run`, `run.mode`, `run.input`, `walk`, `sql`, `splice.remove`, `scoped-guards` (§A.3/§A.5/§A.6.6/§A.7/§A.8/§A.10/§A.11/§5.4). `wire-serve/src/rev.rs` is the authority; a count here that disagrees is this sentence's defect.
+`caps` is the complete set; no version sniffing. **v2** and **v3** name two served cap sets, never two constitutions: a frozen v2 session keeps its caps byte-identical, and a negotiated v3 session is pushed the additions this document marks v3-only. Shown: the sixteen-cap core; the daemon's base set (`crates/registry/src/server.rs` `CAPS`) adds `splice.fields`, `run.fields`, `run.ambient` — nineteen (v2 spelling identical minus the fingerprint renames). A negotiated v3 session is pushed twenty-five more: `read`, `check_write`, `splice.plan_edits`, `splice.pin`, `pin-cross-root`, `splice.pin.proof`, `splice.pin.retire`, `splice.set`, `splice.fields`, `splice.create_rev`, `create`, `remove`, `mounts`, `mounts.primary`, `mounts.alias`, `hello.identity`, `script`, `run`, `run.mode`, `run.input`, `walk`, `sql`, `pins`, `splice.remove`, `scoped-guards` (§A.3/§A.5/§A.6.6/§A.7/§A.8/§A.10/§A.11/§A.13/§5.4). `wire-serve/src/rev.rs` is the authority; a count here that disagrees is this sentence's defect.
 
 Field-only amendments are dotted `op.field` strings: `mounts.primary`/`mounts.alias` (the mounts row's primary designation and root alias, §A.5), `splice.fields` (the §A.2.1 middleware passthrough). `pin-cross-root` is a behavior cap on the existing `splice.pin` field (§A.3). `scoped-guards` (a behavior cap, same pattern) covers the whole scoped-premise family: `guards[]` entries' `scope`/`scope_bytes` pairs, the singular `scope` on `splice` (single and set form) and `script`, and the `fingerprint` op's mint arm with its own pair (§4.7, §5.4–§5.7). It is never pushed to a frozen v2 session, and un-negotiated use of any guard-family field refuses `bad_request` at the strict wall. Hello-body `fingerprint` is optional; when present it is the first ambient fingerprint.
 
@@ -3368,6 +3368,72 @@ structural**:
   the §1 path law does not.
 
 ---
+
+### A.13 `pins` — the lock plane of one workspace
+
+`pins` reads every `meridian-lock` pin the workspace declares, coloured:
+read-only, per query, never stored. It is what `mrd status`'s lock axis and
+`mrd check`'s pin plane are computed from, served so that neither builds a
+second copy of a corpus the daemon already holds. Workspace-bound, as § A.10
+`walk`.
+
+- **Request** `{}`. No narrowing parameter: a caller that wants the pins under
+  some paths filters `pins[]` by `holder`.
+- **Caps**: v3-only at dispatch; cap `pins` at op grain; v2 → `unknown_op`,
+  frozen v2 caps byte-identical.
+- **One computer.** The rows come from the leased arm of the pin computer
+  `view::walk::lock_pin_colors_rooted_with_sources` also runs: one spelling of
+  color/reason/detail here, in `mrd check`, in `mrd status` and in a `walk`
+  listing. The leased arm reads the lock holders (`LockFacts::lock_holders`)
+  and the pages their pins target, one body at a time; it never materialises
+  the corpus.
+- **The whole pin population.** A holder the hash domain excludes is read from
+  disk and its pins are rows like any other (§12.1 pin-population clause): the
+  answer is never narrowed to the hashed corpus.
+- **Mounted roots are resident engines**, as § A.10: a cross-root pin colours
+  against the target root's warm engine.
+- **Git is not asked.** A row carries the recorded blob `hash`; whether a
+  commit reaches that blob is the caller's question to the object store it
+  can see (`docs/status.md` § How "a commit reaches it" is asked).
+- **Freshness is the door's own.** The engine is warmed before the borrow as
+  for every door (`warm_or_build`): the root on disk is re-observed and what
+  moved is re-read, so the rows describe the tree as it stands at the call, on
+  the `StatKey` evidence every warm hit serves on (merkle-spec §6.8).
+  `fingerprint` names that generation.
+- **The CLI rides this door.** `mrd status` (its lock planes) and `mrd check`
+  on the pin plane alone — `--core`, and `--commit-gate` when the index
+  carries nothing the worktree does not — dial the resident daemon and follow
+  the § A.10 ladder: the in-process build serves a workspace no daemon serves
+  and is voiced on stderr; a daemon that accepted the connection is waited on
+  or refuses, and no corpus is built beside it. Two readings stay in-process,
+  because the resident corpus cannot answer them: a staged interval whose
+  index bytes diverge from the worktree (the daemon holds worktree bytes), and
+  a `check` that runs the armed plane's queries.
+
+```json
+{"id":14,"op":"pins"}
+{"id":14,"ok":true,"body":{
+ "fingerprint":"b3:…",
+ "pins":[
+  {"holder":"effect.md","object":"vibe","hash":"347a0d17…","color":"green"},
+  {"holder":"effect.md","object":"wiki:c","selector":"Goals","hash":"61d4a186…",
+   "color":"grey","reason":"unmounted","detail":"root 'wiki'"}]}}
+```
+
+| Field | Law |
+|---|---|
+| `fingerprint` | the served generation's workspace fingerprint (`fp §2`) |
+| `pins[]` | holder path order, then lock order. `{holder, object, selector?, hash, color, reason?, detail?}`. `holder`: the page carrying the lock, workspace-relative. `object`: the lock row's object, verbatim — `root:`-qualified across roots. `selector`: the pinned section, absent on a whole-file row. `hash`: the recorded blob id, verbatim. `color`: tone `green`/`red`/`grey`. `reason`: stable word, absent exactly on green |
+| `excluded[]` | §12.1 enumerator clause: the markdown the hash domain left out (the custom-ignore class, as § A.10). Omitted when empty |
+
+**Doors and refusals.** A holder whose lock refuses to parse is one grey
+`lock-refused` row, never an absence. Unserved member → `invalid_utf8`;
+unreadable hash domain → `io_error`, never the default domain. `corpus_warming`
+and `corpus_race` are `retry`.
+
+**The staleness triple does not apply**, as § A.10: the rows are served at one
+borrow of the warmed engine, and each row's `hash` and `color` are what a
+caller re-checks.
 
 ## § B. Process
 
