@@ -496,21 +496,67 @@ pub fn lock_pin_colors_rooted_with_sources(
     let index = corpus_index(docs);
     let mut out = Vec::new();
     for (path, doc) in docs.iter().chain(extra_sources.iter()) {
-        for item in page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts) {
-            if !item.is_colourable() {
-                // Fail-closed: uncolourable is skip, never green. Same predicate
-                // as board projection so residue counts exactly these rows.
-                continue;
-            }
-            out.push(PinColor {
-                src_path: path.clone(),
-                declared_ref: item.declared_ref.clone(),
-                fingerprint: item.fingerprint.clone(),
-                color: eager_color(corpus, &item),
-            });
+        let items = page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts);
+        match holder_pin_colors(corpus, path, items, &mut out) {
+            Ok(()) => {}
+            Err(never) => match never {},
         }
     }
     out
+}
+
+/// [`lock_pin_colors_rooted_with_sources`] over a generation whose bodies are
+/// leased (merkle-spec §6.8): the same rows in the same order. Only the lock
+/// holders `locks` names are read for their pins, and a pin's target is
+/// scan-pinned for the length of its one classification — the corpus is never
+/// materialised. `extra_sources` keeps its meaning: holders the hash domain
+/// excludes, read for their lock rows alone.
+///
+/// # Errors
+/// A member the generation holds and could not serve — never a grey or red
+/// row, and never a missing one. A mounted root's member is named `root:path`.
+pub fn lock_pin_colors_leased(
+    corpus: &RootedCatalog<'_>,
+    locks: &dyn LockFacts,
+    mounts: &addr::MountSet,
+    extra_sources: &model::Docs,
+) -> Result<Vec<PinColor>, MemberFault> {
+    let world = Leased { corpus, locks };
+    let mut out = Vec::new();
+    for (path, items) in world.forward_edges(mounts)? {
+        holder_pin_colors(&world, &path, items, &mut out)?;
+    }
+    let index = corpus.ambient_catalog().index();
+    for (path, doc) in extra_sources {
+        let items = page_lock_items_in_rooted_corpus(path, doc, index, corpus, mounts);
+        holder_pin_colors(&world, path, items, &mut out)?;
+    }
+    Ok(out)
+}
+
+/// One holder's colourable lock rows, coloured by [`edge_color`] — the row
+/// builder both pin computers share.
+fn holder_pin_colors<W: PinWorld>(
+    world: &W,
+    holder: &str,
+    items: Vec<LockItem>,
+    out: &mut Vec<PinColor>,
+) -> Result<(), W::Fault> {
+    for item in items {
+        if !item.is_colourable() {
+            // Fail-closed: uncolourable is skip, never green. Same predicate
+            // as board projection so residue counts exactly these rows.
+            continue;
+        }
+        let color = edge_color(world, &item)?;
+        out.push(PinColor {
+            src_path: holder.to_owned(),
+            declared_ref: item.declared_ref,
+            fingerprint: item.fingerprint,
+            color,
+        });
+    }
+    Ok(())
 }
 
 /// Retrieval-plane row: blob sha a lock references (git world, no colour).
@@ -704,14 +750,6 @@ fn edge_color<W: PinWorld + ?Sized>(world: &W, edge: &LockItem) -> Result<Color,
         color = classify_pin(&selector, token, target);
     })?;
     Ok(color)
-}
-
-/// [`edge_color`] over an eager corpus, which cannot fault.
-fn eager_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
-    match edge_color(corpus, edge) {
-        Ok(color) => color,
-        Err(never) => match never {},
-    }
 }
 
 /// The arms of [`edge_color`] that need no target document.

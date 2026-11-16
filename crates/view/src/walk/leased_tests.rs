@@ -290,3 +290,60 @@ fn a_lock_holder_no_edge_targets_still_refuses_when_it_cannot_be_leased() {
         assert_eq!(gauge.live.get(), 0, "{fault:?}");
     }
 }
+
+/// The leased pin computer answers the eager one row for row — green, a
+/// drifted pin, an unmounted root, and an out-of-domain holder — and reads
+/// only lock holders and pin targets, one body at a time.
+#[test]
+fn the_leased_pin_colours_equal_the_eager_ones_and_read_only_holders_and_targets() {
+    let (mut docs, remote) = worlds();
+    let c_token = token("# C\n\nleaf body\n");
+    let stale = token("# C\n\nan older leaf body\n");
+    docs.insert(
+        "e.md".to_owned(),
+        doc(&pinning("E", &[("c", &stale), ("nowhere:page", &c_token)])),
+    );
+    let extra: model::Docs = [(
+        "out.md".to_owned(),
+        doc(&pinning("Out", &[("c", &c_token)])),
+    )]
+    .into_iter()
+    .collect();
+    let mounts = addr::MountSet::new([mount()]);
+    let eager_corpus = model::RootedCorpus::ambient(&docs).with_root(mount(), &remote);
+    let eager = lock_pin_colors_rooted_with_sources(&eager_corpus, &mounts, &extra);
+
+    let gauge = Gauge::default();
+    let ambient = Counted::new(&docs, &gauge);
+    let mounted = Counted::new(&remote, &gauge);
+    let corpus = RootedCatalog::ambient(&ambient).with_root(mount(), &mounted);
+    let got = lock_pin_colors_leased(&corpus, &ambient, &mounts, &extra).unwrap();
+
+    assert_eq!(got, eager);
+    let tones: Vec<&str> = got.iter().map(|row| color_tone(&row.color)).collect();
+    assert_eq!(
+        tones,
+        ["green", "green", "green", "green", "red", "grey", "green"],
+        "a, a, b, d, e (drifted, unmounted), out: {got:?}"
+    );
+    assert!(!ambient.scanned().contains(&"plain.md".to_owned()));
+    assert_eq!(mounted.scanned(), ["remote.md"]);
+    assert_eq!(gauge.most.get(), 1, "one body at a time");
+    assert_eq!(gauge.live.get(), 0);
+}
+
+#[test]
+fn a_pin_target_that_cannot_be_leased_refuses_the_pin_colours() {
+    let (docs, remote) = worlds();
+    let mounts = addr::MountSet::new([mount()]);
+    let gauge = Gauge::default();
+    let ambient = Counted::new(&docs, &gauge);
+    let mut mounted = Counted::new(&remote, &gauge);
+    mounted.fault = Some(("remote.md", Fault::Backing));
+    let corpus = RootedCatalog::ambient(&ambient).with_root(mount(), &mounted);
+
+    let refused = lock_pin_colors_leased(&corpus, &ambient, &mounts, &model::Docs::new())
+        .expect_err("a cold target is not a red pin");
+    assert_eq!(refused.path, "r:remote.md");
+    assert_eq!(gauge.live.get(), 0);
+}
