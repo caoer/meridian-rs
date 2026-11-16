@@ -143,6 +143,7 @@ impl Repo {
     /// other path, and every path when the batch itself fails (one unreadable
     /// file ends that child), is asked alone — so each entry is exactly what
     /// [`Repo::blob_oid`] answers for it, the refusal included.
+    #[must_use]
     pub fn blob_oids(&self, paths: &[&Path]) -> Vec<Result<String, GitFail>> {
         let batched: Vec<bool> = paths
             .iter()
