@@ -26,6 +26,7 @@ mod move_cmd;
 mod new_cmd;
 mod path_law;
 mod pin_cmd;
+mod pins_lane;
 mod preset_cmd;
 mod put_cmd;
 mod read_cmd;

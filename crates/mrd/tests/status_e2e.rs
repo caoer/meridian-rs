@@ -5,10 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 mod common;
 
-fn mrd_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_mrd")
-}
-
 struct Sandbox {
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -29,11 +25,9 @@ fn sandbox() -> Sandbox {
 
 impl Sandbox {
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        Command::new(mrd_bin())
+        common::mrd_command(&self.home, &self.cache_home)
             .args(args)
             .current_dir(cwd)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE")
             .output()
             .expect("spawn mrd")
@@ -846,11 +840,12 @@ fn a_report() -> serde_json::Value {
     })
 }
 
-/// Bare `status` is pure-local (`docs/status.md`, the residency line): beside
-/// a daemon with a residency host it opens no connection and prints nothing
-/// about residency, on either face. `--residency` is what dials.
+/// Bare `status` prints nothing about residency (`docs/status.md`, the
+/// residency line), on either face, beside a daemon with a residency host;
+/// `--residency` is what asks for the reading. A daemon that refuses the
+/// workspace leaves bare `status` to its in-process lane, exit 0.
 #[test]
-fn bare_status_opens_no_connection_to_a_daemon() {
+fn bare_status_prints_no_residency_reading() {
     use std::sync::atomic::Ordering;
     let sb = sandbox();
     let ws = anchored(&sb, "quiet");
@@ -862,11 +857,14 @@ fn bare_status_opens_no_connection_to_a_daemon() {
     assert_eq!(code(&json), 0, "{}", stderr(&json));
     assert!(!stdout(&human).contains("residency"), "{}", stdout(&human));
     assert!(!stdout(&json).contains("residency"), "{}", stdout(&json));
-    assert_eq!(dials.load(Ordering::SeqCst), 0, "bare status dialled");
+    let before = dials.load(Ordering::SeqCst);
 
     let asked = sb.run(&ws, &["status", "--residency"]);
     assert_eq!(code(&asked), 0, "{}", stderr(&asked));
-    assert_eq!(dials.load(Ordering::SeqCst), 1, "the probe counts a dial");
+    assert!(
+        dials.load(Ordering::SeqCst) > before,
+        "the probe counts a dial"
+    );
 }
 
 /// `status --residency` prints a running daemon's controller report and

@@ -70,6 +70,7 @@ pub use checkpoint::CheckpointReceipt;
 pub use client::{Client, Liveness};
 pub use engine::{WarmOutcome, WorkspaceEngine};
 pub use feed::{FeedStats, RescanCause};
+pub use pins_op::pin_row;
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{

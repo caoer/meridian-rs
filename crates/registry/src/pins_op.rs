@@ -57,19 +57,7 @@ pub(crate) fn serve(
     let colors = walk::lock_pin_colors_leased(&corpus, engine, mounts.set(), &excluded_holders)
         .map_err(wire_serve::read::member_fault)?;
 
-    let some = |s: String| (!s.is_empty()).then_some(s);
-    let pins = colors
-        .into_iter()
-        .map(|pin| PinRow {
-            holder: pin.src_path,
-            object: some(pin.object),
-            selector: some(pin.selector),
-            hash: pin.blob_sha,
-            color: walk::color_tone(&pin.color).to_string(),
-            reason: walk::color_reason(&pin.color).map(str::to_owned),
-            detail: walk::color_detail(&pin.color),
-        })
-        .collect();
+    let pins = colors.into_iter().map(pin_row).collect();
     let excluded = outside
         .into_iter()
         .filter(|md| md.declined)
@@ -80,4 +68,20 @@ pub(crate) fn serve(
         pins,
         excluded,
     })
+}
+
+/// One coloured pin as its § A.13 wire row — the one projection the door and
+/// the CLI's in-process lane share.
+#[must_use]
+pub fn pin_row(pin: walk::PinColor) -> PinRow {
+    let some = |s: String| (!s.is_empty()).then_some(s);
+    PinRow {
+        holder: pin.src_path,
+        object: some(pin.object),
+        selector: some(pin.selector),
+        hash: pin.blob_sha,
+        color: walk::color_tone(&pin.color).to_string(),
+        reason: walk::color_reason(&pin.color).map(str::to_owned),
+        detail: walk::color_detail(&pin.color),
+    }
 }

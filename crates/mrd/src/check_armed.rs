@@ -67,6 +67,21 @@ pub(crate) fn assess(
     domain: &fs::domain::Domain,
     fold: &str,
 ) -> ArmedPlane {
+    assess_with(root, Some((docs, domain, fold))).expect("a snapshot answers every query")
+}
+
+/// The armed plane of `root` when it is settled without a corpus: no armed
+/// query fires, so every reading comes from the artifact and its pages on
+/// disk. `None` when a query fires and [`assess`] must run over a snapshot.
+pub(crate) fn settled_without_corpus(root: &fs::WorkspaceRoot) -> Option<ArmedPlane> {
+    assess_with(root, None)
+}
+
+/// [`assess`], or `None` when a query fires and no snapshot was given.
+fn assess_with(
+    root: &fs::WorkspaceRoot,
+    corpus: Option<(&model::Docs, &fs::domain::Domain, &str)>,
+) -> Option<ArmedPlane> {
     let mut plane = ArmedPlane {
         never_armed: false,
         rows: 0,
@@ -75,14 +90,14 @@ pub(crate) fn assess(
     };
     if !wire_serve::armed_disk::once_armed(root) {
         plane.never_armed = true;
-        return plane;
+        return Some(plane);
     }
     let path = || policy::armed::ARMED_RULES_PATH.to_owned();
     let Some(page) = wire_serve::armed_disk::read_artifact(root) else {
         plane
             .faults
             .push(ArmedFault::Missing { path: path() }.to_string());
-        return plane;
+        return Some(plane);
     };
     let artifact = match parse_artifact(&page) {
         Ok(artifact) => artifact,
@@ -92,7 +107,7 @@ pub(crate) fn assess(
                 detail: corrupt.detail,
             };
             plane.faults.push(fault.to_string());
-            return plane;
+            return Some(plane);
         }
     };
     plane.rows = artifact.rows().len();
@@ -100,7 +115,7 @@ pub(crate) fn assess(
         plane
             .faults
             .push(ArmedFault::Disarmed { path: path() }.to_string());
-        return plane;
+        return Some(plane);
     }
 
     let pages = wire_serve::armed_disk::DiskPages::new(root);
@@ -115,9 +130,10 @@ pub(crate) fn assess(
         .filter_map(|row| query_leg(row, &pages).map(|leg| (row, leg)))
         .collect();
     if queries.is_empty() {
-        return plane;
+        return Some(plane);
     }
 
+    let (docs, domain, fold) = corpus?;
     let projection = project(root, docs, domain, fold);
     for (row, leg) in queries {
         let mut rule = QueryRule {
@@ -151,7 +167,7 @@ pub(crate) fn assess(
         }
         plane.rules.push(rule);
     }
-    plane
+    Some(plane)
 }
 
 /// The query leg of a firing row's page, or `None` when the page has none. The

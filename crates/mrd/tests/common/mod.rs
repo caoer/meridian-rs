@@ -42,7 +42,8 @@ const FIXTURE_DRAIN_SECS: &str = "30";
 /// An `mrd` command for a sandbox at `home`/`cache_home`, carrying the fixture
 /// drain budget.
 ///
-/// **This is the ONE place `MRD_DRAIN_COLD_BUILDS` is set in this tree.**
+/// **[`sandbox_env`], which this calls, is the ONE place `MRD_DRAIN_COLD_BUILDS`
+/// is set in this tree.**
 ///
 /// Why it has to exist. A test here drives `mrd` as a subprocess, and that
 /// `mrd` AUTO-SPAWNS its daemon — so the test never constructs a
@@ -77,10 +78,17 @@ pub(crate) fn mrd_command(home: &Path, cache_home: &Path) -> Command {
     let bin = std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from);
     let mut cmd = Command::new(bin);
+    sandbox_env(&mut cmd, home, cache_home);
+    cmd
+}
+
+/// The sandbox environment [`mrd_command`] carries, for a command that is not
+/// `mrd` but runs it — a `git commit` whose hook fires `mrd check`, which may
+/// auto-spawn the daemon.
+pub(crate) fn sandbox_env(cmd: &mut Command, home: &Path, cache_home: &Path) {
     cmd.env("HOME", home)
         .env("XDG_CACHE_HOME", cache_home)
         .env(registry::DRAIN_COLD_BUILDS_ENV, FIXTURE_DRAIN_SECS);
-    cmd
 }
 
 /// How long [`retry_while_warming`] keeps re-issuing a command the cold gate
