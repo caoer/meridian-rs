@@ -1222,6 +1222,27 @@ object database (`never-anchored`, pruned or freshly cloned) are NOT counted.
 Debt never enters the findings verdict and never refuses a write; zero renders
 (`0 blobs (0 bytes)`).
 
+**How "a commit reaches it" is asked** — the same answer for `vibe-debt` and
+`mrd check`'s anchoring plane, priced by what changed, never by the history:
+
+- **The anchoring refs are every ref except git-annex's.** `git rev-parse --all`
+  minus `refs/heads/git-annex`, `refs/heads/synced/git-annex`,
+  `refs/remotes/*/git-annex`, `refs/remotes/*/synced/git-annex` and
+  `refs/annex/*`. Those branches hold annex location logs, never a pinned
+  markdown file, and on a sessions root they carry about 40% of all objects.
+- **`HEAD:<path>` first (`mrd check`).** A pin whose file at `HEAD` is the
+  pinned blob is anchored; one `git cat-file --batch-check` answers every pin.
+  Only the pins it does not settle reach the reachable set.
+- **The reachable set is cached per repository** at
+  `<git common dir>/meridian/reach-v1.bin`: the anchoring tips it was built
+  from and the sorted object ids they reach. Same tips → read as is. Every old
+  tip still reached by the current tips → extend it with
+  `git rev-list --objects <new tips> ^<old tips>`. Otherwise (a rewritten or
+  deleted unmerged branch) → rebuild with `git rev-list --objects <tips>`. One
+  process updates at a time (an exclusive lock on `reach-v1.lock` beside it);
+  the others wait, then read its result. An unwritable cache costs speed, never
+  the answer: the set is then built in memory for the one call.
+
 `--json` always-emits both axes: with no pins, `composed.lock.pins` is `0` and
 `composed.lock.color` is `null`, never an absent field.
 

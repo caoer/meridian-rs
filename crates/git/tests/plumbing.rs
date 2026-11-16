@@ -273,11 +273,92 @@ fn one_rev_list_and_one_cat_file_per_check_not_per_blob() {
     let count = |needle: &str| argv.lines().filter(|l| l.contains(needle)).count();
     assert_eq!(count("rev-list"), 1, "ONE rev-list per check:\n{argv}");
     assert_eq!(count("cat-file"), 1, "ONE cat-file per check:\n{argv}");
+
+    // Unchanged refs: the next check reads the cached set and walks nothing.
+    repo.reachable_objects().expect("cached reachable set");
+    let argv = fs::read_to_string(&log).expect("shim log");
     assert_eq!(
-        count("--objects --all"),
+        argv.lines().filter(|l| l.contains("rev-list")).count(),
         1,
-        "the reachable set is computed once, not per blob:\n{argv}"
+        "unchanged refs walk no history:\n{argv}"
     );
+}
+
+/// The cached reachable set follows the refs (`docs/status.md` § How "a commit
+/// reaches it" is asked): a new commit extends it, a deleted unmerged branch
+/// takes its objects out, and git-annex's branch never anchors.
+#[test]
+fn the_cached_reachable_set_follows_the_refs() {
+    let repo_dir = empty_repo();
+    let root = repo_dir.path();
+    let repo = Repo::at(root);
+    write(root, "a.md", "a\n");
+    commit(root, "a");
+    let a = repo.blob_oid(Path::new("a.md")).expect("oid");
+    assert!(repo.reachable_objects().expect("set").contains(&a));
+
+    // Extend: a new commit on main.
+    write(root, "b.md", "b\n");
+    commit(root, "b");
+    let b = repo.blob_oid(Path::new("b.md")).expect("oid");
+    let set = repo.reachable_objects().expect("set");
+    assert!(set.contains(&a) && set.contains(&b));
+
+    // Rebuild: a side branch's blob leaves with the branch.
+    git_in(root, &["checkout", "-q", "-b", "side"]);
+    write(root, "side.md", "side\n");
+    commit(root, "side");
+    let side = repo.blob_oid(Path::new("side.md")).expect("oid");
+    assert!(repo.reachable_objects().expect("set").contains(&side));
+    git_in(root, &["checkout", "-q", "main"]);
+    git_in(root, &["branch", "-q", "-D", "side"]);
+    let set = repo.reachable_objects().expect("set");
+    assert!(
+        !set.contains(&side),
+        "a deleted unmerged branch anchors nothing"
+    );
+    assert!(set.contains(&a) && set.contains(&b));
+
+    // git-annex's branch is not an anchoring ref.
+    git_in(root, &["checkout", "-q", "--orphan", "git-annex"]);
+    git_in(root, &["rm", "-rfq", "."]);
+    write(root, "uuid.log", "annex log\n");
+    commit(root, "annex");
+    let log = repo.blob_oid(Path::new("uuid.log")).expect("oid");
+    git_in(root, &["checkout", "-q", "main"]);
+    let set = repo.reachable_objects().expect("set");
+    assert!(!set.contains(&log), "git-annex's branch never anchors");
+    assert!(set.contains(&a) && set.contains(&b));
+}
+
+/// `HEAD:<path>` settles the pins whose file at HEAD is the pinned blob, in
+/// input order, and nothing else.
+#[test]
+fn anchored_at_head_matches_the_blob_at_head_in_input_order() {
+    let repo_dir = empty_repo();
+    let root = repo_dir.path();
+    let repo = Repo::at(root);
+    write(root, "a.md", "old\n");
+    commit(root, "old");
+    let old = repo.blob_oid(Path::new("a.md")).expect("oid");
+    write(root, "a.md", "new\n");
+    commit(root, "new");
+    let new = repo.blob_oid(Path::new("a.md")).expect("oid");
+
+    let answers = repo
+        .anchored_at_head(&[
+            (old.as_str(), Path::new("a.md")),
+            (new.as_str(), Path::new("a.md")),
+            (new.as_str(), Path::new("absent.md")),
+        ])
+        .expect("batched HEAD lookup");
+    assert_eq!(answers, vec![false, true, false]);
+
+    let unborn = empty_repo();
+    let answers = Repo::at(unborn.path())
+        .anchored_at_head(&[(new.as_str(), Path::new("a.md"))])
+        .expect("unborn HEAD answers");
+    assert_eq!(answers, vec![false]);
 }
 
 /// The batched presence query answers in input order, and a repository with no

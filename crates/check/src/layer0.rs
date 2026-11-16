@@ -403,9 +403,10 @@ fn objects_in(
 
 /// Ask ONE object store about every entry, in ONE pass, and classify.
 ///
-/// Two git calls at most, never a call per blob: one `git rev-list --objects
-/// --all` for the reachable set and one batched `git cat-file --batch-check`
-/// for presence. [`ObjectAnchor::classify`] reads the pair — the same
+/// Three git calls at most, never a call per blob: one batched `HEAD:<path>`
+/// lookup ([`git::Repo::anchored_at_head`]), the cached reachable set only for
+/// the pins HEAD does not settle (`docs/status.md` § How "a commit reaches it"
+/// is asked), and one batched `git cat-file --batch-check` for presence. [`ObjectAnchor::classify`] reads the pair — the same
 /// classifier `mrd status`'s gauge runs. Both facts come from THIS handle in
 /// THIS pass: a fact pair split across two stores is a wrong answer, not a
 /// stale one.
@@ -417,19 +418,33 @@ fn ask_store(
     objects: &[ObjectRef],
     plane: &mut PinPlane,
 ) -> Result<(), String> {
+    let asked = |e: git::GitFail| format!("the object store could not be asked: {e}");
     let repo = git::Repo::at(store_root.to_path_buf());
-    let reachable = repo
-        .reachable_objects()
-        .map_err(|e| format!("the object store could not be asked: {e}"))?;
+    let paths: Vec<std::path::PathBuf> = objects
+        .iter()
+        .map(|o| std::path::PathBuf::from(format!("{}.md", o.rel)))
+        .collect();
+    let asks: Vec<(&str, &std::path::Path)> = objects
+        .iter()
+        .zip(&paths)
+        .map(|(o, p)| (o.blob_sha.as_str(), p.as_path()))
+        .collect();
+    let at_head = repo.anchored_at_head(&asks).map_err(asked)?;
+    let reachable = if at_head.iter().all(|hit| *hit) {
+        None
+    } else {
+        Some(repo.reachable_objects().map_err(asked)?)
+    };
     let oids: Vec<&str> = objects.iter().map(|o| o.blob_sha.as_str()).collect();
-    let info = repo
-        .object_info(&oids)
-        .map_err(|e| format!("the object store could not be asked: {e}"))?;
+    let info = repo.object_info(&oids).map_err(asked)?;
 
-    for (object, present) in objects.iter().zip(info) {
+    for ((object, present), hit) in objects.iter().zip(info).zip(at_head) {
         let facts = ObjectAnchorFacts {
             object_present: present.is_some(),
-            reachable_from_commit: reachable.contains(&object.blob_sha),
+            reachable_from_commit: hit
+                || reachable
+                    .as_ref()
+                    .is_some_and(|set| set.contains(&object.blob_sha)),
         };
         let state = ObjectAnchor::classify(&facts);
         match state {

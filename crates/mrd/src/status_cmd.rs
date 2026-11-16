@@ -637,8 +637,9 @@ type StoreKey = Option<addr::MountName>;
 /// Measure the vibe debt: the lock-referenced blobs git holds that no commit
 /// reaches, counted and summed in bytes.
 ///
-/// Two git calls at most per store, never a call per blob: one
-/// `git rev-list --objects --all` into the reachable set and one batched
+/// Two asks per store, never a call per blob: the cached reachable set
+/// ([`git::Repo::reachable_objects`], priced by the history new since it was
+/// last built) and one batched
 /// `git cat-file --batch-check`. Only `ObjectAnchor::PendingAnchor` is debt.
 /// Entries are grouped by the root their key names, and each group is asked of
 /// that root's repository ([`StoreKey`]). A value that is not an object id, or a
