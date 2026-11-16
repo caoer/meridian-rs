@@ -413,6 +413,53 @@ impl Repo {
             return Ok(Vec::new());
         }
 
+        // An older git (2.39 measured) does not answer `missing` for an absent
+        // object a promisor pack promises: with lazy fetching off it dies,
+        // naming the oid. That oid is absent here — the fact asked for — so it
+        // is set aside and the rest are asked again.
+        let mut promised: Vec<String> = Vec::new();
+        loop {
+            let asked: Vec<&str> = oids
+                .iter()
+                .copied()
+                .filter(|oid| !promised.iter().any(|p| p.eq_ignore_ascii_case(oid)))
+                .collect();
+            match self.batch_check(&asked) {
+                Ok(mut answers) => {
+                    answers.reverse();
+                    return Ok(oids
+                        .iter()
+                        .map(|oid| {
+                            if promised.iter().any(|p| p.eq_ignore_ascii_case(oid)) {
+                                None
+                            } else {
+                                answers.pop().flatten()
+                            }
+                        })
+                        .collect());
+                }
+                Err(fail) => {
+                    let absent = match &fail {
+                        GitFail::Refused { stderr, .. } => unfetched_promise(stderr)
+                            .filter(|oid| asked.iter().any(|a| a.eq_ignore_ascii_case(oid)))
+                            .map(str::to_owned),
+                        _ => None,
+                    };
+                    match absent {
+                        Some(oid) => promised.push(oid),
+                        None => return Err(fail),
+                    }
+                }
+            }
+        }
+    }
+
+    /// One `cat-file --batch-check` over `oids`, lazy fetching off: an answer
+    /// per oid, in order.
+    fn batch_check(&self, oids: &[&str]) -> Result<Vec<Option<ObjectInfo>>, GitFail> {
+        if oids.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut query = String::new();
         for oid in oids {
             query.push_str(oid);
@@ -1195,6 +1242,15 @@ impl std::error::Error for GitFail {
             _ => None,
         }
     }
+}
+
+/// The oid in git's `fatal: could not fetch <oid> from promisor remote` — what
+/// an older git says, with lazy fetching off, about an absent object a
+/// promisor pack promises.
+fn unfetched_promise(stderr: &str) -> Option<&str> {
+    let rest = stderr.split("could not fetch ").nth(1)?;
+    let oid = rest.split(" from promisor remote").next()?.trim();
+    is_oid(oid).then_some(oid)
 }
 
 /// One `cat-file --batch-check` line: `<oid> <type> <size>`, or `<oid> missing`.

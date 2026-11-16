@@ -1265,7 +1265,10 @@ Debt never enters the findings verdict and never refuses a write; zero renders
 - **The anchoring questions never fetch.** The `HEAD` lookup reads tree objects
   only, and the presence query runs with `GIT_NO_LAZY_FETCH=1`: in a partial
   clone an absent object answers `missing` from the local object database, and
-  is never asked of the promisor remote. A blob the clone's filter left out is still
+  is never asked of the promisor remote. An older git (2.39 measured) dies
+  instead of answering `missing` when the absent object is one a promisor pack
+  promises; the presence query reads that refusal as absent and asks the rest
+  again. A blob the clone's filter left out is still
   `anchored` when a commit reaches it — reachability decides, presence only
   splits `pending-anchor` from `never-anchored`.
 
