@@ -171,6 +171,8 @@ pub fn project_response(frame: &mut Value) {
                 // Pin-graph context assembly at op grain (§ A.10, the same
                 // precedent — no dotted walk.<field> at birth).
                 caps.push(Value::String("walk".to_string()));
+                // The lock plane at op grain (§ A.13, the same precedent).
+                caps.push(Value::String("pins".to_string()));
                 // Corpus SQL at op grain (§ A.11, the same precedent — no
                 // dotted sql.<field> at birth).
                 caps.push(Value::String("sql".to_string()));
@@ -465,6 +467,7 @@ mod tests {
                 "run.mode",
                 "run.input",
                 "walk",
+                "pins",
                 "sql",
                 "splice.remove",
                 "scoped-guards"

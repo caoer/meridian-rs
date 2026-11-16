@@ -191,6 +191,11 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             Ok(Op::Mounts)
         }
         "walk" => decode_walk(obj),
+        "pins" => {
+            // § A.13: no parameters — a caller narrows `pins[]` by `holder`.
+            check_fields(obj, op, &[])?;
+            Ok(Op::Pins)
+        }
         "sql" => {
             // § A.11: the statement and nothing else — profile, cwd, and row
             // bounds are host concerns, never wire fields.

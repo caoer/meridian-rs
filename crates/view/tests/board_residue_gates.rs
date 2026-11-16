@@ -190,6 +190,7 @@ fn predicate_is_one_definition_shared_by_both_projections() {
         fingerprint: None,
         selector: None,
         object: String::new(),
+        blob_sha: None,
         lock_refusal: None,
         to_root: None,
         root_refusal: None,

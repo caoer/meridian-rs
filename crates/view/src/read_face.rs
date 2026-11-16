@@ -297,6 +297,8 @@ pub struct LockItem {
     /// Wiki-link object (path without `.md`). Needed for transcript
     /// `session#seq-N` classification; not re-derived from `to_path`.
     pub object: String,
+    /// The recorded blob id, verbatim. `None` only on refusal.
+    pub blob_sha: Option<String>,
     /// Page-level lock parse refusal ([`lock::LockError`]). Declares no edge —
     /// greys as `lock-refused` so corrupt ≠ "no pins".
     pub lock_refusal: Option<String>,
@@ -464,6 +466,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
                 fingerprint: None,
                 selector: None,
                 object: String::new(),
+                blob_sha: None,
                 lock_refusal: Some(refusal.to_string()),
                 // Resolution fills to_root; parser has not consulted mounts.
                 to_root: None,
@@ -493,6 +496,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
             fingerprint: Some(pin.fingerprint),
             selector: Some(pin.selector),
             object: pin.object,
+            blob_sha: Some(pin.hash),
             lock_refusal: None,
             to_root: None,
             root_refusal: None,
