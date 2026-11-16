@@ -1002,7 +1002,9 @@ impl RunningServer {
                     if busy >= succession::BUSY_TRIES {
                         return Err(io::Error::new(
                             io::ErrorKind::TimedOut,
-                            format!("the serving daemon answered busy {busy} times and keeps serving"),
+                            format!(
+                                "the serving daemon answered busy {busy} times and keeps serving"
+                            ),
                         ));
                     }
                     thread::sleep(retry);
