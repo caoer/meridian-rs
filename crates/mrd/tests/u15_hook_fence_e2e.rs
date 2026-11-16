@@ -109,9 +109,8 @@ impl Sandbox {
             .arg(ws)
             .args(["commit", "-m", message])
             .env("PATH", self.hook_path())
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
             .env_remove("MERIDIAN_WORKSPACE");
+        common::sandbox_env(&mut c, &self.home, &self.cache_home);
         for (k, v) in extra_env {
             c.env(k, v);
         }
