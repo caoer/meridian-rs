@@ -1,8 +1,9 @@
 //! Git plumbing: the one organ that shells out to `git` for content-addressing.
 //!
 //! **Owns:** the operational blob-sha path (`git hash-object`, and the eager `-w`
-//! write), the object-reachability probe (`git rev-list --objects --all` computed
-//! ONCE into a [`ReachableSet`]), object presence/size lookups (one batched
+//! write), the object-reachability probe (the `HEAD:<path>` batch
+//! [`Repo::anchored_at_head`], and the reachable set [`Repo::reachable_objects`]
+//! cached per repository — `reach`), object presence/size lookups (one batched
 //! `git cat-file --batch-check`), and the write history — the first-parent
 //! `git log --name-status` walk ([`Repo::path_history`]) plus the batched blob
 //! read ([`Repo::blobs_at`]). Every call runs against a [`Repo`] handle — a path
@@ -44,12 +45,13 @@
 //! # }
 //! ```
 
-use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+mod reach;
 
 /// The default git program — resolved through `PATH` like any other caller.
 const GIT: &str = "git";
@@ -186,47 +188,69 @@ impl Repo {
         Ok(text.to_ascii_lowercase())
     }
 
-    /// Every object reachable from every ref, computed in ONE
-    /// `git rev-list --objects --all` — the anchoring check's reachable set.
+    /// Every object reachable from the anchoring refs — every ref except
+    /// git-annex's — the anchoring check's reachable set.
     ///
     /// Call this **once per check** and answer membership from the returned set
-    /// ([`ReachableSet::contains`] is O(1)). Asking git per blob is the
-    /// performance trap this call exists to close. An empty repository (no
-    /// commits) yields an empty set, not a failure.
+    /// ([`ReachableSet::contains`] is a binary search). The set is cached per
+    /// repository and updated by what changed since it was built
+    /// (`docs/status.md` § How "a commit reaches it" is asked), so a call costs
+    /// the new history, not the whole. An empty repository (no commits) yields
+    /// an empty set, not a failure.
     ///
     /// # Errors
     /// [`GitFail::Spawn`], [`GitFail::NotARepo`], or [`GitFail::Refused`] per
     /// [`Repo::blob_oid`]; [`GitFail::Unexpected`] when git's output is not the
     /// documented `<oid> [path]` shape.
     pub fn reachable_objects(&self) -> Result<ReachableSet, GitFail> {
-        let mut cmd = self.command();
-        cmd.args(["rev-list", "--objects", "--all"]);
-        let stdout = self.run(cmd, "rev-list --objects --all")?;
+        self.reachable_cached()
+    }
 
-        // Lines are `<oid>` (commits) or `<oid> <path>` (trees/blobs), and the
-        // path is raw bytes — never assume the whole stream is UTF-8.
-        let mut oids = HashSet::new();
-        for line in stdout.split(|b| *b == b'\n') {
-            let token = match line.iter().position(|b| *b == b' ') {
-                Some(sp) => &line[..sp],
-                None => line,
-            };
-            if token.is_empty() {
+    /// For each `(oid, path)`, whether the file at `HEAD:<path>` is that blob —
+    /// in input order, from ONE `git cat-file --batch-check`. `path` is
+    /// relative to [`Repo::root`]. A `true` is anchored (HEAD reaches it); a
+    /// `false` settles nothing, and only those need [`Repo::reachable_objects`].
+    /// An unborn HEAD, an absent path, or a path git cannot take on one line
+    /// answers `false`.
+    ///
+    /// # Errors
+    /// As [`Repo::reachable_objects`].
+    pub fn anchored_at_head(&self, asks: &[(&str, &Path)]) -> Result<Vec<bool>, GitFail> {
+        const WHAT: &str = "cat-file --batch-check HEAD:<path>";
+        let mut stdin = Vec::new();
+        let mut sent = Vec::with_capacity(asks.len());
+        for (_, path) in asks {
+            let text = path.to_string_lossy();
+            let ok = !text.contains('\n') && !text.contains('\r');
+            if ok {
+                stdin.extend_from_slice(b"HEAD:./");
+                stdin.extend_from_slice(text.as_bytes());
+                stdin.push(b'\n');
+            }
+            sent.push(ok);
+        }
+        let mut answers = Vec::with_capacity(asks.len());
+        if !sent.iter().any(|ok| *ok) {
+            answers.resize(asks.len(), false);
+            return Ok(answers);
+        }
+        let mut cmd = self.command();
+        cmd.args(["cat-file", "--batch-check=%(objectname)"]);
+        let stdout = self.run_with_stdin(cmd, WHAT, stdin)?;
+        let mut lines = stdout.split(|b| *b == b'\n');
+        for ((oid, _), ok) in asks.iter().zip(&sent) {
+            if !ok {
+                answers.push(false);
                 continue;
             }
-            let oid = std::str::from_utf8(token)
-                .ok()
-                .filter(|t| is_oid(t))
-                .ok_or_else(|| GitFail::Unexpected {
-                    what: "rev-list --objects --all".to_owned(),
-                    detail: format!(
-                        "line does not start with an object id: {:?}",
-                        token.escape_ascii().to_string()
-                    ),
-                })?;
-            oids.insert(oid.to_ascii_lowercase());
+            let line = lines.next().ok_or_else(|| GitFail::Unexpected {
+                what: WHAT.to_owned(),
+                detail: "fewer answer lines than questions".to_owned(),
+            })?;
+            let head = std::str::from_utf8(line).unwrap_or_default().trim();
+            answers.push(is_oid(head) && head.eq_ignore_ascii_case(oid));
         }
-        Ok(ReachableSet { oids })
+        Ok(answers)
     }
 
     /// Type and size for each of `oids`, in input order — `None` where the
@@ -825,22 +849,27 @@ impl Repo {
     }
 }
 
-/// The set of objects reachable from every ref, from ONE
-/// [`Repo::reachable_objects`] call. Membership is O(1); the whole point is
-/// that the anchoring check never asks git per blob.
+/// The set of objects reachable from the anchoring refs, from ONE
+/// [`Repo::reachable_objects`] call: sorted object ids, so membership is a
+/// binary search and two million objects hold 64 MiB. The whole point is that
+/// the anchoring check never asks git per blob.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReachableSet {
-    oids: HashSet<String>,
+    oids: Vec<reach::Oid>,
 }
 
 impl ReachableSet {
-    /// Whether `oid` is reachable from a ref. Git spells object ids in
-    /// lowercase hex; an uppercase spelling from a caller answers the same.
+    fn from_unsorted(mut oids: Vec<reach::Oid>) -> ReachableSet {
+        oids.sort_unstable();
+        oids.dedup();
+        ReachableSet { oids }
+    }
+
+    /// Whether `oid` is reachable from an anchoring ref. Either case answers
+    /// the same; a string that is not an object id is never reachable.
     #[must_use]
     pub fn contains(&self, oid: &str) -> bool {
-        self.oids.contains(oid)
-            || (oid.bytes().any(|b| b.is_ascii_uppercase())
-                && self.oids.contains(&oid.to_ascii_lowercase()))
+        reach::parse_oid(oid.as_bytes()).is_some_and(|oid| self.oids.binary_search(&oid).is_ok())
     }
 
     /// How many objects are reachable.
@@ -1166,9 +1195,8 @@ mod tests {
 
     #[test]
     fn reachable_set_answers_either_hex_case() {
-        let mut oids = HashSet::new();
-        oids.insert("fd3959e7e0fc6795a7d18e476c6e4e4fd386d8d5".to_owned());
-        let set = ReachableSet { oids };
+        let oid = reach::parse_oid(b"fd3959e7e0fc6795a7d18e476c6e4e4fd386d8d5").expect("oid");
+        let set = ReachableSet::from_unsorted(vec![oid, oid]);
         assert!(set.contains("fd3959e7e0fc6795a7d18e476c6e4e4fd386d8d5"));
         assert!(set.contains("FD3959E7E0FC6795A7D18E476C6E4E4FD386D8D5"));
         assert!(!set.contains(&"0".repeat(40)));

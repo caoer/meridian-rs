@@ -637,8 +637,11 @@ type StoreKey = Option<addr::MountName>;
 /// Measure the vibe debt: the lock-referenced blobs git holds that no commit
 /// reaches, counted and summed in bytes.
 ///
-/// Two git calls at most per store, never a call per blob: one
-/// `git rev-list --objects --all` into the reachable set and one batched
+/// Three asks at most per store, never a call per blob: one batched
+/// `HEAD:<path>` lookup ([`git::Repo::anchored_at_head`]), the cached reachable
+/// set only for the pins HEAD does not settle
+/// ([`git::Repo::reachable_objects`], priced by the history new since it was
+/// last built) and one batched
 /// `git cat-file --batch-check`. Only `ObjectAnchor::PendingAnchor` is debt.
 /// Entries are grouped by the root their key names, and each group is asked of
 /// that root's repository ([`StoreKey`]). A value that is not an object id, or a
@@ -648,7 +651,8 @@ fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
     // Dedupe is keyed by store, never globally: the same oid under two roots is
     // two objects in two databases.
     let mut seen: HashSet<(StoreKey, String)> = HashSet::new();
-    let mut stores: Vec<(StoreKey, Vec<String>)> = Vec::new();
+    // Each oid rides with the file its key names — where HEAD is asked first.
+    let mut stores: Vec<(StoreKey, Vec<(String, PathBuf)>)> = Vec::new();
     let mut malformed: Vec<String> = Vec::new();
     let mut unaddressable: Vec<String> = Vec::new();
     for object in view::walk::lock_objects(docs) {
@@ -665,9 +669,11 @@ fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
         };
         let store: StoreKey = addr.root().cloned();
         if seen.insert((store.clone(), oid.clone())) {
+            // The key's path half is the file without `.md`.
+            let pin = (oid, PathBuf::from(format!("{}.md", addr.path())));
             match stores.iter_mut().find(|(k, _)| *k == store) {
-                Some((_, oids)) => oids.push(oid),
-                None => stores.push((store, vec![oid])),
+                Some((_, pins)) => pins.push(pin),
+                None => stores.push((store, vec![pin])),
             }
         }
     }
@@ -694,7 +700,7 @@ fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
     };
 
     let mut debt = VibeDebt::clear();
-    for (store, oids) in &stores {
+    for (store, pins) in &stores {
         let root = match store {
             None => workspace.to_path_buf(),
             Some(name) => match store_path(name, table.as_ref()) {
@@ -705,20 +711,33 @@ fn vibe_debt(workspace: &Path, docs: &model::Docs) -> VibeDebt {
         // One handle per root, so a store's reachable set can never be read
         // against another store's presence answer.
         let repo = git::Repo::at(root);
-        let reachable = match repo.reachable_objects() {
-            Ok(set) => set,
+        let asks: Vec<(&str, &Path)> = pins
+            .iter()
+            .map(|(oid, path)| (oid.as_str(), path.as_path()))
+            .collect();
+        let at_head = match repo.anchored_at_head(&asks) {
+            Ok(hits) => hits,
             Err(fail) => return VibeDebt::unknown(store_fail(store, &fail)),
         };
-        let refs: Vec<&str> = oids.iter().map(String::as_str).collect();
+        let reachable = if at_head.iter().all(|hit| *hit) {
+            None
+        } else {
+            match repo.reachable_objects() {
+                Ok(set) => Some(set),
+                Err(fail) => return VibeDebt::unknown(store_fail(store, &fail)),
+            }
+        };
+        let refs: Vec<&str> = pins.iter().map(|(oid, _)| oid.as_str()).collect();
         let info = match repo.object_info(&refs) {
             Ok(info) => info,
             Err(fail) => return VibeDebt::unknown(store_fail(store, &fail)),
         };
 
-        for (oid, info) in oids.iter().zip(info) {
+        for (((oid, _), info), hit) in pins.iter().zip(info).zip(at_head) {
             let facts = ObjectAnchorFacts {
                 object_present: info.is_some(),
-                reachable_from_commit: reachable.contains(oid),
+                reachable_from_commit: hit
+                    || reachable.as_ref().is_some_and(|set| set.contains(oid)),
             };
             // `PendingAnchor` alone is debt: present, reachable from nothing.
             if ObjectAnchor::classify(&facts) == ObjectAnchor::PendingAnchor

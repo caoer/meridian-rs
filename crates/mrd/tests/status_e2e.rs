@@ -653,6 +653,48 @@ fn status_vibe_debt_ignores_a_committed_blob() {
     eprintln!("S11 composed (paid): {}", composed_line(&paid));
 }
 
+/// A pin whose file at `HEAD` is the pinned blob is settled there: the gauge
+/// reads zero and the reachable set is never built — its cache file, which
+/// every build writes, does not exist. A pin `HEAD` does not settle builds it.
+#[test]
+fn status_vibe_debt_settles_a_head_pin_without_the_reachable_set() {
+    let sb = sandbox();
+    let ws = sb.workspace("vibehead");
+    git(&ws, &["init"]);
+
+    std::fs::write(ws.join("vibe.md"), "# Vibe\n\nat head\n").expect("write vibe");
+    git(&ws, &["add", "vibe.md"]);
+    git(&ws, &["commit", "-m", "anchor it"]);
+    let oid = git(&ws, &["rev-parse", "HEAD:vibe.md"]);
+    std::fs::write(
+        ws.join("effect.md"),
+        format!(
+            "# Effect\n\ndraws from it\n\n{}\n",
+            lock_block_with_object("vibe", &oid)
+        ),
+    )
+    .expect("write effect");
+
+    let cache = ws.join(".git").join("meridian").join("reach-v1.bin");
+    let paid = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        paid.contains("vibe-debt 0 blobs (0 bytes)"),
+        "a pin at HEAD is anchored: {paid}"
+    );
+    assert!(!cache.exists(), "HEAD settled every pin, so nothing walked");
+
+    // The same pin once the file moved on: HEAD no longer holds that blob at
+    // that path, so the reachable set answers — and still says anchored.
+    std::fs::write(ws.join("vibe.md"), "# Vibe\n\nmoved on\n").expect("rewrite vibe");
+    git(&ws, &["commit", "-am", "move on"]);
+    let still = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        still.contains("vibe-debt 0 blobs (0 bytes)"),
+        "an older committed blob is still anchored: {still}"
+    );
+    assert!(cache.exists(), "a pin HEAD does not settle builds the set");
+}
+
 /// S11 GATE 3 — ZERO RENDERS. A corpus that owes nothing still shows the gauge on the human
 /// line and still emits `0` in `--json`: a gauge that hides at zero is not a gauge, and an
 /// absent field reads as "not measured".
