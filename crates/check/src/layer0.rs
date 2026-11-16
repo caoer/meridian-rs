@@ -413,11 +413,7 @@ fn objects_in(
 ///
 /// All three states are counted as a READING; only the ORPHAN is a finding.
 /// The orphan check costs one `git hash-object` per non-anchored entry only.
-fn ask_store(
-    store_root: &Path,
-    objects: &[ObjectRef],
-    plane: &mut PinPlane,
-) -> Result<(), String> {
+fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> Result<(), String> {
     let asked = |e: git::GitFail| format!("the object store could not be asked: {e}");
     let repo = git::Repo::at(store_root.to_path_buf());
     let paths: Vec<PathBuf> = objects
