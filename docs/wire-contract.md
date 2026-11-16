@@ -3433,7 +3433,7 @@ second copy of a corpus the daemon already holds. Workspace-bound, as § A.10
 | Field | Law |
 |---|---|
 | `fingerprint` | the served generation's workspace fingerprint (`fp §2`) |
-| `pins[]` | holder path order, then lock order. `{holder, object, selector?, hash, color, reason?, detail?}`. `holder`: the page carrying the lock, workspace-relative. `object`: the lock row's object, verbatim — `root:`-qualified across roots. `selector`: the pinned section, absent on a whole-file row. `hash`: the recorded blob id, verbatim. `color`: tone `green`/`red`/`grey`. `reason`: stable word, absent exactly on green |
+| `pins[]` | holder path order, then lock order. `{holder, object, selector?, hash, color, reason?, detail?}`. `holder`: the page carrying the lock, workspace-relative. `object`: the lock row's object, verbatim — `root:`-qualified across roots. `selector`: the pinned section, absent on a whole-file row. `hash`: the recorded blob id, verbatim. `object` and `hash` are absent exactly on a `lock-refused` row. `color`: tone `green`/`red`/`grey`. `reason`: stable word, absent exactly on green |
 | `excluded[]` | §12.1 enumerator clause: the markdown the hash domain left out (the custom-ignore class, as § A.10). Omitted when empty |
 
 **Doors and refusals.** A holder whose lock refuses to parse is one grey
