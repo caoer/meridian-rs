@@ -965,10 +965,11 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),
         "realise" => realise_cmd::run(&args[1..]),
-        "daemon" => {
-            reject_extra(&args[1..])?;
-            daemon::run()
-        }
+        "daemon" => match &args[1..] {
+            [] => daemon::run(false),
+            [flag] if flag == "--successor" => daemon::run(true),
+            extra => reject_extra(extra),
+        },
         other => Err(Fail::usage(format!("unknown subcommand: {other}"))),
     }
 }

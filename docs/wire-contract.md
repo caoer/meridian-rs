@@ -1373,11 +1373,73 @@ Injective per cache root; the short base keeps the path inside `sun_path`.
   pidfile; the next call auto-starts the current build); *a pipeline manages
   it* → rerun its install step; *neither is yours* → report the skew to the
   operator, quoting both builds. Conditions state applicability, not authority.
-- **Mechanism only.** No version ordering, no replace/supersede machinery, no
-  restart duty: whoever installs a binary restarts the daemon, from the install
-  pipeline (`justfile` `install`), never Rust. Known limit: two `unknown`
-  tokens compare equal and assert nothing; the sha stamp (`build.rs`) keeps
-  that rare.
+- **Mechanism only.** No version ordering and no restart duty: whoever
+  installs a binary replaces the daemon, from the install pipeline (`justfile`
+  `install`), never Rust — by a restart, or by the succession below, which
+  leaves no window without a warm daemon. Known limit: two `unknown` tokens
+  compare equal and assert nothing; the sha stamp (`build.rs`) keeps that rare.
+
+**Succession: a successor daemon warms beside the resident and takes its
+socket.** `mrd daemon --successor` started while a daemon serves the cache
+root takes no singleton lock, binds no socket and writes no pidfile, pointer,
+state file or cache drawer. It warms from the same cache root, then takes
+over in one exchange on a connection to the resident. With no daemon serving
+it is `mrd daemon`.
+
+- **The exchange.** The successor sends `{"op":"handover","warm":[…]}`, the
+  workspaces it holds warm. The resident answers one line,
+  `{"status":"handover","grant":<bool>,"reason":…,"warm":[…],"conns":[…]}`:
+  - `grant:false, reason:"warm"` — the resident holds a workspace warm that
+    the successor does not, or is building one. `warm` is the resident's set;
+    the successor warms it and asks again.
+  - `grant:false, reason:"busy"` — a request, a background save or a cache
+    compaction was still running 5 s after the resident stopped reading new
+    requests. The resident has resumed; the successor asks again after 2 s.
+  - `grant:true` — the line carries open descriptors as `SCM_RIGHTS`
+    ancillary data, in order: the listening socket, the singleton lock, then
+    one per entry of `conns`, each `{"workspace":<bound root or null>,
+    "rev":"v2"|"v3"}` — a client connection between two requests with the two
+    words its `hello` negotiated. Descriptors past the first message's ride
+    one-byte continuation messages.
+- **The drain.** Before it grants, the resident stops accepting and stops
+  reading new request lines; each connection parks when its request in flight
+  is answered. A caller in that span is held, never refused: a connect waits
+  in the listener's queue and a request line waits in its socket buffer. The
+  resident then stops its background work, flushes its state file and closes
+  its sql caches. Past 5 s it abandons the try and serves on.
+- **The commit.** The successor answers `{"adopted":true}`; the resident
+  answers `{"released":true}` and exits 0 without saving and without removing
+  the socket, pidfile or pointer. No `adopted` within 5 s → the resident
+  answers `{"aborted":true}` and serves on with its own copies of every
+  descriptor. The successor serves on `released`, or on a connection closed
+  with neither word after its `adopted` (the resident died holding the
+  grant). It then writes the pidfile and pointer, re-reads the state file and
+  accepts.
+- **Why nothing is refused.** Neither the listening socket nor the lock is
+  ever closed, re-bound or released: an flock belongs to the open file
+  description, so the passed descriptor IS the held lock and no third daemon
+  can win it. A passed connection keeps its peer; the client sees neither a
+  close nor a new error code.
+- **`sub` connections end at the commit** — the push plane is bound to the
+  resident's ring instance. The client's redial reaches the successor and
+  resyncs by fingerprint (§7.1), as after any restart.
+- **Currency.** The successor's own event feed observes every write the
+  resident answered, and its first currency pass per workspace proves it by
+  cookie (merkle-spec §6.4). At every instant exactly one daemon reads
+  requests.
+- **Save order.** The successor warms from the files on disk: the observation
+  checkpoint and the parse snapshot, each replaced by rename and matched by
+  content digest, so a stale one costs a re-parse of what moved. The resident
+  writes neither after it grants; the successor is the only saver from the
+  commit on.
+- **The sql cache does not warm beside** (`sql.duckdb` admits one process).
+  The successor opens it on the first `sql` per workspace after the commit.
+- **Failure.** A successor that exits before `released` leaves the resident
+  serving, untouched. `handover` is admin plane: absent from `caps`.
+- **The binary on disk flips after the commit**, by whoever started the
+  successor. A local client of the resident's build that dials between the
+  commit and that flip refuses by the socket law above; a connection whose
+  `hello` the resident answered is carried over and is not asked again.
 
 **Pin proof rides the request.** In `put` the pin supplies `node_rev` or
 fingerprint from the agent's own read. No server-side record of who read what

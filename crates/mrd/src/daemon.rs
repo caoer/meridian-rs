@@ -9,7 +9,7 @@
 #![warn(clippy::print_stderr, clippy::print_stdout)]
 
 use std::fs::OpenOptions;
-use std::io::{self, Read as _, Seek as _};
+use std::io::{self, Read as _, Seek as _, Write as _};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -131,7 +131,11 @@ fn open_file_ceiling(hard: libc::rlim_t) -> libc::rlim_t {
 /// Run `mrd daemon`: raise the open-file limit, start the server (socket
 /// bound, pidfile written before the first request is served — the server
 /// owns that order and its mirror on shutdown), and block until a signal.
-pub(crate) fn run() -> Result<(), Fail> {
+///
+/// `successor` replaces a serving daemon without a window
+/// (`docs/wire-contract.md` §A.3, Succession) and then says `serving` on
+/// stdout, the one line this process ever writes there.
+pub(crate) fn run(successor: bool) -> Result<(), Fail> {
     raise_open_file_limit();
     let mut config = Config::resolve()
         .map_err(|e| Fail::tool(format!("cannot resolve the daemon layout: {e}")))?;
@@ -140,10 +144,25 @@ pub(crate) fn run() -> Result<(), Fail> {
     // fallback rides through verbatim: publishing an identity, even an unnamed one,
     // is distinguishable from publishing none (`docs/wire-contract.md`).
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
-    install_signal_handlers();
     let cache_root = config.cache_root.clone();
-    let server = RunningServer::start(config)
-        .map_err(|e| Fail::tool(format!("cannot start the registry daemon: {e}")))?;
+    let server = if successor {
+        // No handler yet: a signal before the takeover ends this process and
+        // leaves the serving daemon untouched.
+        let server = RunningServer::succeed(config).map_err(|e| {
+            Fail::tool(format!(
+                "cannot succeed the serving registry daemon, which keeps serving: {e}"
+            ))
+        })?;
+        install_signal_handlers();
+        let mut stdout = io::stdout();
+        let _ = writeln!(stdout, "serving");
+        let _ = stdout.flush();
+        server
+    } else {
+        install_signal_handlers();
+        RunningServer::start(config)
+            .map_err(|e| Fail::tool(format!("cannot start the registry daemon: {e}")))?
+    };
     timing::say!(
         "meridian registry daemon listening on {}",
         server.socket_path().display()
@@ -152,12 +171,20 @@ pub(crate) fn run() -> Result<(), Fail> {
     // Started only once the singleton is held, so a losing second daemon never sweeps.
     let sweeper = spawn_sweeper(cache_root);
 
-    // Two ways out — a signal, or the idle-exit horizon the reaper watches. A detached daemon is
-    // reparented to init, so without the second condition every isolated run leaks one forever.
-    while !SIGNALLED.load(Ordering::SeqCst) && !server.idle_exit_requested() {
+    // Three ways out — a signal, the idle-exit horizon the reaper watches, or a successor
+    // that took this daemon's socket. A detached daemon is reparented to init, so without
+    // the second condition every isolated run leaks one forever.
+    while !SIGNALLED.load(Ordering::SeqCst)
+        && !server.idle_exit_requested()
+        && !server.handed_over()
+    {
         thread::sleep(Duration::from_millis(200));
     }
-    timing::say!("shutting down");
+    if server.handed_over() {
+        timing::say!("handed over to a successor; exiting");
+    } else {
+        timing::say!("shutting down");
+    }
     server.shutdown();
     sweeper.stop();
     Ok(())
