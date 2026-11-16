@@ -80,6 +80,19 @@ impl Member {
         local_status(&state.rows[&self.key].resident).0
     }
 
+    /// Verify and parse this version from its retained backing outside the
+    /// allowance ([`Resident::parse_retained`]). The ledger lock is held to
+    /// reach the version, never over the read or the parse.
+    ///
+    /// # Errors
+    /// What the hydration refuses.
+    pub fn parse_retained(&self) -> Result<model::Document, fs::hydration::HydrationError> {
+        let resident = lock(&self.controller.0.ledger).rows[&self.key]
+            .resident
+            .clone();
+        resident.parse_retained()
+    }
+
     /// Pin this exact version. `peak` bounds source bytes, parser staging and
     /// flight/error storage for one load, not merely the retained final tree.
     /// Shared-flight callers share one reservation. No admission wait is used.

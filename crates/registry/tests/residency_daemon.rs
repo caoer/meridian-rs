@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ::cache as registry_cache;
 use registry::raw_store::RawStore;
 use registry::residency::Host;
 use registry::residency::controller::Controller;
@@ -408,7 +407,7 @@ fn a_subscribed_workspace_sheds_to_the_host_limit_and_every_door_serves_the_eage
         );
     }
 
-    no_parsed_snapshot_is_saved_or_read_by_a_host_build(
+    a_host_build_saves_its_parsed_snapshot_and_adopts_one(
         tmp.path(),
         &files,
         &canonical,
@@ -569,54 +568,39 @@ fn two_requests_load_at_once_under_an_allowance_of_several_declarations() {
     owning.shutdown();
 }
 
-/// rv-352 P3-1, the host arm's snapshot claims. A host-built generation
-/// saves no parsed snapshot at shutdown. A host daemon over the owning
-/// daemon's cache, which holds an eager parsed snapshot of the workspace,
-/// builds every member through its host and never reads that snapshot (a
-/// read stamps the drawer's use).
-fn no_parsed_snapshot_is_saved_or_read_by_a_host_build(
+/// The host arm's snapshot claims (merkle-spec §6.9, restore and saving
+/// under a host). A daemon saves its parsed snapshot at shutdown whichever
+/// form its generations hold, and a host daemon over either cache adopts the
+/// snapshot there and parses no member.
+fn a_host_build_saves_its_parsed_snapshot_and_adopts_one(
     tmp: &Path,
     files: &[(String, String)],
     canonical: &Path,
     owning: RunningServer,
     leased: RunningServer,
 ) {
+    // Both resident generations are of the workspace as it now is, so what
+    // each daemon saves at shutdown has no mover against it.
+    owning.registry().warm_or_build(canonical).unwrap();
+    leased.registry().warm_or_build(canonical).unwrap();
     leased.shutdown();
     owning.shutdown();
-    assert!(
-        snapshots(&tmp.join("e")) > 0,
-        "the owning daemon saves its parsed snapshot at shutdown"
-    );
-    assert_eq!(
-        snapshots(&tmp.join("r")),
-        0,
-        "a host-built generation saves no parsed snapshot"
-    );
-
-    let drawer = registry_cache::parsed_drawer_dir(&tmp.join("e").join("cache"), canonical);
-    let last_use = || match registry_cache::probe(&drawer) {
-        registry_cache::Probe::Hit(sentinel) => sentinel.last_use,
-        registry_cache::Probe::Miss => panic!("no parsed snapshot drawer at {}", drawer.display()),
-    };
-    let before = last_use();
-    while now_secs() <= before {
-        std::thread::sleep(Duration::from_millis(50));
+    for name in ["e", "r"] {
+        assert!(
+            snapshots(&tmp.join(name)) > 0,
+            "the daemon over {name} saves its parsed snapshot at shutdown"
+        );
+        let again_dir = tmp.join(format!("again-{name}"));
+        fs::create_dir_all(&again_dir).unwrap();
+        let (again_host, _) = host(&again_dir, files);
+        let again = RunningServer::start(config(tmp, name, Some(again_host))).unwrap();
+        assert_eq!(
+            again.registry().warm_or_build(canonical).unwrap(),
+            WarmOutcome::Built { docs: 0 },
+            "a host cold build over {name}'s snapshot adopts every member"
+        );
+        again.shutdown();
     }
-    let again_dir = tmp.join("again");
-    fs::create_dir_all(&again_dir).unwrap();
-    let (again_host, _) = host(&again_dir, files);
-    let again = RunningServer::start(config(tmp, "e", Some(again_host))).unwrap();
-    assert_eq!(
-        again.registry().warm_or_build(canonical).unwrap(),
-        WarmOutcome::Built { docs: files.len() },
-        "a host cold build publishes every member"
-    );
-    assert_eq!(
-        last_use(),
-        before,
-        "a host cold build read the eager parsed snapshot"
-    );
-    again.shutdown();
 }
 
 /// Parsed snapshots (`corpus.v1`) anywhere under `dir`.
@@ -633,13 +617,6 @@ fn snapshots(dir: &Path) -> usize {
             })
             .sum()
     })
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 #[test]

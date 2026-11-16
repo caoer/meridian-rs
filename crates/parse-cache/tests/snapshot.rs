@@ -185,3 +185,63 @@ fn all_truncations_and_length_corruption_are_bounded_and_safe() {
     assert!(!restored.complete);
     assert!(restored.docs.is_empty());
 }
+
+/// A rewrite over the snapshot it replaces copies the document record its
+/// leaf set still names, asks for the one member no record covers, drops the
+/// member that left, and restores completely (merkle-spec §6.9, saving under
+/// a host).
+#[test]
+fn a_rewrite_carries_the_wanted_document_records_and_encodes_only_the_rest() {
+    let (prior, mut leaves) = encoded();
+    let (_, unserved, _) = fixture();
+    leaves.remove(Path::new("b.md"));
+    leaves.insert(PathBuf::from("new.md"), model::leaf_digest(b"# New\n"));
+
+    let mut asked = Vec::new();
+    let mut bytes = Vec::new();
+    let written = parse_cache::snapshot::rewrite(
+        &mut bytes,
+        Path::new("/workspace"),
+        "b3c:next",
+        &unserved,
+        &leaves,
+        Some(prior.as_slice()),
+        |path, digest| {
+            asked.push((path.to_owned(), *digest));
+            parse_cache::encode(&model::build(
+                "# New\n".to_owned(),
+                syntax::parse("# New\n"),
+            ))
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        asked,
+        [("new.md".to_owned(), model::leaf_digest(b"# New\n"))],
+        "a carried record's member is never asked for"
+    );
+    assert_eq!(
+        written,
+        parse_cache::snapshot::Rewritten {
+            carried: 1,
+            encoded: 1
+        }
+    );
+
+    let restored =
+        parse_cache::snapshot::read(bytes.as_slice(), Path::new("/workspace"), &leaves).unwrap();
+    assert!(restored.complete);
+    assert_eq!(restored.fingerprint, "b3c:next");
+    assert_eq!(restored.docs["a.md"].raw.as_str(), "# Unique A\n");
+    assert_eq!(restored.docs["new.md"].raw.as_str(), "# New\n");
+    assert_eq!(restored.docs.len(), 2);
+    assert_eq!(restored.unserved.len(), 1);
+    assert_eq!(restored.leaves, leaves);
+
+    // The record of the member that left is not in the new snapshot.
+    let mut with_b = leaves.clone();
+    with_b.insert(PathBuf::from("b.md"), model::leaf_digest(b"# Unique B\n"));
+    let restored =
+        parse_cache::snapshot::read(bytes.as_slice(), Path::new("/workspace"), &with_b).unwrap();
+    assert!(!restored.docs.contains_key("b.md"));
+}

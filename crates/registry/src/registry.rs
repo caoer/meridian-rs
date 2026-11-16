@@ -1122,14 +1122,16 @@ mod floor_grammar {
 }
 
 /// The next generation of `root` under a residency host (merkle-spec §6.8):
-/// the pass over `prior`'s slots, or over the empty generation when `prior`
-/// holds none. The movers and the root minted for the memo's leaf set are
-/// taken under one memo lock hold, so the pass stamps that root when it
-/// builds the very set.
+/// the pass over `prior`'s slots, over the slots `adopted` from the §6.9
+/// snapshot when no generation is resident, or over the empty generation
+/// when there is neither. The movers and the root minted for the memo's leaf
+/// set are taken under one memo lock hold, so the pass stamps that root when
+/// it builds the very set.
 fn resident_update(
     host: &crate::residency::Host,
     root: &fs::WorkspaceRoot,
     prior: Option<&WorkspaceEngine>,
+    adopted: Option<&crate::parsed_cache::Adopted>,
     cache: &Mutex<fs::DomainCache>,
 ) -> io::Result<fs::CorpusUpdate<crate::residency::catalog::Slots>> {
     let slots = crate::residency::catalog::Slots::default();
@@ -1138,6 +1140,7 @@ fn resident_update(
     let index = Arc::new(model::CorpusIndex::new());
     let previous = prior
         .and_then(WorkspaceEngine::resident_prior)
+        .or_else(|| adopted.map(crate::parsed_cache::Adopted::as_prior))
         .unwrap_or(fs::CorpusPrior {
             docs: &slots,
             unserved: &unserved,
@@ -1718,20 +1721,82 @@ impl Registry {
             .unwrap_or_else(PoisonError::into_inner)
             .leaf_digests();
         let prior = crate::parsed_cache::restore(&self.cache_root, workspace, &fresh);
+        self.note_restored(
+            workspace,
+            prior
+                .as_ref()
+                .filter(|prior| prior.complete)
+                .map(|prior| prior.fingerprint.as_str()),
+        );
+        prior
+    }
+
+    /// [`Self::restore_parsed_prior`] under a residency host: the snapshot
+    /// adopted into slots (merkle-spec §6.9, restore under a host).
+    fn adopt_parsed_prior(
+        &self,
+        workspace: &Path,
+        cache: &Mutex<fs::DomainCache>,
+        host: &crate::residency::Host,
+    ) -> Option<crate::parsed_cache::Adopted> {
+        let fresh = cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .leaf_digests();
+        let prior = crate::parsed_cache::adopt(&self.cache_root, workspace, &fresh, host);
+        self.note_restored(
+            workspace,
+            prior
+                .as_ref()
+                .filter(|prior| prior.complete)
+                .map(|prior| prior.fingerprint.as_str()),
+        );
+        prior
+    }
+
+    /// The next generation of `root` under `host` ([`resident_update`]): on a
+    /// cold start, over the slots adopted from the §6.9 snapshot.
+    fn resident_pass(
+        &self,
+        host: &crate::residency::Host,
+        root: &fs::WorkspaceRoot,
+        prior: Option<&WorkspaceEngine>,
+        cache: &Mutex<fs::DomainCache>,
+    ) -> io::Result<fs::CorpusUpdate<crate::residency::catalog::Slots>> {
+        let adopted = if prior.is_none() {
+            self.adopt_parsed_prior(&root.0, cache, host)
+        } else {
+            None
+        };
+        resident_update(host, root, prior, adopted.as_ref(), cache)
+    }
+
+    /// Queue `workspace`'s parsed snapshot for the background saver: a cold
+    /// build is a save opportunity (merkle-spec §6.9).
+    fn queue_parsed_save(&self, workspace: &Path) {
+        self.pending_parse
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(workspace.to_path_buf(), Instant::now());
+    }
+
+    /// Record the fingerprint a restore found a complete snapshot saved at,
+    /// which the next save skips at; `None` forgets it.
+    fn note_restored(&self, workspace: &Path, complete_at: Option<&str>) {
         let mut saved = self
             .saved_parse
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(prior) = &prior
-            && prior.complete
-        {
-            saved.insert(workspace.to_path_buf(), prior.fingerprint.clone());
-        } else {
+        match complete_at {
+            Some(fingerprint) => {
+                saved.insert(workspace.to_path_buf(), fingerprint.to_owned());
+            }
             // A corrupt/deleted snapshot must be healed even if its old
             // fingerprint was recorded by an earlier save in this process.
-            saved.remove(workspace);
+            None => {
+                saved.remove(workspace);
+            }
         }
-        prior
     }
 
     /// Warm the resident engine for `workspace`; rebuild only when the corpus
@@ -1852,7 +1917,7 @@ impl Registry {
                 .and_then(WorkspaceEngine::as_prior)
                 .or_else(|| restored.as_ref().map(crate::engine::restored_prior));
             let engine = if let Some(host) = &self.residency {
-                let update = resident_update(host, &root, prior.as_deref(), &cache)?;
+                let update = self.resident_pass(host, &root, prior.as_deref(), &cache)?;
                 parsed = Some(update.parsed);
                 WorkspaceEngine::resident(update)
             } else if let Some(previous) = previous {
@@ -1921,11 +1986,9 @@ impl Registry {
                         host.published(&engine);
                         drop(engine);
                         self.charge_floor();
-                    } else if cold {
-                        self.pending_parse
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .insert(canonical.clone(), Instant::now());
+                    }
+                    if cold {
+                        self.queue_parsed_save(&canonical);
                     }
                     return Ok(WarmOutcome::Built { docs: docs_parsed });
                 }
@@ -3012,10 +3075,7 @@ impl Registry {
                 }
             }
         }
-        if parsed
-            && let Some(engine) = self.engine_snapshot(workspace)
-            && let Some(docs) = engine.eager_docs()
-        {
+        if parsed && let Some(engine) = self.engine_snapshot(workspace) {
             let unchanged = self
                 .saved_parse
                 .lock()
@@ -3023,7 +3083,7 @@ impl Registry {
                 .get(workspace)
                 == Some(&engine.at_fingerprint.0);
             if !unchanged || !crate::parsed_cache::path(&self.cache_root, workspace).is_file() {
-                match crate::parsed_cache::save(&self.cache_root, workspace, &engine, docs) {
+                match crate::parsed_cache::save(&self.cache_root, workspace, &engine) {
                     Ok(Some(count)) => {
                         self.saved_parse
                             .lock()

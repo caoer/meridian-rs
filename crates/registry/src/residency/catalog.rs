@@ -372,6 +372,20 @@ impl Catalog {
         Self { entries, index }
     }
 
+    /// `path`'s document parsed from its retained backing outside the
+    /// allowance, when that backing is the version `digest` names: what a
+    /// snapshot save encodes (merkle-spec §6.9, saving under a host). `None`
+    /// for no such member, another version, or backing that cannot be read
+    /// or verified.
+    #[must_use]
+    pub fn retained_document(&self, path: &str, digest: &[u8; 32]) -> Option<model::Document> {
+        let entry = self.entries.get(path)?;
+        if entry.member.identity().digest != *digest {
+            return None;
+        }
+        entry.member.parse_retained().ok()
+    }
+
     /// The generation's slots: the prior of the next incremental pass
     /// ([`update`]).
     #[must_use]
