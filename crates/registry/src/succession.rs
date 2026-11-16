@@ -101,6 +101,11 @@ pub(crate) fn is_handover(line: &str) -> bool {
 
 // ── descriptor passing ────────────────────────────────────────────────────
 
+/// Write all of `bytes` on a shared stream.
+fn put(mut stream: &UnixStream, bytes: &[u8]) -> io::Result<()> {
+    stream.write_all(bytes)
+}
+
 /// Write `bytes` on `stream` with `fds` attached as `SCM_RIGHTS`.
 ///
 /// # Errors
@@ -113,7 +118,7 @@ pub(crate) fn is_handover(line: &str) -> bool {
 )]
 pub(crate) fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[RawFd]) -> io::Result<()> {
     if fds.is_empty() {
-        return (&*stream).write_all(bytes);
+        return put(stream, bytes);
     }
     let payload = std::mem::size_of_val(fds);
     let payload_len = libc::c_uint::try_from(payload)
@@ -145,7 +150,7 @@ pub(crate) fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[RawFd]) ->
     };
     let sent = usize::try_from(sent).map_err(|_| io::Error::last_os_error())?;
     // The descriptors ride the first byte; the rest is plain data.
-    (&*stream).write_all(&bytes[sent..])
+    put(stream, &bytes[sent..])
 }
 
 /// Read into `buf`, appending any descriptors that arrived with the bytes to
@@ -382,7 +387,7 @@ pub(crate) fn grant(
         };
         let mut out = serde_json::to_string(&answer).map_err(io::Error::other)?;
         out.push('\n');
-        (&*stream).write_all(out.as_bytes())?;
+        put(stream, out.as_bytes())?;
         Ok(Granted::Kept)
     };
     let covers = |registry: &Registry| {
@@ -501,7 +506,7 @@ pub(crate) fn grant(
         Ok(adopted)
     })();
     if !matches!(sent, Ok(true)) {
-        let _ = (&*stream).write_all(b"{\"aborted\":true}\n");
+        let _ = put(stream, b"{\"aborted\":true}\n");
         drop((listener, singleton, background));
         succession.quiesce.store(false, Ordering::SeqCst);
         let parked = std::mem::take(&mut succession.live().parked);
@@ -523,7 +528,7 @@ pub(crate) fn grant(
     drop(std::mem::take(&mut succession.live().parked));
     // Held for the rest of this process: no background pass runs again.
     std::mem::forget(background);
-    (&*stream).write_all(b"{\"released\":true}\n")?;
+    put(stream, b"{\"released\":true}\n")?;
     timing::say!("registry: handed over to a successor ({passed} connection(s) passed)");
     Ok(Granted::Handed)
 }
