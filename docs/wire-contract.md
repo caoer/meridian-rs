@@ -3396,10 +3396,20 @@ second copy of a corpus the daemon already holds. Workspace-bound, as § A.10
   commit reaches that blob is the caller's question to the object store it
   can see (`docs/status.md` § How "a commit reaches it" is asked).
 - **Freshness is the door's own.** The engine is warmed before the borrow as
-  for every door (`warm_or_build`): the root on disk is re-observed and what
-  moved is re-read, so the rows describe the tree as it stands at the call, on
-  the `StatKey` evidence every warm hit serves on (merkle-spec §6.8).
-  `fingerprint` names that generation.
+  for every door (`warm_or_build`), at the current-as-of-the-question grade
+  (merkle-spec §6.7), so the rows describe the tree as it stands at the call
+  and `fingerprint` names that generation. **No arm of that pass trusts a
+  stat alone.** The vouched arm trusts no stat at all: a write that completed
+  before the call precedes the door's cookie in the ordered event stream, and
+  its member is re-read by bytes. The floor arm compares `StatKey` — device,
+  inode, size, and mtime and ctime at nanosecond resolution — and then applies
+  the racy-clean rule (merkle-spec §6.2): a member whose mtime or ctime falls
+  within one calibrated granule of the watermark of the daemon's last
+  observation of it is re-read by bytes even when its key is identical; an
+  uncalibrated backend re-reads every member. This is the condition
+  `--commit-gate` rides the door on. Acceptance: a same-size in-place edit of
+  a pinned target landing in the same timestamp quantum as the daemon's last
+  observation turns its row red on the next `pins` call, on either arm.
 - **The CLI rides this door.** `mrd status` (its lock planes) and `mrd check`
   on the pin plane alone — `--core`, and `--commit-gate` when the index
   carries nothing the worktree does not — dial the resident daemon and follow

@@ -1097,7 +1097,10 @@ lies?".
 `--core`, and `--commit-gate` when the index carries nothing the worktree does
 not — takes its pin rows from the resident daemon's `pins` door
 (`wire-contract.md` § A.13) and builds no corpus; the daemon re-observes the
-root on disk before it answers, so the rows are the current tree's. The
+root on disk before it answers, so the rows are the current tree's. The gate
+may ride it because that observation never trusts a stat alone: a file whose
+mtime or ctime sits inside the racy window of the daemon's last look is
+re-read by bytes (`wire-contract.md` § A.13, Freshness). The
 anchoring questions are still asked of git by the CLI. A `check` that runs the
 armed plane's queries, or whose staged interval diverges from the worktree,
 builds the corpus in its own process, as does any `check` on a workspace no
