@@ -30,10 +30,12 @@
 //! beside — and `engine.rs` `in_process_links` (`links_rooted`), closed here. `retire` is the
 //! reason a per-VERB ledger cannot answer: it has TWO engine-refusal seams and routes one.
 //!
-//! ⚠️ `links` HAS EXACTLY ONE TERMINAL REFUSAL SEAM, and that is a property of its dispatch
-//! rather than an omission in this suite: `engine::try_daemon_links` answers `None` on ANY
-//! daemon-path failure and `answer_links` degrades, so the warm path never refuses. A
-//! two-face family table over `links` would look unswept and be complete.
+//! ⚠️ `links` HAS ONE ENGINE-REFUSAL SEAM A LIVE ENGINE REACHES HERE, and that is a property
+//! of its dispatch rather than an omission in this suite: `engine::try_daemon_links` answers
+//! `None` on every op refusal but the `retry` class and `answer_links` degrades, so the
+//! refusals this suite drives all surface in the degrade. The `retry` refusal that outlives
+//! the wedge cap goes through the same `json_refusal`. A two-face family table over `links`
+//! would look unswept and be complete.
 
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};

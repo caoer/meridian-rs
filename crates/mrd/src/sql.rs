@@ -513,7 +513,7 @@ fn daemon_stopping(socket: &Path, error: &std::io::Error) -> Option<Frame> {
 /// The pid in `pidfile` when that process is running and, on Linux, runs an
 /// `mrd` executable — a pid recycled by another program after a crash is not
 /// the daemon.
-fn running_daemon_pid(pidfile: &Path) -> Option<libc::pid_t> {
+pub(crate) fn running_daemon_pid(pidfile: &Path) -> Option<libc::pid_t> {
     let pid: libc::pid_t = std::fs::read_to_string(pidfile).ok()?.trim().parse().ok()?;
     if pid <= 0 {
         return None;
@@ -658,6 +658,7 @@ fn load_corpus(workspace: &Path) -> Result<Loaded, String> {
     let canonical = workspace::canonicalize(workspace)
         .map_err(|e| format!("cannot resolve workspace {}: {e}", workspace.display()))?;
     let root = fs::WorkspaceRoot(canonical);
+    crate::build_gate::enter();
     // F0 is the stamp: `fold_live` folds the same way, so F0 vs F_now can only
     // differ when the corpus moved.
     let (files, f0) =
@@ -1067,6 +1068,7 @@ fn fold_live(workspace: &Path) -> Result<String, Fail> {
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
+    crate::build_gate::enter();
     let (_files, fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot fold the corpus for live: {e}")))?;
     Ok(fingerprint.0)

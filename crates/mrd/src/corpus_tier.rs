@@ -1181,6 +1181,7 @@ fn apply_generation(
         CapSet::parse("md.edit")
             .map_err(|error| ProofFault::Workspace(format!("proof corpus caps: {error}")))?,
     );
+    crate::build_gate::enter();
     let live: MerkleRoot = fs::domain_snapshot(&root)
         .map_err(|error| ProofFault::Workspace(format!("proof workspace fold: {error}")))?
         .1;

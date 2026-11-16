@@ -1,21 +1,18 @@
-//! **A daemon that is REACHED and then fails the exchange says so on the read
-//! path** (card `mrd-read-path-discards-the-wedged-verdict`).
+//! **A daemon that is REACHED and then fails the exchange refuses the read
+//! path, in the wedge discipline's own words** (`docs/wire-contract.md` § A.10,
+//! the CLI ladder; card `mrd-read-path-discards-the-wedged-verdict`).
 //!
-//! The defect these gates close: `registry::wedge` computes a verdict on every
-//! failed exchange — up-and-wedged (`TimedOut`, "restart the daemon") or dead
-//! mid-request (`ConnectionAborted`, "the outcome of this call is unknown") —
-//! and the read lanes threw it away. `try_daemon_links` collapsed it into
-//! `Ok(DialedLinks::Unusable) | Err(_) => Ok(None)`, and `read_cmd::daemon_read`
-//! into `.ok()?`. The user paid up to `registry::wedge::WEDGE_CAP` (60 s), got a
-//! correct in-process answer, and was never told a daemon was wedged — so the
-//! one remedy that ends it was never suggested and the wait recurred per
-//! invocation. From outside the process, a computed verdict thrown away is
-//! indistinguishable from a verdict never computed.
+//! `registry::wedge` computes a verdict on every failed exchange —
+//! up-and-wedged (`TimedOut`, "restart the daemon") or dead mid-request
+//! (`ConnectionAborted`, "the outcome of this call is unknown"). A daemon that
+//! accepted the connection holds the corpus this process would otherwise build,
+//! so the read lanes do not degrade past that verdict: they refuse with it
+//! (`engine::resident_lost`). The in-process lane folds the whole corpus —
+//! minutes and gigabytes on a large root — and a slow daemon is exactly when
+//! every caller would pay that at once.
 //!
-//! The WRITE half already surfaced this (`script::wire_host::DialFailure`), so
-//! the whole card is one-sidedness. Nothing here mints new prose: the sentence
-//! asserted below is `registry::wedge`'s own, relayed verbatim through
-//! `engine::degrade_reason` — the one seam all five daemon-path lanes consult.
+//! Nothing here mints new prose for the verdict: the sentence asserted below is
+//! `registry::wedge`'s own, carried verbatim inside the refusal.
 //!
 //! # Why the injected failure is died-mid-request, not the 60 s wedge
 //!
@@ -29,7 +26,7 @@
 //! § `a_mute_unpingable_daemon_spends_the_cap_and_is_called_stalled_not_dead` and
 //! § `a_daemon_that_dies_mid_request_ends_the_read_at_eof_without_the_cap`. What was NOT
 //! gated anywhere is the half these tests own: that the sentence survives
-//! `engine::call` → `dial_links` → the degrade and reaches a user's stderr.
+//! `engine::call` and reaches a user's stderr as the refusal.
 //! Both arms leave that code path by the same `Err`, so driving the cheap one
 //! proves the relay; driving the expensive one would prove the same relay and
 //! cost 60 s of suite time per verb. (The write half's own wedge gate makes the
@@ -304,27 +301,32 @@ fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// Every assertion both verbs share: the run still succeeds, it degraded, and
-/// the degrade STATES the transport verdict instead of discarding it.
+/// Every assertion both verbs share: the run refuses, it did NOT degrade, and
+/// the refusal STATES the transport verdict instead of discarding it.
 ///
-/// The two negative assertions are the load-bearing half of the card's "decide
+/// The spawn-arm negatives are the load-bearing half of the card's "decide
 /// whether both deserve the same voice": a reached-then-failed daemon must not
 /// be reported with the spawn arms' words, because their remedy ("start one")
 /// is the wrong act when one is already running.
 fn assert_the_verdict_reached_the_user(said: &str, out: &Output, elapsed: Duration) {
     assert_eq!(
         out.status.code(),
-        Some(0),
-        "the degrade must never fail the run: {said}"
+        Some(2),
+        "a daemon that accepted the call and failed it is a refusal: {said}"
     );
     assert!(
-        said.contains("no daemon answered"),
-        "the degrade did not fire at all, so this run never reached the arm under test: {said}"
+        out.stdout.is_empty(),
+        "a refused run printed an answer: {}",
+        String::from_utf8_lossy(&out.stdout)
     );
     assert!(
-        said.contains("The daemon was reached and the exchange failed"),
-        "the read path degraded WITHOUT naming the verdict it had just computed — this is \
-         exactly the silence the card is about: {said}"
+        !said.contains("no daemon answered"),
+        "the run degraded and built the corpus in-process beside a daemon that holds it: {said}"
+    );
+    assert!(
+        said.contains("the resident daemon accepted this call and did not complete it")
+            && said.contains("not built in-process beside it"),
+        "the refusal does not say what happened and what was not done: {said}"
     );
     // The wedge discipline's own sentence, relayed verbatim. Asserting the text
     // rather than merely "some reason appeared" is what proves the relay carries
@@ -333,15 +335,14 @@ fn assert_the_verdict_reached_the_user(said: &str, out: &Output, elapsed: Durati
     assert!(
         said.contains("it died mid-request"),
         "the relayed sentence is not `registry::wedge`'s verdict, so some other failure \
-         produced this degrade and the test proves nothing about the wedge discipline: {said}"
+         produced this refusal and the test proves nothing about the wedge discipline: {said}"
     );
     assert!(
         said.contains("the outcome of this call is unknown"),
         "the verdict was relayed without its consequence clause, which is the half an \
          operator acts on: {said}"
     );
-    // A daemon that was REACHED is not a daemon that failed to start. The two
-    // recorders share one cell and one voice; they must not share one message.
+    // A daemon that was REACHED is not a daemon that failed to start.
     assert!(
         !said.contains("could not be launched at all"),
         "a daemon that answered a ping was reported as one that never launched: {said}"
@@ -362,7 +363,7 @@ fn assert_the_verdict_reached_the_user(said: &str, out: &Output, elapsed: Durati
 
 /// The `links` verb — `engine::try_daemon_links`, the arm the card pins.
 #[test]
-fn links_states_the_transport_verdict_instead_of_degrading_mute() {
+fn links_refuses_with_the_transport_verdict_instead_of_degrading() {
     let sb = Sandbox::new();
     let ws = sb.workspace();
     let _fake = sb.fake_daemon();
@@ -370,28 +371,18 @@ fn links_states_the_transport_verdict_instead_of_degrading_mute() {
     let (out, elapsed) = sb.run(&ws, &["links", "--json"]);
     let said = stderr_of(&out);
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let answer: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("`links --json` did not serve JSON ({e}): {stdout}"));
-    assert_eq!(
-        answer["source"].as_str(),
-        Some("ephemeral"),
-        "a daemon that never answered must be degraded past: {stdout}"
-    );
     assert_the_verdict_reached_the_user(&said, &out, elapsed);
 }
 
-/// The `read` verb's FIRST guarded exchange — the HELLO. `read_cmd::daemon_read`
-/// discarded the same verdict at its own `.ok()?` sites, and the read path is
-/// the higher-traffic half, so leaving it silent would have left the card's own
-/// symptom in place on the verb most likely to meet it.
+/// The `read` verb's FIRST guarded exchange — the HELLO. The read path is the
+/// higher-traffic half, so a degrade left here would leave the whole-corpus
+/// fold on the verb most likely to meet a slow daemon.
 ///
 /// The fake wedges on the first non-ping frame, so this drives the hello site
-/// (`read_cmd.rs`, the `hello` `served_or_recorded`) and nothing past it. The
-/// request site is a SEPARATE guard and has its own test below — one test that
-/// reds for both is detection without attribution.
+/// and nothing past it. The request site is a SEPARATE guard and has its own
+/// test below — one test that reds for both is detection without attribution.
 #[test]
-fn read_states_the_transport_verdict_instead_of_degrading_mute() {
+fn read_refuses_with_the_transport_verdict_instead_of_degrading() {
     let sb = Sandbox::new();
     let ws = sb.workspace();
     let fake = sb.fake_daemon();
@@ -399,12 +390,6 @@ fn read_states_the_transport_verdict_instead_of_degrading_mute() {
     let (out, elapsed) = sb.run(&ws, &["read", "a.md"]);
     let said = stderr_of(&out);
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("Alpha"),
-        "the degrade must still serve the answer — a run that fails proves nothing about \
-         a SILENT degrade: {stdout}\nstderr: {said}"
-    );
     // The site control, stated as a COUNT rather than as a hope: this run wedged
     // BEFORE any hello was answered, so the verdict below is the hello site's.
     assert_eq!(
@@ -420,14 +405,10 @@ fn read_states_the_transport_verdict_instead_of_degrading_mute() {
 /// hello that SUCCEEDED. This is the site a real wedge actually hits: the hello
 /// is cheap, and the request is where an engine stalls on a big corpus.
 ///
-/// Without this test the request site is gated by nothing — reverting its
-/// `served_or_recorded` to `.ok()?` leaves every other test in this file green,
-/// because they all wedge one exchange earlier and never reach it. A verdict
-/// computed and thrown away there is indistinguishable, from outside the
-/// process, from one never computed — this file's whole thesis, applied to the
-/// exchange that carries it.
+/// Without this test the request site is gated by nothing: every other test in
+/// this file wedges one exchange earlier and never reaches it.
 #[test]
-fn read_states_the_transport_verdict_when_the_daemon_wedges_on_the_request() {
+fn read_refuses_with_the_transport_verdict_when_the_daemon_wedges_on_the_request() {
     let sb = Sandbox::new();
     let ws = sb.workspace();
     let fake = sb.fake_daemon_greeting(1);
@@ -435,7 +416,6 @@ fn read_states_the_transport_verdict_when_the_daemon_wedges_on_the_request() {
     let (out, elapsed) = sb.run(&ws, &["read", "a.md"]);
     let said = stderr_of(&out);
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
     // POSITIVE CONTROLS, both as expected COUNTS or exact absences, and both
     // BEFORE the verdict assertion: a run that never got past the hello would
     // satisfy every assertion below while proving only what the test above
@@ -453,20 +433,14 @@ fn read_states_the_transport_verdict_when_the_daemon_wedges_on_the_request() {
         "the greeting's identity did not match this build, so the run refused at the skew \
          check and never sent its request: {said}"
     );
-    assert!(
-        stdout.contains("Alpha"),
-        "the degrade must still serve the answer — a run that fails proves nothing about \
-         a SILENT degrade: {stdout}\nstderr: {said}"
-    );
     assert_the_verdict_reached_the_user(&said, &out, elapsed);
 }
 
-/// The other half of the split, and the reason the two arms are no longer one
-/// pattern: a daemon that ANSWERS — with an op error — has produced no
-/// transport verdict, so the degrade must not invent one.
+/// The other half of the split: a daemon that ANSWERS the hello with `ok:false`
+/// serves no engine for this workspace, so the in-process lane answers — and no
+/// transport verdict is invented for a daemon that produced none.
 ///
-/// The fake here greets normally and refuses the request with `ok:false`, which
-/// is `DialedLinks::Unusable`. The run degrades exactly as before and the
+/// The fake here pongs pings and refuses the v3 hello. The run degrades and the
 /// degrade's first line stands alone.
 #[test]
 fn a_daemon_that_answers_an_op_error_gains_no_transport_verdict() {
@@ -491,14 +465,14 @@ fn a_daemon_that_answers_an_op_error_gains_no_transport_verdict() {
         "an op error must still degrade: {said}"
     );
     assert!(
-        !said.contains("The daemon was reached and the exchange failed"),
+        !said.contains("did not complete it"),
         "a daemon that ANSWERED was reported as a failed exchange — the two events are not \
          the same and their arms must stay apart: {said}"
     );
 }
 
 /// A daemon that answers every frame with `ok:false`: pongs pings, refuses the
-/// v3 hello. Up, talking, and useless — `DialedLinks::Unusable`.
+/// v3 hello. Up, talking, and serving no engine for this workspace.
 struct Refuser {
     done: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,

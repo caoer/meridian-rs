@@ -391,8 +391,10 @@ mrd walk <PAGE> [--down] [--depth N]
  the context-assembly listing over the pin graph;
  every answer cites the revs it read. Served by the
  resident daemon (wire-contract § A.10; auto-spawned as
- for read and links), in-process when none answers —
- the degrade voiced on stderr, stdout identical
+ for read and links), in-process when no daemon accepts
+ the connection — the degrade voiced on stderr, stdout
+ identical. A daemon that accepted it is waited on or
+ refuses; no corpus is built beside it
 mrd rules [PATH] [--workspace | --user] [--json]
  the effective-rules print verb: what governs at PATH
  after id-based override resolution — winner first, the
@@ -1362,6 +1364,26 @@ root declares that directory a root **and still resolves to the git root**. It
 says so, and names the two ways to change the answer: `MERIDIAN_WORKSPACE`, or
 addressing the root by name through the mount table. Registering the tree with
 the daemon also carves a sub-root.
+
+### The in-process build gate — one whole-corpus build at a time
+
+A verb that builds a whole corpus in its own process — the daemonless lanes of
+`walk`, `links` and `sql`, and `status`, `check`, `repair`, `retire` and `test
+--corpus`, which always build one — first takes an exclusive `flock` on the
+directory `<socket-stem>.build/` beside the daemon's socket, and holds it until
+the process exits. A second such process waits for the first and says so on
+stderr:
+
+```
+mrd: another mrd is building a corpus in its own process; waiting for it — one in-process build runs at a time per cache root (/run/user/1000/mrd/8b3ea6d90c5d.build).
+```
+
+So the machine holds one in-process corpus per cache root however many callers
+arrive together; without the gate each caller holds its own (§ A.10 of
+`wire-contract.md` carries the measured cost of one). The mounted roots a verb
+builds for its cross-root pins and links ride the same hold. A daemon-served
+answer takes no gate, and neither does a process whose cache root does not
+resolve. The wait is phase `build.gate` under `MRD_TIMING`.
 
 ### `mrd skill hook` — the commit fence, as a DOCUMENT
 

@@ -933,6 +933,7 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
     let root = fs::WorkspaceRoot(canonical);
     // `wire_serve::domain_snapshot`, not `fs::`: it folds the root into the wire's
     // `Root` — the same token `splice`'s world guard compares `--expect-root` against.
+    crate::build_gate::enter();
     let (files, fingerprint) = wire_serve::domain_snapshot(&root).map_err(|e| {
         // Two defects lived in one line here. (1) The `--json` face owes `{workspace, error}` on
         // EVERY leg that can refuse (`docs/status.md` § teaching rows) and this leg published

@@ -3089,11 +3089,30 @@ stored, citing the doc revs read (§2.4). Workspace-bound, unlike § A.5
   names it. The § A.11 `sql` projection resolves cross-root links through the
   same engines.
 - **The CLI rides this door.** `mrd walk` dials the resident daemon as
-  `read` and `links` do — auto-spawn, degrade to the in-process build when
-  none answers, the degrade voiced on stderr; an op refusal degrades too, so
-  the in-process diagnostic is the one a caller reads — and renders the wire
-  rows through the same `color_*` projections, so stdout is byte-identical
-  across lanes.
+  `read` and `links` do, auto-spawning it, and renders the wire rows through
+  the same `color_*` projections, so stdout is byte-identical across lanes.
+  It follows the § A.11 CLI ladder. The in-process build serves a workspace
+  no daemon serves — no daemon accepts the connection, or `hello` refuses the
+  workspace — and is voiced on stderr. Once a daemon has accepted the
+  connection, it is the answer:
+  - a `retry` refusal (`corpus_warming`, `corpus_race`) is re-asked on the
+    held connection until it serves or the wedge cap is spent, then refused in
+    the daemon's words;
+  - an exchange that does not complete — the daemon outlives the wedge cap or
+    closes mid-request — is refused naming the cause;
+  - a socket that refuses the connection while its pidfile names a running
+    `mrd` is that daemon in its stop (§ A.11), refused naming the pid;
+  - any other op refusal is the answer, spelled as the in-process lane spells
+    the same miss (`file_not_found` → `walk root not in the corpus`,
+    `walk_cycle` → `in-snapshot cycle`).
+
+  None of these builds the corpus in-process beside the daemon. One such
+  build of `mrd walk` on a single page of an 11.5k-member root whose locks
+  address a 208k-member root measured 138.8 s and 3.86 GiB resident (build
+  `58b702c8`), and a warming or slow daemon is exactly when every caller would
+  pay it at once. `mrd links` follows the same ladder for the first three
+  arms; its other op refusals still fall to the in-process answer, which
+  holds the mount table the daemon's `links` does not.
 
 ```json
 {"id":12,"op":"walk","path":"a.md"}

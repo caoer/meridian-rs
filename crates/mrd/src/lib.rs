@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod build_gate;
 mod cache_cmd;
 mod check_armed;
 mod check_cmd;
