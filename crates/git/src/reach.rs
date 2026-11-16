@@ -39,8 +39,8 @@ pub(crate) fn parse_oid(hex: &[u8]) -> Option<Oid> {
         return None;
     }
     let mut out = [0u8; 32];
-    for (i, pair) in hex.chunks_exact(2).enumerate() {
-        out[i] = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    for (i, [hi, lo]) in hex.as_chunks::<2>().0.iter().enumerate() {
+        out[i] = (nibble(*hi)? << 4) | nibble(*lo)?;
     }
     Some(out)
 }
@@ -198,46 +198,25 @@ impl Repo {
             text
         });
 
-        let mut empty = true;
-        let mut stopped = false;
-        let mut bad_line: Option<String> = None;
-        let mut reader = BufReader::with_capacity(1 << 20, stdout);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(source) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(GitFail::Io {
-                        what: WHAT.to_owned(),
-                        source,
-                    });
-                }
+        let listed = match read_oids(stdout, &mut on_oid) {
+            Ok(listed) => listed,
+            Err(source) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(GitFail::Io {
+                    what: WHAT.to_owned(),
+                    source,
+                });
             }
-            let token = line
-                .split(|b| *b == b' ' || *b == b'\n')
-                .next()
-                .unwrap_or_default();
-            if token.is_empty() {
-                continue;
-            }
-            let Some(oid) = parse_oid(token) else {
-                bad_line = Some(token.escape_ascii().to_string());
-                break;
-            };
-            empty = false;
-            if !on_oid(oid) {
-                stopped = true;
-                break;
-            }
-        }
+        };
+        let (empty, stopped, bad_line) = match listed {
+            Listed::All { empty } => (empty, false, None),
+            Listed::Stopped => (false, true, None),
+            Listed::Bad(token) => (false, false, Some(token)),
+        };
         if stopped || bad_line.is_some() {
             let _ = child.kill();
         }
-        drop(reader);
         let status = child.wait().map_err(|source| GitFail::Io {
             what: WHAT.to_owned(),
             source,
@@ -261,6 +240,43 @@ impl Repo {
             });
         }
         Ok(empty)
+    }
+}
+
+/// How a [`read_oids`] pass ended.
+enum Listed {
+    /// git's output ran out; `empty` when it listed nothing.
+    All { empty: bool },
+    /// The consumer answered `false`.
+    Stopped,
+    /// A line that does not start with an object id, escaped.
+    Bad(String),
+}
+
+/// Feed the leading object id of every `rev-list --objects` line to `on_oid`.
+fn read_oids(stdout: impl Read, on_oid: &mut impl FnMut(Oid) -> bool) -> io::Result<Listed> {
+    let mut empty = true;
+    let mut reader = BufReader::with_capacity(1 << 20, stdout);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok(Listed::All { empty });
+        }
+        let token = line
+            .split(|b| *b == b' ' || *b == b'\n')
+            .next()
+            .unwrap_or_default();
+        if token.is_empty() {
+            continue;
+        }
+        let Some(oid) = parse_oid(token) else {
+            return Ok(Listed::Bad(token.escape_ascii().to_string()));
+        };
+        empty = false;
+        if !on_oid(oid) {
+            return Ok(Listed::Stopped);
+        }
     }
 }
 
