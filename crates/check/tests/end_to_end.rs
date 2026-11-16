@@ -157,12 +157,12 @@ fn a_drifted_pin_still_reddens_after_the_journal_died() {
     let drifted = check::PinRow {
         src_path: "claim.md".to_string(),
         declared_ref: "source.md#S".to_string(),
-        color: model::selector::Color::Red(model::selector::RedReason::Drifted),
+        class: check::PinClass::Red,
         label: "red content-drifted".to_string(),
     };
     let plane = check::pin_plane(
         &root,
-        &docs,
+        &check::lock_objects(&docs),
         std::slice::from_ref(&drifted),
         &BTreeMap::new(),
     );
@@ -195,7 +195,7 @@ fn an_unaskable_object_store_is_still_grey_and_never_a_clean_reading() {
     let doc = model::build(page.clone(), syntax::parse(&page));
     let docs = BTreeMap::from([("claim.md".to_string(), std::sync::Arc::new(doc))]);
 
-    let plane = check::pin_plane(&root, &docs, &[], &BTreeMap::new());
+    let plane = check::pin_plane(&root, &check::lock_objects(&docs), &[], &BTreeMap::new());
     assert!(
         plane.cannot_ask.is_some(),
         "there is no repository at /nonexistent — the question could not be put"
