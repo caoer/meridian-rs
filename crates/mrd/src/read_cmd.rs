@@ -215,9 +215,16 @@ enum DaemonRead {
     /// single-file load that cannot know what the corpus-holding engine said
     /// (e.g. the per-file `invalid_utf8` naming an unserved member).
     Refused(Box<ErrorBody>),
-    /// The daemon path itself failed: socket, spawn, handshake, or a frame
-    /// that does not parse as the wire vocabulary.
+    /// No daemon serves this workspace: none accepts the connection and none
+    /// came up, `hello` refuses the workspace, or a frame does not parse as
+    /// the wire vocabulary.
     Unavailable,
+    /// A daemon accepted the connection and the exchange did not complete,
+    /// or its socket is closed while it finishes a stop. A refusal, never a
+    /// degrade: the degrade folds the whole corpus in this process beside the
+    /// daemon that holds it (wire-contract § A.10, the CLI ladder). Carries
+    /// the one-voice refusal ([`engine::resident_lost`]).
+    Lost(Fail),
     /// The daemon answered the handshake from a build that is not this
     /// client's (0025 socket law). A refusal, never a degrade: melting skew
     /// into `Unavailable` would serve an in-process answer and hide the stale
@@ -227,7 +234,7 @@ enum DaemonRead {
 }
 
 /// Answer the composed read: dial the resident daemon (auto-spawning it) and serve its answer —
-/// success or typed refusal alike. Only when the daemon is unreachable degrade to the
+/// success or typed refusal alike. Only when no daemon serves the workspace degrade to the
 /// in-process engine — the same leaves, the same projection, only the reported source differs.
 fn answer_read(
     workspace: &Path,
@@ -249,6 +256,7 @@ fn answer_read(
             None,
         )),
         DaemonRead::Skew(message) => Err(Fail::tool(message)),
+        DaemonRead::Lost(fail) => Err(fail),
     }
 }
 
@@ -299,48 +307,21 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> DaemonRead {
     daemon_read(workspace, r).unwrap_or(DaemonRead::Unavailable)
 }
 
-/// Dial the registry socket, spawning a daemon only when nothing answers.
-///
-/// **A successful connect IS the liveness proof**, so the warm path asks the question once
-/// instead of twice. It used to call [`engine::ensure_daemon`] first, whose own liveness test
-/// (`Client::ping`) opens a SEPARATE connection — two dials where one answers, and the daemon's
-/// accept loop polls a non-blocking listener on a fixed quantum, so each dial waits out its own
-/// sleep. That doubled the fixed cost of every warm read: measured 40.2ms → 20.1ms, a 2.00x
-/// improvement, on the session receipt `09-11-mentor-8h-perfection-loop`
-/// `results/perf-finding-accept-poll-countdown-2026-08-09.md` (a session tree, not this repo).
-///
-/// The pre-flight is NOT redundant, which is why it is reordered rather than deleted: its answer
-/// decides whether to AUTO-SPAWN, and dropping it outright would leave the first read after boot
-/// silently degrading in-process forever instead of starting the daemon. The cold path is
-/// unchanged — an absent or refusing socket still reaches `ensure_daemon`, which spawns and waits
-/// for readiness.
-/// Both arms hand back a stream already under the wedge discipline
-/// ([`registry::wedge`]): a connect proves only that something is LISTENING,
-/// and an unbounded read on a daemon that accepts and never answers parks this
-/// process forever — past every degrade this lane has (card
-/// `registry-client-read-timeout-absent`).
-pub(crate) fn connect_or_spawn(client: &Client) -> std::io::Result<UnixStream> {
-    let bound = |stream: UnixStream| -> std::io::Result<UnixStream> {
-        registry::wedge::bind(&stream)?;
-        Ok(stream)
-    };
-    if let Ok(stream) = UnixStream::connect(client.socket_path()) {
-        return bound(stream);
-    }
-    engine::ensure_daemon(client)?;
-    UnixStream::connect(client.socket_path()).and_then(bound)
-}
-
-/// `None` on any transport or handshake failure — the caller degrades. An op-level `ok:false`
+/// `None` when no daemon serves the workspace — the caller degrades. An op-level `ok:false`
 /// is NOT such a failure: it comes back as [`DaemonRead::Refused`] carrying the engine's frame.
+/// Neither is an exchange a daemon accepted and did not complete: that is
+/// [`DaemonRead::Lost`], with the verdict `registry::wedge` reached on the wire.
 fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
     let client = Client::from_default().ok()?;
-    // `.ok()?` here on purpose: this failure means nothing was reachable and no daemon came
-    // up, and `engine::ensure_daemon` has already recorded the richer fact — the child's own
-    // dying words. A dial verdict recorded here would overwrite that quote with a connect
-    // error, which is the same fact spelled worse.
-    let stream = connect_or_spawn(&client).ok()?;
-    let mut writer = stream.try_clone().ok()?;
+    let stream = match engine::connect_or_spawn(&client) {
+        Ok(stream) => stream?,
+        Err(fail) => return Some(DaemonRead::Lost(fail)),
+    };
+    let lost = |error: std::io::Error| DaemonRead::Lost(engine::resident_lost(&error));
+    let mut writer = match stream.try_clone() {
+        Ok(writer) => writer,
+        Err(error) => return Some(lost(error)),
+    };
     let mut reader = BufReader::new(stream);
 
     let hello = json!({
@@ -349,16 +330,10 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         "contract": "v3",
         "workspace": workspace.to_string_lossy(),
     });
-    // `served_or_recorded`, not `.ok()?`: an exchange that fails on the wire has already been
-    // judged by `registry::wedge` — wedged, dead mid-request, or a plain fault — and that
-    // verdict is what `engine::voice_degrade` states below. Dropping it here is what made a
-    // 60-second wedge look like a merely slow, correct answer.
-    let greeted = engine::served_or_recorded(engine::call(
-        &mut writer,
-        &mut reader,
-        client.socket_path(),
-        &hello,
-    ))?;
+    let greeted = match engine::call(&mut writer, &mut reader, client.socket_path(), &hello) {
+        Ok(greeted) => greeted,
+        Err(error) => return Some(lost(error)),
+    };
     if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
         return None;
     }
@@ -368,12 +343,11 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         return Some(DaemonRead::Skew(message));
     }
 
-    let response = engine::served_or_recorded(engine::call(
-        &mut writer,
-        &mut reader,
-        client.socket_path(),
-        &r.request(),
-    ))?;
+    let response = match engine::call(&mut writer, &mut reader, client.socket_path(), &r.request())
+    {
+        Ok(response) => response,
+        Err(error) => return Some(lost(error)),
+    };
     if response.get("ok").and_then(Value::as_bool) == Some(true) {
         let body = response.get("body")?.clone();
         let mint = match mint_scoped_token(
@@ -535,6 +509,8 @@ fn in_process_read(workspace: &Path, cwd: &Path, r: &Read) -> Result<Value, Fail
         teach_miss(workspace, cwd, r, &mut e);
         engine::json_refusal(r.format, workspace, &e)
     })?;
+    // The ambient root is a fold of every member's bytes: a whole-corpus read.
+    crate::build_gate::enter();
     let ambient = wire_serve::ambient_root(&root)
         .map_err(|e| engine::json_refusal(r.format, workspace, &e))?;
     // The same routing the wire request does — one door, two transports,

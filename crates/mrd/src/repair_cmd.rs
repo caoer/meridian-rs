@@ -100,6 +100,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         )?;
     }
 
+    crate::build_gate::enter();
     let (files, _fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
     let (_index, mut docs, unserved) = fs::build_corpus(files);

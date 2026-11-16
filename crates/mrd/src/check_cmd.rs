@@ -102,6 +102,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let domain = fs::domain::Domain::load(&root)
         .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
     let paths = workspace_paths(&canonical, &cwd, &parsed.paths)?;
+    crate::build_gate::enter();
     let (worktree_files, worktree_fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
 

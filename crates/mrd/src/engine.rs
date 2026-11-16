@@ -1,6 +1,14 @@
 //! The engine-client path: answer an engine read op by dialing the resident daemon —
-//! auto-spawning it on first use — and degrading to an in-process ephemeral engine when the
-//! daemon is unavailable. A run never fails for want of a daemon.
+//! auto-spawning it on first use — and degrading to an in-process ephemeral engine when no
+//! daemon serves the workspace. A run never fails for want of a daemon.
+//!
+//! The degrade is for the ABSENT daemon only (`docs/wire-contract.md` § A.10 / § A.11, the
+//! CLI ladder). A daemon that accepted the connection holds — or is building — the corpus
+//! this process would build, so an exchange with it that does not complete is refused
+//! ([`resident_lost`]), a `retry` refusal is re-asked on the held connection
+//! ([`call_through_retries`]) and a socket closed by a daemon still in its stop is refused
+//! ([`resident_stopping`]). An in-process build beside it would be paid by every caller at
+//! once, exactly when the daemon is slow.
 
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader};
@@ -142,7 +150,7 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
 /// first line of [`voice_degrade`] already names the fact, and a guess is worth less than
 /// silence.
 ///
-/// Three causes, in the order an operator can act on them:
+/// Two causes, in the order an operator can act on them:
 ///
 /// 1. **A socket path that cannot fit in `sun_path`** — silent, and not fixed by starting a
 ///    daemon, so it outranks anything a spawn attempt reports (under it, a spawn is bound to
@@ -153,13 +161,10 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
 ///    in-root fallback) still can.
 /// 2. **A daemon this process spawned and never heard from** — its own dying words, read back
 ///    off its lane ([`record_spawn_failure`]). This is not a guess: it is the child's own text.
-/// 3. **A daemon this process REACHED, which then failed the exchange** — wedged, dead
-///    mid-request, or a plain transport fault, as `registry::wedge` judged it on the wire
-///    ([`record_dial_failure`]). Also not a guess: it is the wedge discipline's own verdict,
-///    the one the read path paid `registry::wedge::WEDGE_CAP` to compute.
 ///
 /// A refused handshake and a daemon somebody else's process failed to start are still covered
-/// by the first line alone.
+/// by the first line alone. A daemon this process REACHED, which then failed the exchange, is
+/// not a degrade at all: it refuses ([`resident_lost`]).
 pub(crate) fn degrade_reason() -> Option<String> {
     let Ok(client) = Client::from_default() else {
         return Some("No cache root resolves, so there is no socket path to dial.".to_owned());
@@ -179,62 +184,23 @@ pub(crate) fn degrade_reason() -> Option<String> {
 }
 
 /// Why the daemon path did not serve THIS process, in this process's own words — set by
-/// [`record_spawn_failure`] or [`record_dial_failure`], read by [`degrade_reason`].
+/// [`record_spawn_failure`], read by [`degrade_reason`].
 ///
-/// A process-wide cell rather than a return value, because the five lanes that need this fact
-/// do not share a call shape: two swallow `ensure_daemon`'s error into a degrade
-/// ([`try_daemon_links`], `read_cmd::connect_or_spawn`) and three interpolate it into a refusal
-/// (`write_ipc`, `fingerprint_cmd`, `script::cmd`). [`degrade_reason`] is the seam all five
-/// already consult, so the fact is recorded once and stated once, in one voice, wherever the
-/// run ends up surfacing it.
-///
-/// **Two writers, one voice, and they cannot race for a single run.** A lane that records a
-/// spawn failure has no daemon left to dial ([`try_daemon_links`] returns before `dial_links`;
-/// `read_cmd::connect_or_spawn` reaches [`ensure_daemon`] only when the connect ALREADY
-/// failed), so a dial verdict never overwrites the richer spawn quote.
+/// A process-wide cell rather than a return value, because the lanes that need this fact do
+/// not share a call shape: the read lanes swallow `ensure_daemon`'s error into a degrade
+/// ([`connect_or_spawn`]) and three interpolate it into a refusal (`write_ipc`,
+/// `fingerprint_cmd`, `script::cmd`). [`degrade_reason`] is the seam they all consult, so the
+/// fact is recorded once and stated once, in one voice, wherever the run ends up surfacing it.
 ///
 /// Last writer wins: a process that spawns twice is reporting on its latest attempt.
 static DEGRADE_FACT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Store `reason` as this process's degrade fact. A poisoned lock drops it: a diagnostic is
-/// never worth a panic on a path whose whole job is to keep the run alive.
-fn record(reason: String) {
+/// Record why the spawn this process just attempted left it with no daemon. A poisoned lock
+/// drops it: a diagnostic is never worth a panic on a path whose whole job is to keep the run
+/// alive.
+fn record_spawn_failure(reason: String) {
     if let Ok(mut slot) = DEGRADE_FACT.lock() {
         *slot = Some(reason);
-    }
-}
-
-/// Record why the spawn this process just attempted left it with no daemon.
-fn record_spawn_failure(reason: String) {
-    record(reason);
-}
-
-/// Record why a daemon this process REACHED then failed to serve it.
-///
-/// The sentence is the transport error's own, verbatim. `registry::wedge` has already decided
-/// WHICH failure this is — up-and-wedged, dead mid-request, or a plain fault — and already
-/// wrote the remedy, in the same voice the write half speaks
-/// ([`crate::script::wire_host::DialFailure`]). Minting a second wording here would be worse
-/// than the silence it replaces, so this adds one attributive clause and nothing else.
-///
-/// The verdict is not cheap: reaching the wedged arm costs `registry::wedge::WEDGE_CAP`. It
-/// was computed on every such run already and thrown away, which from outside the process is
-/// indistinguishable from never computing it.
-fn record_dial_failure(error: &io::Error) {
-    record(format!(
-        "The daemon was reached and the exchange failed: {error}"
-    ));
-}
-
-/// `Some` on success; on failure record the verdict for the degrade and answer `None` — the
-/// read lanes' `.ok()?`, with the fact kept instead of dropped.
-pub(crate) fn served_or_recorded<T>(outcome: io::Result<T>) -> Option<T> {
-    match outcome {
-        Ok(value) => Some(value),
-        Err(error) => {
-            record_dial_failure(&error);
-            None
-        }
     }
 }
 
@@ -547,13 +513,13 @@ const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(5);
 const PING_POLL: Duration = Duration::from_millis(25);
 
 /// Answer `links` for `workspace` (optional workspace-relative `path`): dial the resident
-/// daemon — auto-spawning it — and on any daemon-path failure degrade to the in-process
-/// ephemeral engine.
+/// daemon — auto-spawning it — and degrade to the in-process ephemeral engine when no daemon
+/// serves the workspace.
 ///
-/// `format` reaches here only so the degrade's engine-refusal seam can publish the `--json`
-/// face's `{workspace, error}` envelope ([`in_process_links`]). THE WARM PATH NEVER REFUSES:
-/// [`try_daemon_links`] answers `None` on ANY daemon-path failure and this function degrades,
-/// so `links` has exactly ONE terminal engine-refusal seam and it is in the degrade.
+/// `format` reaches both lanes so each refusal seam can publish the `--json` face's
+/// `{workspace, error}` envelope: the degrade's ([`in_process_links`]), and the daemon lane's
+/// `retry` refusal that outlived the cap ([`try_daemon_links`]). Every other op refusal the
+/// daemon answers still falls to the degrade, whose refusal seam stays the authoritative one.
 pub(crate) fn answer_links(
     workspace: &Path,
     cwd: &Path,
@@ -561,7 +527,7 @@ pub(crate) fn answer_links(
     format: Format,
 ) -> Result<Answer, Fail> {
     let dialing = timing::phase("daemon.dial");
-    if let Some(body) = try_daemon_links(workspace, path)?
+    if let Some(body) = try_daemon_links(workspace, path, format)?
         && !daemon_answer_needs_the_address_plane(&body)
     {
         dialing.stop();
@@ -635,49 +601,193 @@ fn declared_mount_set() -> Option<addr::MountSet> {
     Some(table.projection())
 }
 
-/// Try the whole daemon path: resolve the socket, ensure a daemon is up (auto-spawn if not),
-/// then dial `hello` + `links`. `Ok(None)` on ANY daemon-path failure — the caller degrades.
-/// `Ok(Some(body))` only when the daemon answered `ok:true`. `Err` on ONE case that must not
-/// melt into the degrade: build skew (0025 socket law) — a stale resident answering in
-/// silence is the defect, and degrading past it would hide the stale daemon forever.
-fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Result<Option<Value>, Fail> {
+/// The daemon lane of `links`, on the CLI ladder (`docs/wire-contract.md` § A.10): dial
+/// ([`connect_or_spawn`]), `hello` binds and warms `workspace`, then one `links`.
+///
+/// `Ok(None)` = the in-process lane answers: no daemon serves this workspace (none accepts
+/// the connection, or `hello` refuses the workspace), or the daemon answered an op refusal
+/// that is not `retry` — the in-process answer holds the mount table the daemon's `links`
+/// does not, and its refusal seam is the authoritative one. `Err` = a daemon accepted the
+/// connection and is the answer, and the answer is a refusal: build skew (0025 socket law),
+/// an exchange that did not complete, or a `retry` refusal that outlived the cap.
+fn try_daemon_links(
+    workspace: &Path,
+    path: Option<&str>,
+    format: Format,
+) -> Result<Option<Value>, Fail> {
     let Ok(client) = Client::from_default() else {
         return Ok(None);
     };
-    if ensure_daemon(&client).is_err() {
+    let Some(stream) = connect_or_spawn(&client)? else {
+        return Ok(None);
+    };
+    let socket = client.socket_path();
+    let mut writer = stream.try_clone().map_err(|e| resident_lost(&e))?;
+    let mut reader = BufReader::new(stream);
+
+    // `hello` with a `workspace` resolves, pins and warms the resident engine, binding this
+    // connection to it.
+    let hello = json!({
+        "op": "hello",
+        "proto": 1,
+        "contract": "v3",
+        "workspace": workspace.to_string_lossy(),
+    });
+    let greeted = call(&mut writer, &mut reader, socket, &hello).map_err(|e| resident_lost(&e))?;
+    if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
         return Ok(None);
     }
-    match dial_links(client.socket_path(), workspace, path) {
-        Ok(DialedLinks::Served(body)) => Ok(Some(body)),
-        // The daemon is up and TALKING — it answered, with an op error. There is no
-        // transport verdict to state and no operator act to name, so the degrade's first
-        // line stands alone rather than gaining a guess. (That an op-level refusal melts
-        // into the degrade at all is a different defect on a different lane; the §1
-        // admission check in `dispatch_links` is its partial answer.)
-        Ok(DialedLinks::Unusable) => Ok(None),
-        // The exchange failed on the WIRE, which is not the same event. `registry::wedge`
-        // has already judged which failure it is and written the remedy — up-and-wedged
-        // says "restart the daemon", dead-mid-request says the outcome is unknown — and
-        // this arm used to drop that verdict on the floor, so a user paid the full
-        // `WEDGE_CAP`, got a correct in-process answer, and was never told a daemon is
-        // wedged. Record it; `voice_degrade` states it.
-        Err(error) => {
-            record_dial_failure(&error);
-            Ok(None)
-        }
-        Ok(DialedLinks::Skew(message)) => Err(Fail::tool(message)),
+    // 0025 socket law: identity equality on the hello frame already in hand.
+    hello_identity_skew(greeted.get("body"), socket).map_err(Fail::tool)?;
+
+    let mut links = json!({ "op": "links" });
+    if let Some(p) = path {
+        links["path"] = json!(p);
+    }
+    let response = call_through_retries(&mut writer, &mut reader, socket, workspace, &links)
+        .map_err(|e| resident_lost(&e))?;
+    if response.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(response.get("body").cloned());
+    }
+    match retry_refusal(&response) {
+        Some(error) => Err(json_refusal(format, workspace, &error)),
+        None => Ok(None),
     }
 }
 
-/// What one dialled `hello` + `links` exchange produced, for [`try_daemon_links`].
-enum DialedLinks {
-    /// `ok:true` — the wire success body.
-    Served(Value),
-    /// The daemon answered an op error — degrade to the authoritative
-    /// in-process answer.
-    Unusable,
-    /// The handshake succeeded from a foreign build — refuse, never degrade.
-    Skew(String),
+/// Dial the registry socket, spawning a daemon only when nothing answers. `Ok(None)` = no
+/// daemon accepts the connection and none came up: the caller's in-process lane answers.
+///
+/// **A successful connect IS the liveness proof**, so the warm path asks the question once
+/// instead of twice. It used to call [`ensure_daemon`] first, whose own liveness test
+/// (`Client::ping`) opens a SEPARATE connection — two dials where one answers, and the daemon's
+/// accept loop polls a non-blocking listener on a fixed quantum, so each dial waits out its own
+/// sleep. That doubled the fixed cost of every warm read: measured 40.2ms → 20.1ms, a 2.00x
+/// improvement, on the session receipt `09-11-mentor-8h-perfection-loop`
+/// `results/perf-finding-accept-poll-countdown-2026-08-09.md` (a session tree, not this repo).
+///
+/// The pre-flight is NOT redundant, which is why it is reordered rather than deleted: its answer
+/// decides whether to AUTO-SPAWN, and dropping it outright would leave the first read after boot
+/// silently degrading in-process forever instead of starting the daemon. The cold path is
+/// unchanged — an absent or refusing socket still reaches `ensure_daemon`, which spawns and waits
+/// for readiness.
+///
+/// The stream comes back under the wedge discipline ([`registry::wedge`]): a connect proves
+/// only that something is LISTENING, and an unbounded read on a daemon that accepts and never
+/// answers parks this process forever (card `registry-client-read-timeout-absent`).
+///
+/// # Errors
+/// The socket refused the connection while its pidfile names a running `mrd`
+/// ([`resident_stopping`]), or the accepted stream could not be put under the discipline
+/// ([`resident_lost`]).
+pub(crate) fn connect_or_spawn(client: &Client) -> Result<Option<UnixStream>, Fail> {
+    let socket = client.socket_path();
+    let bound = |stream: UnixStream| -> Result<Option<UnixStream>, Fail> {
+        registry::wedge::bind(&stream).map_err(|e| resident_lost(&e))?;
+        Ok(Some(stream))
+    };
+    match UnixStream::connect(socket) {
+        Ok(stream) => return bound(stream),
+        Err(error) => {
+            if let Some(stopping) = resident_stopping(socket, &error) {
+                return Err(stopping);
+            }
+        }
+    }
+    // `ensure_daemon` has recorded the richer fact — the child's own dying words — for
+    // `voice_degrade` to state.
+    if ensure_daemon(client).is_err() {
+        return Ok(None);
+    }
+    match UnixStream::connect(socket) {
+        Ok(stream) => bound(stream),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The refusal for a daemon that accepted the connection and did not complete the exchange
+/// (`docs/wire-contract.md` § A.10, the CLI ladder): it outlived the wedge cap or closed
+/// mid-request, as `registry::wedge` judged it on the wire. It holds the corpus, so the
+/// in-process lane would build the whole corpus beside it, and every caller waiting on the
+/// same slow daemon would build one.
+pub(crate) fn resident_lost(cause: &io::Error) -> Fail {
+    Fail::tool(format!(
+        "the resident daemon accepted this call and did not complete it ({cause}); the corpus          is not built in-process beside it — retry"
+    ))
+}
+
+/// The refusal for a socket that refused the connection while its pidfile names a running
+/// `mrd` (`docs/wire-contract.md` § A.11): a daemon in its stop closes its listener first and
+/// holds the corpus until its checkpoint save ends, so the in-process lane would build the
+/// whole corpus beside it, as in [`resident_lost`]. `None` for every other connect failure —
+/// no socket file, or a refused one left by a daemon gone without cleanup — so the caller
+/// spawns or degrades.
+fn resident_stopping(socket: &Path, error: &io::Error) -> Option<Fail> {
+    if error.kind() != io::ErrorKind::ConnectionRefused {
+        return None;
+    }
+    let pid = crate::sql::running_daemon_pid(&socket.with_extension("pid"))?;
+    Some(Fail::tool(format!(
+        "the resident daemon (pid {pid}) refused this call: its socket is closed while the          process still runs, most often finishing a stop that still holds the corpus; the          corpus is not built in-process beside it — retry"
+    )))
+}
+
+/// How long a silent wait on a `retry` refusal runs before the caller is told why.
+const RETRY_VOICE_AFTER: Duration = Duration::from_secs(2);
+/// The pause between two asks of a daemon that answers a `retry` refusal. The refusal is
+/// served at config cost (the §3.2 cold gate reads no corpus), so the poll costs the daemon
+/// nothing it would notice.
+const RETRY_POLL: Duration = Duration::from_millis(100);
+
+/// One round trip ([`call`]) that re-asks while the daemon answers a `retry` refusal
+/// (`corpus_warming`, `corpus_race`), until it answers anything else or
+/// `registry::wedge::WEDGE_CAP` is spent — then the last refusal comes back for the caller to
+/// surface ([`retry_refusal`]).
+///
+/// The daemon is building the very corpus the in-process lane would build, and started
+/// first, so waiting on it is never slower than building beside it and costs this process
+/// nothing. The wait is said once on stderr, so a person watching knows what the pause is.
+///
+/// # Errors
+/// As [`call`]: the exchange did not complete.
+pub(crate) fn call_through_retries(
+    writer: &mut UnixStream,
+    reader: &mut BufReader<UnixStream>,
+    socket: &Path,
+    workspace: &Path,
+    request: &Value,
+) -> io::Result<Value> {
+    let asked = Instant::now();
+    let mut voiced = false;
+    loop {
+        let response = call(writer, reader, socket, request)?;
+        let waited = asked.elapsed();
+        if retry_refusal(&response).is_none() || waited >= registry::wedge::WEDGE_CAP {
+            return Ok(response);
+        }
+        if !voiced && waited >= RETRY_VOICE_AFTER {
+            voiced = true;
+            eprintln!(
+                "mrd: the resident daemon is still building {} and answers `retry`; waiting                  for it (up to {}s) — the corpus is not built in-process beside it.",
+                workspace.display(),
+                registry::wedge::WEDGE_CAP.as_secs()
+            );
+        }
+        std::thread::sleep(RETRY_POLL);
+    }
+}
+
+/// The §8 error body of a `retry`-class refusal frame (`ok:false`, `recovery: "retry"`),
+/// including a code a newer daemon introduced; `None` for every other frame.
+pub(crate) fn retry_refusal(response: &Value) -> Option<ErrorBody> {
+    if response.get("ok").and_then(Value::as_bool) != Some(false) {
+        return None;
+    }
+    let error = response.get("error")?;
+    if error.get("recovery")?.as_str()? != "retry" {
+        return None;
+    }
+    serde_json::from_value(error.clone()).ok()
 }
 
 /// Ensure a daemon serves `client`'s socket: return early if one is up — answering, or
@@ -754,51 +864,6 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
         io::ErrorKind::TimedOut,
         "auto-spawned daemon did not become ready",
     ))
-}
-
-/// Dial one connection: `hello` binds and warms `workspace` (one round trip), then `links`
-/// reads from that binding. `Err` on a transport failure; otherwise the [`DialedLinks`]
-/// split — a failed handshake is `Unusable` (the in-process answer is authoritative), a
-/// handshake from a foreign build is `Skew` (0025: refuse, never degrade).
-fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result<DialedLinks> {
-    let stream = UnixStream::connect(socket)?;
-    // Before the clone — the timeouts are socket-level, so both halves inherit
-    // them. Without this the `hello` below waits on a wedged daemon forever and
-    // the caller never reaches its degrade (card `registry-client-read-timeout-absent`).
-    registry::wedge::bind(&stream)?;
-    let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream);
-
-    // `hello` with a `workspace` resolves, pins and warms the resident engine, binding this
-    // connection to it.
-    let hello = json!({
-        "op": "hello",
-        "proto": 1,
-        "contract": "v3",
-        "workspace": workspace.to_string_lossy(),
-    });
-    let greeted = call(&mut writer, &mut reader, socket, &hello)?;
-    if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Ok(DialedLinks::Unusable);
-    }
-    // 0025 socket law: identity equality on the hello frame already in hand.
-    if let Err(message) = hello_identity_skew(greeted.get("body"), socket) {
-        return Ok(DialedLinks::Skew(message));
-    }
-
-    let mut links = json!({ "op": "links" });
-    if let Some(p) = path {
-        links["path"] = json!(p);
-    }
-    let response = call(&mut writer, &mut reader, socket, &links)?;
-    if response.get("ok").and_then(Value::as_bool) == Some(true) {
-        match response.get("body") {
-            Some(body) => Ok(DialedLinks::Served(body.clone())),
-            None => Ok(DialedLinks::Unusable),
-        }
-    } else {
-        Ok(DialedLinks::Unusable)
-    }
 }
 
 /// Map an engine refusal to the CLI exit triad (shared by `read`/`put`): EVERY engine refusal
@@ -1112,8 +1177,8 @@ pub(crate) fn call_line(
 }
 
 /// The degrade: build the corpus in-process and answer through the same shared `links` read arm
-/// the daemon serves, then re-key it to the v3 vocabulary the CLI negotiated ([`dial_links`]
-/// sends `contract:v3`) so warm and degrade answers do not drift.
+/// the daemon serves, then re-key it to the v3 vocabulary the CLI negotiated
+/// ([`try_daemon_links`] sends `contract:v3`) so warm and degrade answers do not drift.
 fn in_process_links(
     workspace: &Path,
     cwd: &Path,
@@ -1127,6 +1192,7 @@ fn in_process_links(
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
+    crate::build_gate::enter();
     let (files, fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
     let (index, docs, unserved) = fs::build_corpus(files);

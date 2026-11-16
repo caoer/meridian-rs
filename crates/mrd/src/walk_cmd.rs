@@ -18,16 +18,21 @@
 //!   corpus, or an in-snapshot cycle).
 //!
 //! # Two lanes, one listing
-//! The answer comes from the resident daemon when one answers (§ A.10 `walk`:
-//! the warm engine's served projection, the mounted roots its resident
-//! engines — one round trip, nothing read in this process), else from the
-//! in-process build, voiced as the degrade on stderr exactly as `read` and
+//! The answer comes from the resident daemon when one serves the workspace
+//! (§ A.10 `walk`: the warm engine's served projection, the mounted roots its
+//! resident engines — one round trip, nothing read in this process), else from
+//! the in-process build, voiced as the degrade on stderr exactly as `read` and
 //! `links` voice theirs. Both lanes land in one [`Listing`] and one renderer,
 //! so stdout is byte-identical across lanes: the wire carries the very
-//! `view::walk::color_*` projections the in-process lane computes. A daemon
-//! op REFUSAL degrades too — the in-process lane's diagnostic for a missing
-//! root or a cycle is the authoritative one, and it is byte-identical to what
-//! the verb said before the daemon lane existed.
+//! `view::walk::color_*` projections the in-process lane computes.
+//!
+//! The in-process lane is for the ABSENT daemon only (§ A.10, the CLI ladder).
+//! A daemon that accepted the connection is the answer, refusals included: it
+//! is waited on through a `retry` refusal, an exchange it does not complete
+//! refuses, and its op refusal is spoken in the words the in-process lane uses
+//! for the same miss. The in-process lane builds this workspace and every root
+//! its locks address — minutes and gigabytes on a large root, for a listing of
+//! a few rows — so it never runs beside a daemon that holds those corpora.
 
 use std::collections::BTreeSet;
 use std::io::BufReader;
@@ -37,7 +42,7 @@ use registry::Client;
 use serde_json::{Value, json};
 use view::walk::{self, Direction, WalkError, WalkReport};
 
-use crate::engine::{EngineSource, call, hello_identity_skew, served_or_recorded};
+use crate::engine::{EngineSource, call, call_through_retries, hello_identity_skew, resident_lost};
 use crate::{Fail, Format, current_dir};
 
 /// The finding leg of the triad: the invocation was well-formed, the listing carries a red edge.
@@ -84,7 +89,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // so this admission is a no-op pass there.
     crate::path_law::admit(&workspace, &parsed.page, "walk", "Nothing was walked.")?;
 
-    let mut listing = if let Some(listing) = try_daemon_walk(&workspace, &parsed)? {
+    let mut listing = if let Some(listing) = try_daemon_walk(&workspace, &cwd, &parsed)? {
         listing
     } else {
         crate::engine::voice_degrade(&EngineSource::Ephemeral);
@@ -135,25 +140,23 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 }
 
 /// The daemon lane: `hello` binds and warms `workspace`, then one § A.10 `walk`.
-/// `Ok(None)` when no daemon answers, the exchange fails on the wire, or the
-/// daemon refuses the op — the caller degrades, and the in-process lane's own
-/// diagnostic stands. `Err` on ONE case that must not melt into the degrade:
-/// build skew (0025 socket law) — a stale resident answering in silence is the
-/// defect, and degrading past it would hide the stale daemon forever.
-fn try_daemon_walk(workspace: &Path, parsed: &Walk) -> Result<Option<Listing>, Fail> {
+///
+/// `Ok(None)` = no daemon serves this workspace — none accepts the connection,
+/// or `hello` refuses the workspace — and the in-process lane answers. Once a
+/// daemon has accepted the connection it is the answer (§ A.10, the CLI
+/// ladder), so every other outcome is the listing or an `Err`: build skew (0025
+/// socket law — a stale resident answering in silence is the defect), an
+/// exchange that did not complete, a `retry` refusal that outlived the cap, or
+/// the daemon's own op refusal ([`walk_refusal`]).
+fn try_daemon_walk(workspace: &Path, cwd: &Path, parsed: &Walk) -> Result<Option<Listing>, Fail> {
     let dialing = timing::phase("daemon.dial");
     let Ok(client) = Client::from_default() else {
         return Ok(None);
     };
-    // `.ok()` on purpose: this failure means nothing was reachable and no daemon came up,
-    // and `engine::ensure_daemon` has already recorded the richer fact — the child's own
-    // dying words — for `voice_degrade` to state.
-    let Ok(stream) = crate::read_cmd::connect_or_spawn(&client) else {
+    let Some(stream) = crate::engine::connect_or_spawn(&client)? else {
         return Ok(None);
     };
-    let Ok(mut writer) = stream.try_clone() else {
-        return Ok(None);
-    };
+    let mut writer = stream.try_clone().map_err(|e| resident_lost(&e))?;
     let mut reader = BufReader::new(stream);
     let socket = client.socket_path();
 
@@ -163,16 +166,12 @@ fn try_daemon_walk(workspace: &Path, parsed: &Walk) -> Result<Option<Listing>, F
         "contract": "v3",
         "workspace": workspace.to_string_lossy(),
     });
-    let Some(greeted) = served_or_recorded(call(&mut writer, &mut reader, socket, &hello)) else {
-        return Ok(None);
-    };
+    let greeted = call(&mut writer, &mut reader, socket, &hello).map_err(|e| resident_lost(&e))?;
     if greeted.get("ok").and_then(Value::as_bool) != Some(true) {
         return Ok(None);
     }
     // 0025 socket law: identity equality on the hello frame already in hand.
-    if let Err(message) = hello_identity_skew(greeted.get("body"), socket) {
-        return Err(Fail::tool(message));
-    }
+    hello_identity_skew(greeted.get("body"), socket).map_err(Fail::tool)?;
 
     let mut request = json!({ "op": "walk", "path": parsed.page });
     if matches!(parsed.direction, Direction::Down) {
@@ -181,16 +180,16 @@ fn try_daemon_walk(workspace: &Path, parsed: &Walk) -> Result<Option<Listing>, F
     if let Some(depth) = parsed.depth {
         request["depth"] = json!(depth);
     }
-    let Some(response) = served_or_recorded(call(&mut writer, &mut reader, socket, &request))
-    else {
-        return Ok(None);
-    };
+    let response = call_through_retries(&mut writer, &mut reader, socket, workspace, &request)
+        .map_err(|e| resident_lost(&e))?;
     dialing.stop();
     if response.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Ok(None);
+        return Err(walk_refusal(&response, workspace, cwd, parsed));
     }
     let Some(listing) = response.get("body").and_then(Listing::from_wire) else {
-        return Ok(None);
+        return Err(Fail::tool(format!(
+            "the resident daemon answered `walk` with a body this build cannot read as the              § A.10 listing: {response}"
+        )));
     };
     // `--down` answers a POPULATION the caller did not name — the blast radius — so it owes the
     // enumerator clause (§12.1): the population rides the wire answer's `excluded`, and this
@@ -199,6 +198,40 @@ fn try_daemon_walk(workspace: &Path, parsed: &Walk) -> Result<Option<Listing>, F
         voice_excluded_declined(workspace, &listing.excluded);
     }
     Ok(Some(listing))
+}
+
+/// The daemon's § A.10 op refusal as this face speaks it — exit 2, the walk's
+/// structural-failure leg (exit 1 is a red edge in a served listing).
+///
+/// The two refusals the in-process lane also reaches are spoken in ITS words
+/// ([`walk_error`]), so a caller reads one diagnostic whichever lane answered:
+/// `file_not_found` is the missing root, `walk_cycle` carries the loop in its
+/// message already. Every other refusal is the daemon's own sentence, with the
+/// `{workspace, error}` frame under `--json`.
+fn walk_refusal(response: &Value, workspace: &Path, cwd: &Path, parsed: &Walk) -> Fail {
+    let Some(error) = response
+        .get("error")
+        .and_then(|e| serde_json::from_value::<wire::ErrorBody>(e.clone()).ok())
+    else {
+        return Fail::tool(format!(
+            "the resident daemon refused `walk` with a frame that is not the §8 envelope:              {response}"
+        ));
+    };
+    match error.code {
+        wire::ErrorCode::FileNotFound => walk_error(
+            WalkError::RootNotFound(parsed.page.clone()),
+            workspace,
+            cwd,
+            parsed,
+        ),
+        wire::ErrorCode::WalkCycle if error.message.is_some() => {
+            Fail::tool(error.message.unwrap_or_default())
+        }
+        _ => {
+            crate::engine::json_error_frame(parsed.format, workspace, &error);
+            Fail::tool(crate::engine::refusal_text(&error))
+        }
+    }
 }
 
 /// The daemon lane's excluded voice. The wire's `excluded` is the COMPLETE
@@ -269,6 +302,7 @@ pub(crate) type Mounts = wire_serve::mount_corpus::MountCorpora;
 /// needed set; every production verb today can, and uses [`load_mounts_for`].
 #[allow(dead_code)] // full-table face — deliberate; no production caller remains after the residual narrow
 pub(crate) fn load_mounts() -> Mounts {
+    crate::build_gate::enter();
     voiced(wire_serve::mount_corpus::load_mounts_where(&|_| true))
 }
 
@@ -278,6 +312,10 @@ pub(crate) fn load_mounts() -> Mounts {
 /// ([`lock_addressed_roots`]); `links` and ephemeral `sql` off wikilink/embed targets
 /// ([`link_addressed_roots`]). `needed` narrows the corpora, never the [`addr::MountSet`].
 pub(crate) fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> Mounts {
+    // An empty `needed` builds no corpus, so it queues behind none.
+    if !needed.is_empty() {
+        crate::build_gate::enter();
+    }
     voiced(wire_serve::mount_corpus::load_mounts_for(needed))
 }
 
@@ -581,6 +619,7 @@ fn build_corpus_in_process(workspace: &Path) -> Result<InProcessCorpus, Fail> {
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
+    crate::build_gate::enter();
     let (files, _fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
     let (_index, docs, unserved) = fs::build_corpus(files);
