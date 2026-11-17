@@ -32,8 +32,20 @@
 //! 2. execute the query to completion, materialise all rows;
 //! 3. sample `live` = a full-corpus disk fold ([`fs::domain_snapshot`]) last,
 //!    so it post-dates the result;
-//! 4. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE` (or `RACED` under a
-//!    bounded `--fresh` that could not converge).
+//! 4. `FRESH_AT_SAMPLE` iff `as_of == live`, else `STALE`.
+//!
+//! # `--fresh`
+//! `F0` is folded inside the call on every lane, so a `STALE` answer is
+//! already the corpus as it stood when the call began; what `--fresh` adds
+//! differs by how long the lane takes to reach its rows.
+//! - **daemon route**: the daemon folds, appends the delta and answers in one
+//!   short call (`wire-contract.md` § A.11, entry currency). `--fresh` takes
+//!   that one answer and reports a `STALE` one as `FRESH_AT_ENTRY`. It does
+//!   not re-ask: on a root written faster than one call no re-ask finds the
+//!   corpus still, and the caller would get nothing.
+//! - **local lanes**: the build between `F0` and the rows can run minutes, so
+//!   a mid-build change gets one bounded retry, and `RACED` when the retry's
+//!   window moved too.
 //!
 //! # Three-valued freshness (C3)
 //! `live_source ∈ {fold, none}`, `stale ∈ {true, false, null}`. Only a real
@@ -181,6 +193,9 @@ fn take_value(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum QueryState {
     FreshAtSample,
+    /// `--fresh` on the daemon route: the rows are the corpus as the daemon
+    /// folded it when it accepted the call, and it has moved since.
+    FreshAtEntry,
     Stale,
     Raced,
     Unverified,
@@ -191,6 +206,7 @@ impl QueryState {
     fn wire(self) -> &'static str {
         match self {
             QueryState::FreshAtSample => "FRESH_AT_SAMPLE",
+            QueryState::FreshAtEntry => "FRESH_AT_ENTRY",
             QueryState::Stale => "STALE",
             QueryState::Raced => "RACED",
             QueryState::Unverified => "UNVERIFIED",
@@ -417,9 +433,10 @@ fn daemon_call(
 /// down the ladder. A daemon that accepted the connection holds the drawer, so
 /// a lower rung would build the whole corpus in-process beside it: an exchange
 /// with it that does not complete answers [`daemon_lost`] instead, and a socket
-/// that refuses while its daemon still runs answers [`daemon_stopping`]. A
-/// `--fresh` STALE answer re-asks once (the daemon re-warms + appends per
-/// call), mirroring the local bound.
+/// that refuses while its daemon still runs answers [`daemon_stopping`]. Under
+/// `--fresh` a STALE answer is `FRESH_AT_ENTRY`: the daemon folded the corpus
+/// after it accepted this call and answered at that fold or a later one
+/// (§ A.11, entry currency), so the one answer is the freshest there is.
 fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let client = registry::Client::from_default().ok()?;
     daemon_route_at(client.socket_path(), workspace, args)
@@ -461,21 +478,7 @@ fn daemon_route_at(socket: &Path, workspace: &Path, args: &SqlArgs) -> Option<Fr
         Err(cause) => return Some(daemon_lost(&cause)),
     };
     if args.fresh && frame.state == QueryState::Stale {
-        frame = match daemon_call(&mut writer, &mut reader, socket, &ask) {
-            Ok(reply) => daemon_sql_frame(&reply).unwrap_or_else(|| {
-                let cause = reply.get("error").map_or_else(
-                    || "resident daemon did not answer the --fresh re-query".to_owned(),
-                    |error| format!("resident daemon refused the --fresh re-query: {error}"),
-                );
-                Frame::no_view(cause)
-            }),
-            Err(cause) => Frame::no_view(format!(
-                "resident daemon did not answer the --fresh re-query: {cause}"
-            )),
-        };
-        if frame.state == QueryState::Stale {
-            frame.state = QueryState::Raced;
-        }
+        frame.state = QueryState::FreshAtEntry;
     }
     Some(frame)
 }
@@ -607,7 +610,7 @@ fn daemon_sql_frame(response: &Value) -> Option<Frame> {
         },
         stale: match state {
             QueryState::FreshAtSample => Some(false),
-            QueryState::Stale | QueryState::Raced => Some(true),
+            QueryState::Stale | QueryState::Raced | QueryState::FreshAtEntry => Some(true),
             _ => None,
         },
         state,
@@ -1154,6 +1157,12 @@ fn banner(frame: &Frame) -> String {
         QueryState::FreshAtSample => {
             format!("-- FRESH_AT_SAMPLE (as_of == live at the post-result sample; as_of={as_of})")
         }
+        QueryState::FreshAtEntry => {
+            let live = frame.live.as_deref().unwrap_or("(none)");
+            format!(
+                "-- FRESH_AT_ENTRY (as_of is the corpus as folded when the daemon accepted this call; it has moved since; as_of={as_of}, live={live})"
+            )
+        }
         QueryState::Stale => {
             let live = frame.live.as_deref().unwrap_or("(none)");
             format!("-- STALE (as_of != live; as_of={as_of}, live={live})")
@@ -1242,6 +1251,70 @@ mod tests {
             error.contains("closed the connection without answering"),
             "{error}"
         );
+    }
+
+    /// § A.11, entry currency: under `--fresh` a daemon's `STALE` answer is the
+    /// corpus as folded when the daemon accepted the call, so it is reported
+    /// `FRESH_AT_ENTRY` with the daemon's rows, `as_of` and `live` — from the
+    /// one `sql` request: the fake daemon answers one and then expects the
+    /// connection to close. Without `--fresh` the same answer stays `STALE`.
+    ///
+    /// *Mutation:* re-ask a `STALE` answer — the fake daemon reads a second
+    /// request and fails.
+    #[test]
+    fn fresh_takes_the_daemons_one_stale_answer_as_fresh_at_entry() {
+        use std::io::{BufRead as _, Write as _};
+        for fresh in [true, false] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket = dir.path().join("d.sock");
+            let mut words = vec!["SELECT count(*) FROM doc".to_owned()];
+            if fresh {
+                words.insert(0, "--fresh".to_owned());
+            }
+            let args = SqlArgs::parse(&words).expect("parse");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+            let daemon = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut writer = stream;
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("hello");
+                writer
+                    .write_all(b"{\"ok\":true,\"body\":{\"caps\":[\"sql\"]}}\n")
+                    .expect("hello answer");
+                line.clear();
+                reader.read_line(&mut line).expect("sql");
+                assert!(line.contains("\"op\":\"sql\""), "{line}");
+                writer
+                    .write_all(
+                        b"{\"id\":1,\"ok\":true,\"body\":{\"as_of_fingerprint\":\"b3b:entry\",\
+                          \"live\":\"b3b:later\",\"state\":\"STALE\",\
+                          \"columns\":[{\"name\":\"count_star()\",\"type\":\"BIGINT\"}],\
+                          \"rows\":[[7]],\"row_count\":1}}\n",
+                    )
+                    .expect("sql answer");
+                line.clear();
+                let more = reader.read_line(&mut line).expect("the connection ends");
+                assert_eq!(more, 0, "a second request reached the daemon: {line}");
+            });
+            let frame = daemon_route_at(&socket, dir.path(), &args).expect("the daemon's frame");
+            let want = if fresh {
+                QueryState::FreshAtEntry
+            } else {
+                QueryState::Stale
+            };
+            assert!(
+                frame.state == want,
+                "--fresh={fresh}: {}",
+                frame.state.wire()
+            );
+            assert_eq!(frame.as_of.as_deref(), Some("b3b:entry"));
+            assert_eq!(frame.live.as_deref(), Some("b3b:later"));
+            assert_eq!(frame.stale, Some(true), "the corpus did move past as_of");
+            assert_eq!(frame.rows.len(), 1, "the daemon's rows are delivered");
+            drop(frame);
+            daemon.join().expect("fake daemon");
+        }
     }
 
     /// § A.11, the CLI ladder: a socket that refuses while its pidfile names a

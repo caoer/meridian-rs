@@ -780,7 +780,10 @@ Widening the coat is a C2 change, reserved by ruling (`laws.md` D-1).
 - `mrd sql` is **operator convenience**: served from the drawer's append-only
   `sql.duckdb` cache when a cache root resolves (`--rebuild` recreates it),
   else an ephemeral `:memory:` projection of the corpus per query, folding
-  post-result for an honest freshness frame. Not a peer of `mrd read` /
+  post-result for an honest freshness frame. `--fresh`: on the resident
+  route the daemon's one answer, `FRESH_AT_ENTRY` when the corpus moved
+  during the call (`wire-contract.md` § A.11, entry currency); on the local
+  lanes one bounded retry, `RACED` when its window moved too. Not a peer of `mrd read` /
   `mrd put` / wire `splice`; a cold build is O(corpus) — slow on a large tree,
   by design.
 
