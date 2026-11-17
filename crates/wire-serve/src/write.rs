@@ -410,6 +410,12 @@ pub fn splice(
     // so cooperating meridian writers serialize instead of interleaving
     // read→rename. Dry runs take it too: a rehearsal refuses `workspace_busy`
     // exactly where the real write would. Released on drop.
+    // The one child process a splice can start is git's, for a pin's blob oid.
+    // It is asked here, before the flock, so the hold below never contains a
+    // filter's run time; the mint under the flock takes this answer or refuses.
+    let minting = args.pin.as_ref().filter(|spec| spec.retire != Some(true));
+    let git_blob = minting.and_then(|spec| pin_blob(root, spec, args.actor.as_deref(), args.force));
+
     let flock = acquire_write_lock(root)?;
     let door = door_cache(root, supplied);
 
@@ -436,8 +442,14 @@ pub fn splice(
     if retiring.is_some() {
         retire_guard(args)?;
     }
-    let mut pin = match args.pin.as_ref().filter(|spec| spec.retire != Some(true)) {
-        Some(spec) => Some(mint_pin(root, spec, args.actor.as_deref(), args.force)?),
+    let mut pin = match minting {
+        Some(spec) => Some(mint_pin(
+            root,
+            spec,
+            args.actor.as_deref(),
+            args.force,
+            BlobAsk::Asked(git_blob.as_ref()),
+        )?),
         None => None,
     };
     // The promotion's own gate ran at mint time — it must refuse before any
@@ -3159,10 +3171,15 @@ struct PendingPromotion {
 /// - The promotion's armed gate runs here: the marker is a change to a page like
 ///   any other, so it passes [`crate::gate::gate_write`] before it can be handed
 ///   back as pending.
+/// - The blob oid is git's answer, and `ask` says where this run takes it from
+///   ([`BlobAsk`]): from git in the pre-flock rehearsal, from that rehearsal
+///   under the flock.
 ///
 /// # Errors
 /// `bad_path` / `bad_request` (the target escapes the workspace, or its slug id
 /// is taken), `pin_target_missing` (no such page or selector),
+/// `workspace_busy` (under the flock, the target's bytes are not the ones git
+/// was asked about),
 /// `ambiguous_ref` (the selector matches more than one node — no door may pin
 /// an occurrence the caller did not name; A.3 door symmetry),
 /// `pin_proof_required` (a session actor pinning with no proof, or a proof
@@ -3176,6 +3193,7 @@ fn mint_pin(
     spec: &wire::PinSpec,
     actor: Option<&str>,
     force: bool,
+    ask: BlobAsk<'_>,
 ) -> Result<PinMint, Box<ErrorBody>> {
     let target = resolve_pin_target(root, &spec.target)?;
     // The spelling every fact, lock row and refusal names: the ruled
@@ -3194,7 +3212,11 @@ fn mint_pin(
     // acquire is LOCK_NB — it never blocks while the pinning flock is held, so
     // no hold-and-wait cycle can form; a busy target refuses `workspace_busy`
     // naming which root is busy.
+    //
+    // The pre-flock rehearsal takes no flock at all: it only reads, and its
+    // answer is believed under the flock for byte-identical bytes alone.
     let target_flock = match &target.mount {
+        _ if matches!(ask, BlobAsk::Git(_)) => None,
         Some(name) => Some(acquire_write_lock(&target.root).map_err(|mut e| {
             if e.code == ErrorCode::WorkspaceBusy {
                 e.message = Some(format!(
@@ -3367,12 +3389,35 @@ fn mint_pin(
     // D-D: the blob is asked of — and, under `--vibe`, written into — the
     // TARGET root's object store: drift/repair diff from the target's git
     // history, so the blob must live where that history lives.
-    let blob = blob_oid(
-        &target.root,
-        &target.rel,
-        promoted.as_ref().map(model::CandidateDocument::raw),
-        spec.vibe.unwrap_or(false),
-    )?;
+    let pinned_bytes = pinned_doc.raw.as_str();
+    let vibe = spec.vibe.unwrap_or(false);
+    let blob = match ask {
+        BlobAsk::Git(asked) => {
+            let oid = match BlobSlot::take(&target.root) {
+                Some(_slot) => blob_oid(&target.root, &target.rel, pinned_bytes, vibe),
+                None => Err(pin_busy(
+                    &spelled,
+                    "another pin is waiting on git in the root of",
+                )),
+            };
+            *asked = Some(PinBlob {
+                root: target.root.0.clone(),
+                rel: target.rel.0.clone(),
+                vibe,
+                bytes: pinned_bytes.to_owned(),
+                oid: oid.clone(),
+            });
+            oid?
+        }
+        BlobAsk::Asked(asked) => asked_blob(
+            asked,
+            &target.root,
+            &target.rel,
+            &spelled,
+            pinned_bytes,
+            vibe,
+        )?,
+    };
     refuse_unrepresentable_heading(pinned_doc, &span, fact_anchor.as_deref(), &selector_text)?;
     let row = pin_row(&spelled, fact_anchor.as_deref(), &segments, blob.as_deref())?;
 
@@ -3975,10 +4020,15 @@ fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
 /// content-addressing, so shell out). `vibe` additionally WRITES the blob into
 /// the object store, so the pin is retrievable before any commit references it.
 ///
-/// `pending` is the bytes the caller has DECIDED to write to `target` and not
-/// written yet (an anchor promotion) — the oid must describe the state the file
-/// will carry, so those bytes are hashed as if they were already there. `None`
-/// asks about the file on disk, which is the same thing when nothing is pending.
+/// `bytes` is the state `target` will carry when the pin lands — the page as
+/// loaded, or with the anchor promotion the caller has DECIDED to write and not
+/// written yet. They are hashed as the file at `target` (its own filters), so
+/// the answer names exactly the bytes it was asked about, whatever disk holds
+/// by the time git reads.
+///
+/// **Never called under a write flock** ([`BlobAsk`]): git runs the path's
+/// clean filter, a child process whose run time the engine does not own.
+/// Timed as `pin.blob`.
 ///
 /// `None` when git cannot answer (no repo, no git on PATH) — a fabricated sha
 /// would be worse than no sha, so this function never invents one. Under v1 that
@@ -3992,18 +4042,18 @@ fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
 fn blob_oid(
     root: &fs::WorkspaceRoot,
     target: &Path,
-    pending: Option<&str>,
+    bytes: &str,
     vibe: bool,
 ) -> Result<Option<String>, Box<ErrorBody>> {
-    let repo = git::Repo::at(root.0.clone());
-    let abs = root.0.join(&target.0);
-    let ask = |write: bool| match pending {
-        Some(bytes) => repo.blob_oid_of_bytes(&abs, bytes.as_bytes(), write),
-        None if write => repo.write_blob(&abs),
-        None => repo.blob_oid(&abs),
-    };
+    let asking = timing::phase("pin.blob");
+    let answer = git::Repo::at(root.0.clone()).blob_oid_of_bytes(
+        &root.0.join(&target.0),
+        bytes.as_bytes(),
+        vibe,
+    );
+    asking.stop();
     if vibe {
-        return ask(true).map(Some).map_err(|e| {
+        return answer.map(Some).map_err(|e| {
             let mut err = ErrorBody::new(ErrorCode::IoError);
             err.cause = Some(format!(
                 "--vibe asked for an eager blob write of {} and git refused: {e}",
@@ -4012,7 +4062,118 @@ fn blob_oid(
             Box::new(err)
         });
     }
-    Ok(ask(false).ok())
+    Ok(answer.ok())
+}
+
+/// One answer from git, kept with the question: the blob oid of `bytes` as the
+/// file `rel` under `root`, asked before the write flock.
+struct PinBlob {
+    root: PathBuf,
+    rel: String,
+    vibe: bool,
+    bytes: String,
+    oid: Result<Option<String>, Box<ErrorBody>>,
+}
+
+/// The roots a pin is asking git about right now, in this process.
+static BLOB_ASKS: LazyLock<Mutex<BTreeSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(BTreeSet::new()));
+
+/// The one git child a root's pins run at a time. Outside the flock nothing
+/// else bounds them: a stalled filter would otherwise collect one child per
+/// pin request and per client re-send, each slowing the rest.
+struct BlobSlot(PathBuf);
+
+impl BlobSlot {
+    /// The slot for `root`, or `None` while another pin holds it.
+    fn take(root: &fs::WorkspaceRoot) -> Option<BlobSlot> {
+        BLOB_ASKS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(root.0.clone())
+            .then(|| BlobSlot(root.0.clone()))
+    }
+}
+
+impl Drop for BlobSlot {
+    fn drop(&mut self) {
+        BLOB_ASKS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// `workspace_busy` for a pin that reached no usable answer from git: nothing
+/// was written, and the same request succeeds once it rehearses alone against
+/// settled bytes.
+fn pin_busy(spelled: &Path, why: &str) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::WorkspaceBusy);
+    e.path = Some(spelled.clone());
+    e.message = Some(format!(
+        "{why} {} — transient; retry. Nothing was written.",
+        spelled.0
+    ));
+    Box::new(e)
+}
+
+/// Where a pin mint's blob oid comes from — the split that keeps git's child
+/// process out of the write door. One mint runs twice per pin: [`pin_blob`]
+/// rehearses it with `Git` before the flock, [`splice`] repeats it with
+/// `Asked` under the flock.
+enum BlobAsk<'a> {
+    /// Before the flock: take no flock, ask git, and leave the answer here
+    /// with the bytes it describes.
+    Git(&'a mut Option<PinBlob>),
+    /// Under the flock: the rehearsal's answer, valid for byte-identical
+    /// target bytes only.
+    Asked(Option<&'a PinBlob>),
+}
+
+/// The pin's blob oid, asked of git before [`splice`] takes the write flock:
+/// the mint, rehearsed against the bytes on disk now. A rehearsal that
+/// refuses answers `None` and says nothing — the mint under the flock is the
+/// one that speaks, in the door's own rung order.
+fn pin_blob(
+    root: &fs::WorkspaceRoot,
+    spec: &wire::PinSpec,
+    actor: Option<&str>,
+    force: bool,
+) -> Option<PinBlob> {
+    let mut asked = None;
+    let _ = mint_pin(root, spec, actor, force, BlobAsk::Git(&mut asked));
+    asked
+}
+
+/// The rehearsal's answer for the bytes the flocked mint is about to describe.
+///
+/// # Errors
+/// `workspace_busy` when git was not asked about exactly these bytes — a writer
+/// changed the target, or what the rehearsal refused on, between the rehearsal
+/// and the flock. Otherwise the rehearsal's own answer: git's oid, the `--vibe`
+/// `io_error`, or the `workspace_busy` of a root whose [`BlobSlot`] was taken.
+fn asked_blob(
+    asked: Option<&PinBlob>,
+    root: &fs::WorkspaceRoot,
+    target: &Path,
+    spelled: &Path,
+    bytes: &str,
+    vibe: bool,
+) -> Result<Option<String>, Box<ErrorBody>> {
+    match asked {
+        Some(blob)
+            if blob.root == root.0
+                && blob.rel == target.0
+                && blob.vibe == vibe
+                && blob.bytes == bytes =>
+        {
+            blob.oid.clone()
+        }
+        _ => Err(pin_busy(
+            spelled,
+            "the workspace moved while git hashed the pin target",
+        )),
+    }
 }
 
 /// Compose the pinning page's `meridian-lock` block as the batch's one

@@ -1338,7 +1338,7 @@ the wire shape is ruled here.)*
 | `mounts` | Mount-table discovery: the live root registry, machine-scoped. Read-only (§ A.5). |
 | `splice.plan_edits` | Plan-level batch shapes; addresses are **segment arrays** — a heading path, or a `^id` block ref as the single segment. The lane resolves the read face's own anchor plane: a toc-listed anchor is writeable by its id, a host-excluded or absent id misses at both doors. That plane covers every body host Obsidian addresses (paragraph, list item, task, callout, table, fence, heading); the frontmatter caret is the one host-excluded miss. `match` edits block-leaf bytes; `replace_section` replaces block content, keeping the `^id` marker; `append` refuses toward the containing section. |
 | `splice.pin` | Pin rides the write choke-point; selector is segments/anchor. |
-| `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (`address-grammar.md`): target loaded, gated, promoted and blob-written in the named mounted root under that root's own `LOCK_NB` write flock; the lock row's `object` = `name:rel` minus `.md`, verbatim; the proof compare (`splice.pin.proof`) runs on the target root's live bytes under that flock. Without the cap a face keeps its own taught refusal, not `pin_target_missing`. |
+| `pin-cross-root` | `splice.pin.target` admits the ruled `name:rel` rooted spelling (`address-grammar.md`): target loaded, gated and promoted in the named mounted root under that root's own `LOCK_NB` write flock, its blob asked of that root's git before either flock (the blob hash law, below); the lock row's `object` = `name:rel` minus `.md`, verbatim; the proof compare (`splice.pin.proof`) runs on the target root's live bytes under that flock. Without the cap a face keeps its own taught refusal, not `pin_target_missing`. |
 | `splice.pin.proof` | Pin proof rides the request — the proof law, below. |
 | `splice.pin.retire` | `splice.pin.retire: true` drops one row from the pinning page's own lock — the retire law, below. |
 | `create` | File birth through the guarded door; full body bytes, no `props` field (the starlark birth lane's `props=` dict rides this door, § A.8). `bad_path` on an engine machinery segment in the landing — `.git`, `.meridian`, `meridian` — at any depth, ASCII-case-insensitively, whatever the caps admit; the hash-domain config `meridian/domain.md` is the one carve-out (`run-plane.md` § the machinery floor). |
@@ -1482,6 +1482,33 @@ side-effect-free: the composed `read` op has no `actor` field.
   is the engine-computed touch set (§ A.7).
 - **Proof is content-bound, not identity-bound:** identity decides only whether
   proof is required, never whose read satisfies it.
+
+**The pin's blob `hash` is asked of git before the write flock, never under
+it.** The row's `hash` is git's oid of the target file through that path's
+clean filter — a child process whose run time the engine does not own (a
+git-annex filter's grows with the staged change it finds in the index).
+`splice` holds no flock while it runs.
+
+- **Asked first.** Before the flock, `splice` rehearses the pin against the
+  target bytes on disk and asks git for the oid of exactly the bytes the row
+  will describe: the target as read, its anchor promotion included. `vibe`
+  writes that blob here. A rehearsal that refuses says nothing; the pin under
+  the flock speaks the refusal, in the door's own order.
+- **Believed for identical bytes only.** Under the flock the pin is minted
+  again from the bytes read there, and takes git's answer when they equal the
+  bytes git hashed. When they differ a writer changed the target in between:
+  the pin refuses `workspace_busy` (retry), naming the target in `path`, with
+  nothing written.
+- **One git child per root.** While one pin waits on git for a root, a second
+  pin whose target lives in that root is refused `workspace_busy` without
+  asking: a stalled filter collects no child per request or per re-send.
+  Writes that carry no pin are not refused by it.
+- **The hold excludes git.** The wait is the `pin.blob` phase, outside
+  `flock.hold.door` (`run-plane.md` § Timing phases). A pin's other refusals
+  — a busy flock, a stale world guard — arrive after git answers, not in the
+  ≤0.1 ms of a write that asks git nothing; a `vibe` blob is written for a pin
+  they then refuse. A pin whose target is rewritten faster than git answers
+  keeps refusing `workspace_busy`.
 
 **Retiring a pin: `splice.pin.retire: true` drops one row of the pinning
 page's own lock.** It is how a claim leaves on purpose — a pinned section was
