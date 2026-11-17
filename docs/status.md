@@ -1735,6 +1735,24 @@ not a pong. A liveness probe the daemon accepts and holds unanswered past its
 so the call proceeds to that daemon and waits under the wedge cap, rather
 than spawning a second daemon that could only lose the singleton flock.
 
+**Where an auto-spawned daemon lives.** `setsid` detaches the daemon from the
+client's session, not from its cgroup: on Linux a daemon a client spawns lives
+in the client's systemd unit, and a unit stop with `KillMode=control-group`
+ends it with the unit. So on Linux, for the live drawer — the cache root is
+`$HOME/.cache/meridian`, `XDG_CACHE_HOME` unset or naming `$HOME/.cache` — the
+client, once its daemon answers, moves it into a transient user scope of its
+own, `mrd-engine-<socket-stem>-<pid>.scope` in `app.slice`: one
+`busctl StartTransientUnit` on the account's bus `/run/user/<uid>/bus` with a
+2 s bound, `CollectMode=inactive-or-failed`, and the `memory.min` and
+`memory.low` that `app.slice` carries as the scope's `MemoryMin` and
+`MemoryLow`. Only a daemon this call spawned and that won the flock (the
+pidfile names it) is moved; a flock loser has exited. No account bus: nothing
+is attempted. A call that fails leaves the daemon serving where it is and
+says so in one line, on stderr and in the daemon's `<socket-stem>.log`; it
+never fails the spawn. Any other cache root (a
+test sandbox, a fixture) keeps its daemon in the caller's cgroup, so the
+caller's teardown still reaps it. Not Linux: unchanged.
+
 #### The daemon's own lane — `<socket-stem>.log`
 
 **The auto-spawn gives the daemon a voice**, which a detached daemon otherwise

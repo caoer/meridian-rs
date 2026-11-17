@@ -22,7 +22,7 @@ use registry::{Client, Liveness};
 use serde_json::{Value, json};
 use wire::{ErrorBody, Path as WirePath, Root};
 
-use crate::{Fail, Format, current_dir, daemon};
+use crate::{Fail, Format, current_dir, daemon, placement};
 
 /// Which path produced an engine answer — mirrors `resolve`'s `source` label so
 /// the caller can report warm-vs-degrade in the same house grammar.
@@ -842,16 +842,21 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     // earlier daemon's lines, so only the region added after this mark is the
     // child we are about to launch ([`daemon::voice_since`]).
     let mark = daemon::voice_mark();
-    if let Err(error) = daemon::spawn_detached() {
-        record_spawn_failure(format!(
-            "The daemon could not be launched at all ({error}) — nothing was started, so nothing \
-             can answer until it is (check MERIDIAN_DAEMON_BIN if it is set)."
-        ));
-        return Err(error);
-    }
+    let spawned = match daemon::spawn_detached() {
+        Ok(pid) => pid,
+        Err(error) => {
+            record_spawn_failure(format!(
+                "The daemon could not be launched at all ({error}) — nothing was started, so \
+                 nothing can answer until it is (check MERIDIAN_DAEMON_BIN if it is set)."
+            ));
+            return Err(error);
+        }
+    };
     let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
     while Instant::now() < deadline {
         if client.liveness() != Liveness::Down {
+            // Before this client exits: out of its cgroup, the daemon outlives its unit.
+            placement::place_spawned(client.socket_path(), spawned);
             return Ok(());
         }
         std::thread::sleep(PING_POLL);

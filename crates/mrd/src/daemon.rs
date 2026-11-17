@@ -232,8 +232,9 @@ impl Sweeper {
 /// can speak into ([`voice`]) — a detached daemon has no terminal, and a daemon nobody can
 /// hear dies unheard. Returns as soon as the child is launched — the caller polls the socket
 /// for readiness (a launched daemon that never binds is a caller-side timeout, then a degrade
-/// that QUOTES that file: `engine::degrade_reason`).
-pub(crate) fn spawn_detached() -> io::Result<()> {
+/// that QUOTES that file: `engine::degrade_reason`). The pid it returns is the child's, for
+/// the caller to place once it answers (`placement`).
+pub(crate) fn spawn_detached() -> io::Result<u32> {
     let bin = match std::env::var_os(DAEMON_BIN_ENV) {
         Some(path) => PathBuf::from(path),
         None => std::env::current_exe()?,
@@ -258,7 +259,7 @@ pub(crate) fn spawn_detached() -> io::Result<()> {
     }
     // Launch and detach: the child is reparented to init once this client exits,
     // so dropping the handle leaks no zombie in practice.
-    command.spawn().map(drop)
+    command.spawn().map(|child| child.id())
 }
 
 /// Where a detached daemon speaks: beside the socket, `<socket-stem>.log` — the
