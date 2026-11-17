@@ -119,10 +119,25 @@ mod linux {
         }
         let unit = scope_name(socket, pid);
         if let Err(why) = start_scope(&bus, &unit, pid, slice_floor(uid)) {
-            eprintln!(
-                "mrd: the daemon this call started (pid {pid}) stays in this process's cgroup \
-                 and stops when its unit stops: {why}"
+            let line = format!(
+                "the daemon this call started (pid {pid}) stays in this process's cgroup and \
+                 stops when its unit stops: {why}"
             );
+            eprintln!("mrd: {line}");
+            say_in_voice(socket, &format!("client pid {}: {line}", std::process::id()));
+        }
+    }
+
+    /// Append `line` to the daemon's voice file beside its socket (`<socket-stem>.log`), the
+    /// lane an investigator of a daemon loss reads; the caller's stderr may be discarded.
+    fn say_in_voice(socket: &Path, line: &str) {
+        use std::io::Write as _;
+        if let Ok(mut voice) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(socket.with_extension("log"))
+        {
+            let _ = writeln!(voice, "{line}");
         }
     }
 

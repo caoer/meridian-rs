@@ -1748,7 +1748,8 @@ own, `mrd-engine-<socket-stem>-<pid>.scope` in `app.slice`: one
 `MemoryLow`. Only a daemon this call spawned and that won the flock (the
 pidfile names it) is moved; a flock loser has exited. No account bus: nothing
 is attempted. A call that fails leaves the daemon serving where it is and
-says so in one stderr line; it never fails the spawn. Any other cache root (a
+says so in one line, on stderr and in the daemon's `<socket-stem>.log`; it
+never fails the spawn. Any other cache root (a
 test sandbox, a fixture) keeps its daemon in the caller's cgroup, so the
 caller's teardown still reaps it. Not Linux: unchanged.
 
