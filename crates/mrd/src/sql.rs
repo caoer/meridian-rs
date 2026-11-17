@@ -435,8 +435,9 @@ fn daemon_call(
 /// with it that does not complete answers [`daemon_lost`] instead, and a socket
 /// that refuses while its daemon still runs answers [`daemon_stopping`]. Under
 /// `--fresh` a STALE answer is `FRESH_AT_ENTRY`: the daemon folded the corpus
-/// after it accepted this call and answered at that fold or a later one
-/// (§ A.11, entry currency), so the one answer is the freshest there is.
+/// after it accepted this call and answered at the generation standing on
+/// that fold (§ A.11, entry currency), so the one answer is the freshest
+/// there is.
 fn daemon_route(workspace: &Path, args: &SqlArgs) -> Option<Frame> {
     let client = registry::Client::from_default().ok()?;
     daemon_route_at(client.socket_path(), workspace, args)

@@ -2676,8 +2676,13 @@ fn dispatch_read(
         // file and this daemon is its one append actor.
         Op::Sql { query } if v3 => {
             cold_gate_wire(registry, ws)?;
-            registry.warm_or_build(ws).map_err(|e| warm_err_to_wire(&e))?;
-            crate::sql_op::serve(registry, ws, &query)
+            // The generation this call's own warm stands on, handed to the
+            // serve: its rows are the corpus as folded after this call was
+            // accepted (§ A.11, entry currency).
+            let (_, engine) = registry
+                .warm_generation(ws)
+                .map_err(|e| warm_err_to_wire(&e))?;
+            crate::sql_op::serve(registry, ws, &engine, &query)
         }
         // U20b §4.7 push channel. Arm here; convert after ack (`serve_conn`).
         // S2: stands behind the same bind + deny ceiling as composed reads.

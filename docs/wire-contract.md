@@ -3277,10 +3277,12 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 - **CLI recovery**: a retry-class refusal produces `NO_VIEW` directly, without
   a local full-corpus projection or an automatic retry budget.
 - **Entry currency**: every answered call folds the corpus after the daemon
-  accepted it and computes its rows at that fold or a later one, so the rows
-  carry every write that had landed when the call was accepted. `STALE`
-  therefore says the corpus moved between that fold and the post-result
-  sample; it never says the rows lag the call's entry. `mrd sql --fresh` on
+  accepted it and computes its rows at a generation that stands on that fold
+  — the one the call's own warm validated or built, held by the call, never
+  one read back from shared state afterwards. So the rows carry every write
+  that had landed when the call was accepted. `STALE` therefore says the
+  corpus moved between that fold and the post-result sample; it never says
+  the rows lag the call's entry. `mrd sql --fresh` on
   the resident route rests on this: it takes the daemon's one answer and
   reports a `STALE` one as `FRESH_AT_ENTRY`, with `as_of` and `live` as the
   daemon gave them. It does not re-ask: on a root written faster than one
