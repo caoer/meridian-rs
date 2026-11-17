@@ -32,7 +32,9 @@ fn is_live_drawer(cache_root: &Path, home: Option<&Path>) -> bool {
 /// The transient unit the daemon is placed in: the socket stem says which daemon it is, the
 /// pid keeps it unique while an earlier daemon's scope is still being collected.
 fn scope_name(socket: &Path, pid: u32) -> String {
-    let stem = socket.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let stem = socket
+        .file_stem()
+        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
     format!("mrd-engine-{stem}-{pid}.scope")
 }
 
@@ -45,7 +47,11 @@ fn scope_call(bus: &Path, unit: &str, pid: u32, floor: (u64, u64)) -> Vec<String
     let mut props: Vec<Vec<String>> = vec![
         vec!["PIDs".into(), "au".into(), "1".into(), pid.to_string()],
         vec!["Slice".into(), "s".into(), SLICE.into()],
-        vec!["CollectMode".into(), "s".into(), "inactive-or-failed".into()],
+        vec![
+            "CollectMode".into(),
+            "s".into(),
+            "inactive-or-failed".into(),
+        ],
         vec![
             "Description".into(),
             "s".into(),
@@ -94,8 +100,12 @@ mod linux {
     use super::{SLICE, TIMEOUT, is_live_drawer, scope_call, scope_name};
 
     pub(super) fn place(socket: &Path, pid: u32) {
-        let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
-        let Ok(root) = cache::cache_root() else { return };
+        let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from);
+        let Ok(root) = cache::cache_root() else {
+            return;
+        };
         if !is_live_drawer(&root, home.as_deref()) || !won_flock(socket, pid) {
             return;
         }
@@ -167,8 +177,9 @@ mod linux {
     /// The `memory.min` and `memory.low` the slice carries in the account's user manager; zero
     /// when absent or not a number.
     fn slice_floor(uid: u32) -> (u64, u64) {
-        let dir =
-            PathBuf::from(format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{SLICE}"));
+        let dir = PathBuf::from(format!(
+            "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{SLICE}"
+        ));
         let read = |name: &str| {
             std::fs::read_to_string(dir.join(name))
                 .ok()
@@ -188,16 +199,31 @@ mod tests {
     #[test]
     fn only_the_home_cache_root_is_the_live_drawer() {
         let home = Path::new("/home/someone");
-        assert!(is_live_drawer(Path::new("/home/someone/.cache/meridian"), Some(home)));
-        assert!(!is_live_drawer(Path::new("/tmp/sandbox/meridian"), Some(home)));
-        assert!(!is_live_drawer(Path::new("/home/someone/.cache/meridian"), None));
+        assert!(is_live_drawer(
+            Path::new("/home/someone/.cache/meridian"),
+            Some(home)
+        ));
+        assert!(!is_live_drawer(
+            Path::new("/tmp/sandbox/meridian"),
+            Some(home)
+        ));
+        assert!(!is_live_drawer(
+            Path::new("/home/someone/.cache/meridian"),
+            None
+        ));
     }
 
     #[test]
     fn the_scope_call_carries_the_pid_slice_floor_and_collect_mode() {
         let unit = scope_name(Path::new("/run/user/1000/mrd/8b3ea6d90c5d.sock"), 42);
         assert_eq!(unit, "mrd-engine-8b3ea6d90c5d-42.scope");
-        let joined = scope_call(Path::new("/run/user/1000/bus"), &unit, 42, (8 << 30, 8 << 30)).join(" ");
+        let joined = scope_call(
+            Path::new("/run/user/1000/bus"),
+            &unit,
+            42,
+            (8 << 30, 8 << 30),
+        )
+        .join(" ");
         for want in [
             "--address=unix:path=/run/user/1000/bus",
             "--timeout=2",
@@ -208,15 +234,25 @@ mod tests {
             "MemoryMin t 8589934592",
             "MemoryLow t 8589934592",
         ] {
-            assert!(joined.contains(want), "busctl argv lacks {want:?}: {joined}");
+            assert!(
+                joined.contains(want),
+                "busctl argv lacks {want:?}: {joined}"
+            );
         }
         let args = scope_call(Path::new("/run/user/1000/bus"), &unit, 42, (0, 0));
         assert!(
-            args.iter().any(|a| a == "mrd engine (placed by the client that spawned it)"),
+            args.iter()
+                .any(|a| a == "mrd engine (placed by the client that spawned it)"),
             "a string value is one word: {args:?}"
         );
-        assert!(joined.ends_with(" 0"), "the aux array must be empty: {joined}");
+        assert!(
+            joined.ends_with(" 0"),
+            "the aux array must be empty: {joined}"
+        );
         let bare = scope_call(Path::new("/run/user/1000/bus"), &unit, 42, (0, 0)).join(" ");
-        assert!(!bare.contains("Memory") && bare.contains(" fail 4 "), "no floor sets none: {bare}");
+        assert!(
+            !bare.contains("Memory") && bare.contains(" fail 4 "),
+            "no floor sets none: {bare}"
+        );
     }
 }
