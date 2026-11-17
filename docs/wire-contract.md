@@ -3302,9 +3302,19 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   clears it and counts that as a failure. Query forms, relation names and the
   append protocol do not change.
 - **CLI recovery**: a retry-class refusal produces `NO_VIEW` directly, without
-  a local full-corpus projection or an automatic retry budget. The one extra
-  `--fresh` attempt after a successful stale answer also stays on the resident
-  route: an unusable/lost reply produces a refusal instead of falling back.
+  a local full-corpus projection or an automatic retry budget.
+- **Entry currency**: every answered call folds the corpus after the daemon
+  accepted it and computes its rows at a generation that stands on that fold
+  — the one the call's own warm validated or built, held by the call, never
+  one read back from shared state afterwards. A mounted root its links
+  resolve through is taken the same way. So the rows carry every write
+  that had landed when the call was accepted. `STALE` therefore says the
+  corpus moved between that fold and the post-result sample; it never says
+  the rows lag the call's entry. `mrd sql --fresh` on
+  the resident route rests on this: it takes the daemon's one answer and
+  reports a `STALE` one as `FRESH_AT_ENTRY`, with `as_of` and `live` as the
+  daemon gave them. It does not re-ask: on a root written faster than one
+  call, no re-ask finds the corpus still.
 
 ```json
 {"id":13,"op":"sql","query":"SELECT path FROM doc ORDER BY path"}
@@ -3318,7 +3328,7 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 |---|---|
 | `as_of_fingerprint` | the projection pin the rows were computed at: the engine's warm corpus fold, verbatim |
 | `live` | post-result currency fingerprint; absent exactly on UNVERIFIED |
-| `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED`; UNVERIFIED iff `error` is set |
+| `state` | `FRESH_AT_SAMPLE` \| `STALE` \| `UNVERIFIED`; UNVERIFIED iff `error` is set. `FRESH_AT_SAMPLE` iff `as_of_fingerprint == live`; `STALE` rows are still current at the call's entry (entry currency, above) |
 | `columns[]` | `{name, type}` as `DuckDB` reports them — the pair the CLI `--json` frame carries |
 | `rows[]` | row-major JSON cells; list cells are real arrays per row, never column dumps. Booleans and numerics are JSON bools/numbers; every other scalar family — timestamp (tz-aware columns marked `+00`), date, time, interval, decimal, enum, struct, map — is a string in `DuckDB`'s `::VARCHAR`, never a `Debug` repr; a union cell is its member's cell |
 | `error` | a caller's failing SQL is a success body with the engine's words verbatim plus the arms below. Never a wire error: `ok:false` frames are door faults (`workspace_busy`, `lock_timeout`, `io_error`, `bad_request`, `unknown_op`) |

@@ -127,7 +127,8 @@ fn sql_lifecycle_over_the_wire() {
     let pins = conn.sql(2, "SELECT count(*) FROM hist.pin");
     assert_eq!(pins["body"]["rows"], json!([[1]]), "{pins}");
 
-    // Move the corpus: the next call re-warms and appends delta-grain.
+    // Move the corpus: the next call re-warms and appends delta-grain, so its
+    // rows carry the write that landed before it (§ A.11, entry currency).
     write(&ws, "a.md", "# A moved\n\nsee [[b]]\n");
     let after = conn.sql(
         3,

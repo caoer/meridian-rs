@@ -766,9 +766,11 @@ options:
   --spec PAGE              (test --history) workspace-relative SPEC page whose
                            ```golden fence declares exceptions; its rule: must
                            resolve to --rule's PAGE. Omitted: nothing declared.
-  --fresh                  (sql) re-ask a STALE answer once, bounded; a run
-                           that still cannot reach as_of == live reports RACED
-                           rather than a fresh-looking result.
+  --fresh                  (sql) with a resident daemon: its one answer, and
+                           a STALE one reports FRESH_AT_ENTRY (the rows are the
+                           corpus as folded when the daemon accepted the call).
+                           With no daemon: one bounded retry of a STALE build,
+                           and RACED when the corpus moved under the retry too.
   --rebuild                (sql) delete the drawer's sql.duckdb cache and
                            cold-build it at the live corpus (repair verb). May
                            be given without a query. Never degrades: a drawer

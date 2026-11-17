@@ -373,10 +373,6 @@ fn park_at(gate: &WorkspaceGate, workspace: &Path) {
 /// (an MCP client's per-request floor is 10 s), well over a small corpus build.
 const COLD_BUILD_WAIT: Duration = Duration::from_secs(2);
 
-/// How many times [`Registry::mounted_corpus`] re-warms a mounted root whose
-/// engine the idle reaper reclaimed between the warm and the pin.
-const MOUNT_WARM_ATTEMPTS: usize = 3;
-
 /// §3.2 cold-read state: which workspaces have a background drawer rebuild
 /// running, and the cause of the last rebuild that failed.
 #[derive(Debug, Default)]
@@ -1938,6 +1934,26 @@ impl Registry {
     /// error: it degrades per-file (`fs::build_corpus` skips and reports it) —
     /// only a domain config that cannot be decoded still refuses the warm.
     pub fn warm_or_build(&self, workspace: &Path) -> io::Result<WarmOutcome> {
+        self.warm_generation(workspace).map(|(outcome, _)| outcome)
+    }
+
+    /// [`Self::warm_or_build`] with the generation this call stands on: the
+    /// resident one its currency pass found at the fold it took, or the one
+    /// it built at that fold. A caller that owes an answer current with this
+    /// call (`sql`, wire-contract § A.11 entry currency) answers from THIS
+    /// generation, never from a later look at the engines map. The rebuild
+    /// guard below compares content fingerprints, so when the corpus returns
+    /// to an earlier fold (v1 → v2 → v1) a rebuild parked at v2 lands over a
+    /// resident v1 that a later call has just validated against disk, and the
+    /// map then holds a generation older than that call's fold until the next
+    /// warm.
+    ///
+    /// # Errors
+    /// As [`Self::warm_or_build`].
+    pub(crate) fn warm_generation(
+        &self,
+        workspace: &Path,
+    ) -> io::Result<(WarmOutcome, Arc<WorkspaceEngine>)> {
         let canonical = workspace::canonicalize(workspace)
             .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
         let root = fs::WorkspaceRoot(canonical.clone());
@@ -1978,10 +1994,11 @@ impl Registry {
                 let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
                 match engines.get(&canonical) {
                     Some(engine) if engine.at_fingerprint == fingerprint => {
-                        return Ok(match parsed {
+                        let outcome = match parsed {
                             None => WarmOutcome::Reused,
                             Some(docs) => WarmOutcome::Built { docs },
-                        });
+                        };
+                        return Ok((outcome, Arc::clone(engine)));
                     }
                     Some(engine) => (
                         Some(engine.at_fingerprint.clone()),
@@ -2060,10 +2077,12 @@ impl Registry {
             {
                 let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
                 let resident = engines.get(&canonical).map(|e| e.at_fingerprint.clone());
-                if resident.as_ref() == Some(&engine.at_fingerprint) {
+                if let Some(same) = engines.get(&canonical)
+                    && same.at_fingerprint == engine.at_fingerprint
+                {
                     // A concurrent rebuild already installed this exact corpus
                     // state — keeping it IS this build, delivered.
-                    return Ok(WarmOutcome::Built { docs: docs_parsed });
+                    return Ok((WarmOutcome::Built { docs: docs_parsed }, Arc::clone(same)));
                 }
                 if resident == witness {
                     let engine = Arc::new(engine);
@@ -2073,13 +2092,12 @@ impl Registry {
                         // The host floor reaches this generation for as long
                         // as anything holds it (merkle-spec §6.4).
                         host.published(&engine);
-                        drop(engine);
                         self.charge_floor();
                     }
                     if cold {
                         self.queue_parsed_save(&canonical);
                     }
-                    return Ok(WarmOutcome::Built { docs: docs_parsed });
+                    return Ok((WarmOutcome::Built { docs: docs_parsed }, engine));
                 }
             }
             // The resident engine moved while this pass was off the lock: a
@@ -2151,22 +2169,14 @@ impl Registry {
     ) -> Result<Arc<dyn wire_serve::mount_corpus::ServedCorpus>, String> {
         let canonical = workspace::canonicalize(root)
             .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
-        // The idle reaper can reclaim the engine between the warm and the
-        // pin; the same pass re-warms, bounded so a reaper storm cannot spin
-        // this call forever.
-        for _ in 0..MOUNT_WARM_ATTEMPTS {
-            self.warm_or_build(&canonical)
-                .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
-            if let Some(engine) = self.engine_snapshot(&canonical) {
-                let served: Arc<dyn wire_serve::mount_corpus::ServedCorpus> = engine;
-                return Ok(served);
-            }
-        }
-        Err(
-            "the idle reaper reclaimed the mounted root's warm engine between warm and read \
-             — transient; the same request re-warms it"
-                .to_owned(),
-        )
+        // The generation this warm stands on, held by the caller from here:
+        // never a later look at the engines map, which the idle reaper can
+        // empty and a reverted rebuild can regress (`warm_generation`).
+        let (_, engine) = self
+            .warm_generation(&canonical)
+            .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
+        let served: Arc<dyn wire_serve::mount_corpus::ServedCorpus> = engine;
+        Ok(served)
     }
 
     /// The workspace's resident sql cache handle (§ A.11), opened in its
@@ -4689,6 +4699,82 @@ mod engine_tests {
         );
     }
 
+    /// § A.11 entry currency under a revert: the corpus moves v1 → v2 → v1
+    /// (a member is born and removed again) while a rebuild at v2 is parked
+    /// before its insert. A `sql` call accepted after the revert validates
+    /// the resident v1; then the parked rebuild lands, because the guard
+    /// compares content fingerprints and the resident equals its witness
+    /// again. The call still answers the v1 rows at the fold it took: it
+    /// serves from the generation its own warm returned.
+    ///
+    /// *Mutation:* serve from `engine_snapshot` instead — the call answers
+    /// the removed member's row at v2, `STALE`.
+    #[test]
+    fn a_sql_call_answers_at_its_own_fold_when_a_reverted_rebuild_lands_under_it() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let v1 = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
+
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg.pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
+        rewrite(&ws, "b.md", "# B, born at v2\n");
+        let parked = {
+            let reg = Arc::clone(&reg);
+            let ws = ws.clone();
+            std::thread::spawn(move || reg.warm_or_build(&ws))
+        };
+        arrived.recv().expect("a rebuild parked with its v2 build");
+
+        // The revert is acknowledged; then the call is accepted and warms.
+        fs::remove_file(ws.join("b.md")).unwrap();
+        let (entry, engine) = reg.warm_generation(&ws).unwrap();
+        assert_eq!(
+            entry,
+            WarmOutcome::Reused,
+            "the resident v1 is current again"
+        );
+        release.send(()).unwrap();
+        parked.join().unwrap().unwrap();
+        assert_ne!(
+            reg.engine_snapshot(&canonical).unwrap().at_fingerprint,
+            v1,
+            "the parked v2 rebuild landed over the validated v1: the case under test"
+        );
+
+        let answered = crate::sql_op::serve(
+            &reg,
+            &canonical,
+            &engine,
+            "SELECT path FROM doc ORDER BY path",
+        )
+        .expect("the call answers");
+        let wire::ResponseBody::Sql {
+            as_of_fingerprint,
+            state,
+            rows,
+            ..
+        } = answered
+        else {
+            panic!("a sql body");
+        };
+        assert_eq!(
+            rows,
+            vec![vec![serde_json::json!("a.md")]],
+            "the rows carry the acknowledged removal of b.md"
+        );
+        assert_eq!(
+            as_of_fingerprint, v1.0,
+            "at the fold the call took after it was accepted"
+        );
+        assert_eq!(state, "FRESH_AT_SAMPLE", "and disk is still at that fold");
+    }
+
     /// §3.2: a fast-failing rebuild surfaces its cause TO THE KICKING ASK
     /// (the failure lands inside the bounded wait) — warming never masks a
     /// broken corpus — and a later ask reports the same cause.
@@ -5899,7 +5985,7 @@ mod engine_tests {
         make_fifo(&gate);
         let query = fifo_query(&gate);
         std::thread::scope(|scope| {
-            let running = scope.spawn(|| crate::sql_op::serve(&reg, &ws[0], &query));
+            let running = scope.spawn(|| crate::sql_op::serve_warm(&reg, &ws[0], &query));
             let mut writer = open_when_read(&gate);
             let holders = Arc::strong_count(&reg.sql_stores.lock().unwrap()[&ws[0]].store);
             // The call may drop its own handle before the read ends
@@ -6026,7 +6112,7 @@ mod engine_tests {
         // latest views would itself outgrow 8 MiB, and a caller's statement
         // keeps the steady limit.
         let pin = "SELECT gen, files_added FROM hist.pin ORDER BY gen DESC LIMIT 1";
-        let docs = || match crate::sql_op::serve(&reg, &canonical, pin) {
+        let docs = || match crate::sql_op::serve_warm(&reg, &canonical, pin) {
             Ok(wire::ResponseBody::Sql {
                 rows, error: None, ..
             }) => Ok(rows[0].clone()),
@@ -6839,16 +6925,19 @@ mod engine_tests {
         );
         let canonical = workspace::canonicalize(&ws).unwrap();
         reg.warm_or_build(&canonical).unwrap();
-        let serve =
-            || match crate::sql_op::serve(&reg, &canonical, "SELECT path FROM base ORDER BY path")
-                .unwrap()
-            {
-                wire::ResponseBody::Sql { rows, error, .. } => {
-                    assert!(error.is_none(), "the query runs: {error:?}");
-                    assert_eq!(rows, vec![vec![serde_json::json!("bases/x.base")]]);
-                }
-                other => panic!("not a sql body: {other:?}"),
-            };
+        let serve = || match crate::sql_op::serve_warm(
+            &reg,
+            &canonical,
+            "SELECT path FROM base ORDER BY path",
+        )
+        .unwrap()
+        {
+            wire::ResponseBody::Sql { rows, error, .. } => {
+                assert!(error.is_none(), "the query runs: {error:?}");
+                assert_eq!(rows, vec![vec![serde_json::json!("bases/x.base")]]);
+            }
+            other => panic!("not a sql body: {other:?}"),
+        };
         let walks = || reg.feed_stats(&canonical).expect("live feed").base_walks;
 
         serve();

@@ -128,10 +128,10 @@ best-effort restoration contract; rounded sizes need not round-trip through
 DuckDB's reported strings.
 
 The CLI reports a retry-class daemon refusal as `NO_VIEW`, without a local
-full-corpus fallback or an automatic retry budget. Its one extra `--fresh`
-attempt after a successful stale answer stays on the resident route: an
-unusable or lost reply reports a refusal, never a local projection. Actual
-initial I/O failures retain their existing environment-class behavior.
+full-corpus fallback or an automatic retry budget. `--fresh` on the resident
+route takes the daemon's one answer (`wire-contract.md` § A.11, entry
+currency). Actual initial I/O failures retain their existing
+environment-class behavior.
 
 ## §5 Alternatives
 

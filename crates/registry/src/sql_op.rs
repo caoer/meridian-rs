@@ -6,7 +6,10 @@
 //! lock excludes every other process), and this module is the one append
 //! actor per workspace.
 //!
-//! Serve shape per call: warm engine snapshot → pre-query pin check + delta
+//! Serve shape per call: the generation the dispatch's warm stands on
+//! (`Registry::warm_generation` — never a second look at the engines map, so
+//! the rows are the corpus as folded after the call was accepted: § A.11,
+//! entry currency) → pre-query pin check + delta
 //! append ([`view::store::SqlStore::sync`] — O(changed files), the watcher
 //! grain rides the same path later) → always-rollback query (one execution
 //! path, the NO-SANDBOX ruling 2026-08-14) → post-result currency pass
@@ -219,7 +222,8 @@ fn lock_store_bounded<'s, T>(
     }
 }
 
-/// Serve one `sql` call. The caller has warmed the workspace already.
+/// Serve one `sql` call from `engine`, the generation the caller's own warm
+/// returned for this call (`Registry::warm_generation`).
 ///
 /// # Errors
 /// `io_error` when the cache file cannot be opened/appended or the corpus
@@ -230,13 +234,9 @@ fn lock_store_bounded<'s, T>(
 pub(crate) fn serve(
     registry: &Registry,
     ws: &Path,
+    engine: &crate::engine::WorkspaceEngine,
     query: &str,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    let Some(engine) = registry.engine_snapshot(ws) else {
-        // The dispatch warmed first; an absent engine here is a routing break.
-        return Err(Box::new(ErrorBody::new(ErrorCode::Internal)));
-    };
-
     // THE HOLD, AND ITS END. The mutex covers the append and the opening of
     // this call's own read — nothing else. `begin_read` clones a connection off
     // the store's DuckDB instance and issues its `BEGIN` here, under the lock,
@@ -247,7 +247,7 @@ pub(crate) fn serve(
     // queued behind the slowest one (measured: 350.6 s against a 351.6 s
     // holder, while the same probe on a DIFFERENT workspace served in 70 ms
     // through the same daemon).
-    let read = with_appender(registry, ws, &engine, |append| {
+    let read = with_appender(registry, ws, engine, |append| {
         // The registry's least-recently-used close counts a query as holding
         // the cache through this `Arc`. The read below takes its own clone of
         // it (`begin_held_read`), so the cache stays held until the read ends
@@ -311,6 +311,20 @@ pub(crate) fn serve(
             })
         }
     }
+}
+
+/// Test seam: warm `ws` and serve from the generation that warm returned, as
+/// the wire dispatch does.
+#[cfg(test)]
+pub(crate) fn serve_warm(
+    registry: &Registry,
+    ws: &Path,
+    query: &str,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let (_, engine) = registry
+        .warm_generation(ws)
+        .map_err(|e| io_error(format!("cannot warm the corpus: {e}")))?;
+    serve(registry, ws, &engine, query)
 }
 
 /// One append to a cache of `ws`, from `engine`'s generation.

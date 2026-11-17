@@ -407,7 +407,7 @@ mod tests {
 
     /// The rows `query` answers on `ws` through the served door.
     fn rows(reg: &Registry, ws: &Path, query: &str) -> Vec<Vec<serde_json::Value>> {
-        match crate::sql_op::serve(reg, ws, query) {
+        match crate::sql_op::serve_warm(reg, ws, query) {
             Ok(wire::ResponseBody::Sql {
                 rows, error: None, ..
             }) => rows,
