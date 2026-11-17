@@ -4734,7 +4734,11 @@ mod engine_tests {
         // The revert is acknowledged; then the call is accepted and warms.
         fs::remove_file(ws.join("b.md")).unwrap();
         let (entry, engine) = reg.warm_generation(&ws).unwrap();
-        assert_eq!(entry, WarmOutcome::Reused, "the resident v1 is current again");
+        assert_eq!(
+            entry,
+            WarmOutcome::Reused,
+            "the resident v1 is current again"
+        );
         release.send(()).unwrap();
         parked.join().unwrap().unwrap();
         assert_ne!(
@@ -4743,9 +4747,13 @@ mod engine_tests {
             "the parked v2 rebuild landed over the validated v1: the case under test"
         );
 
-        let answered =
-            crate::sql_op::serve(&reg, &canonical, &engine, "SELECT path FROM doc ORDER BY path")
-                .expect("the call answers");
+        let answered = crate::sql_op::serve(
+            &reg,
+            &canonical,
+            &engine,
+            "SELECT path FROM doc ORDER BY path",
+        )
+        .expect("the call answers");
         let wire::ResponseBody::Sql {
             as_of_fingerprint,
             state,
