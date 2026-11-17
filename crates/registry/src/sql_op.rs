@@ -237,7 +237,6 @@ pub(crate) fn serve(
     engine: &crate::engine::WorkspaceEngine,
     query: &str,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-
     // THE HOLD, AND ITS END. The mutex covers the append and the opening of
     // this call's own read — nothing else. `begin_read` clones a connection off
     // the store's DuckDB instance and issues its `BEGIN` here, under the lock,

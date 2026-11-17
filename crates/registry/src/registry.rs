@@ -4745,7 +4745,11 @@ mod engine_tests {
         // The revert is acknowledged; then the call is accepted and warms.
         rewrite(&ws, "a.md", "# A v1\n");
         let (entry, engine) = reg.warm_generation(&ws).unwrap();
-        assert_eq!(entry, WarmOutcome::Reused, "the resident v1 is current again");
+        assert_eq!(
+            entry,
+            WarmOutcome::Reused,
+            "the resident v1 is current again"
+        );
         release.send(()).unwrap();
         parked.join().unwrap().unwrap();
         assert_ne!(
@@ -6921,16 +6925,19 @@ mod engine_tests {
         );
         let canonical = workspace::canonicalize(&ws).unwrap();
         reg.warm_or_build(&canonical).unwrap();
-        let serve =
-            || match crate::sql_op::serve_warm(&reg, &canonical, "SELECT path FROM base ORDER BY path")
-                .unwrap()
-            {
-                wire::ResponseBody::Sql { rows, error, .. } => {
-                    assert!(error.is_none(), "the query runs: {error:?}");
-                    assert_eq!(rows, vec![vec![serde_json::json!("bases/x.base")]]);
-                }
-                other => panic!("not a sql body: {other:?}"),
-            };
+        let serve = || match crate::sql_op::serve_warm(
+            &reg,
+            &canonical,
+            "SELECT path FROM base ORDER BY path",
+        )
+        .unwrap()
+        {
+            wire::ResponseBody::Sql { rows, error, .. } => {
+                assert!(error.is_none(), "the query runs: {error:?}");
+                assert_eq!(rows, vec![vec![serde_json::json!("bases/x.base")]]);
+            }
+            other => panic!("not a sql body: {other:?}"),
+        };
         let walks = || reg.feed_stats(&canonical).expect("live feed").base_walks;
 
         serve();
