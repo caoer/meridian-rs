@@ -124,7 +124,10 @@ mod linux {
                  stops when its unit stops: {why}"
             );
             eprintln!("mrd: {line}");
-            say_in_voice(socket, &format!("client pid {}: {line}", std::process::id()));
+            say_in_voice(
+                socket,
+                &format!("client pid {}: {line}", std::process::id()),
+            );
         }
     }
 
