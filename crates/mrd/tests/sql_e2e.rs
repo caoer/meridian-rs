@@ -897,11 +897,19 @@ fn sql_retry_refusal_never_projects_locally() {
     }
 }
 
+/// `wire-contract.md` § A.11, entry currency: under `--fresh` a resident
+/// daemon's `STALE` answer is the corpus as folded when the daemon accepted
+/// the call, so the CLI reports it `FRESH_AT_ENTRY` — the daemon's rows and
+/// `as_of`, exit 0 — from the one `sql` request. Without `--fresh`
+/// the same answer stays `STALE`. Neither builds a local projection.
+///
+/// *Mutation:* re-ask a `STALE` answer under `--fresh` — the fake daemon
+/// counts two queries.
 #[test]
-fn fresh_requery_stays_resident_after_stale_and_lost_or_failed_reply() {
+fn fresh_takes_a_resident_stale_answer_as_fresh_at_entry_in_one_call() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
-    for disconnect in [true, false] {
+    for fresh in [true, false] {
         let sb = sandbox();
         let ws = write_bare_ws(&sb, "fresh-busy", &[("a.md", "# A\n")]);
         let socket = common::child_socket_path(&sb.home, &sb.cache_home);
@@ -924,29 +932,33 @@ fn fresh_requery_stays_resident_after_stale_and_lost_or_failed_reply() {
                     serde_json::json!({"ok":true,"body":{"caps":["sql"]}})
                 } else {
                     queries += 1;
-                    match queries {
-                        1 => {
-                            serde_json::json!({"ok":true,"body":{"as_of_fingerprint":"b3c:one","live":"b3c:two","state":"STALE","columns":[],"rows":[]}})
-                        }
-                        2 if !disconnect => {
-                            serde_json::json!({"ok":false,"error":{"code":"io_error","recovery":"env","cause":"fixture refusal"}})
-                        }
-                        _ => break,
-                    }
+                    serde_json::json!({"ok":true,"body":{
+                        "as_of_fingerprint":"b3c:entry","live":"b3c:later","state":"STALE",
+                        "columns":[{"name":"path","type":"VARCHAR"}],
+                        "rows":[["a.md"]],"row_count":1}})
                 };
                 writeln!(stream, "{response}").unwrap();
             }
             queries
         });
-        let out = sb.run(&ws, &["sql", "--json", "--fresh", "SELECT path FROM doc"]);
-        assert_eq!(server.join().unwrap(), 2);
+        let mut args = vec!["sql", "--json"];
+        if fresh {
+            args.push("--fresh");
+        }
+        args.push("SELECT path FROM doc");
+        let out = sb.run(&ws, &args);
         assert_eq!(
-            out.status.code(),
-            Some(2),
-            "a resident stale result must forbid fallback across --fresh: {}",
-            stderr(&out)
+            server.join().unwrap(),
+            1,
+            "--fresh={fresh}: one sql request, no re-ask"
         );
-        assert_eq!(json(&out)["state"], "NO_VIEW");
+        assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+        let doc = json(&out);
+        let want = if fresh { "FRESH_AT_ENTRY" } else { "STALE" };
+        assert_eq!(doc["state"], want, "--fresh={fresh}: {doc}");
+        assert_eq!(doc["as_of_fingerprint"], "b3c:entry", "{doc}");
+        assert_eq!(doc["stale"], true, "the corpus did move past as_of: {doc}");
+        assert_eq!(doc["rows"], serde_json::json!([["a.md"]]), "{doc}");
         assert_eq!(walk_count_suffix(&sb.cache_home, "sql.duckdb"), 0);
     }
 }
