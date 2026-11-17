@@ -1931,6 +1931,7 @@ Under `MRD_TIMING` (the switch, sink, line grammar and the two lanes:
 | `flock.hold.detect` | — (`cmd=daemon`) | `fs::WriteLock` (timed by `registry::ring`) | the same hold for an ordinary detect cycle of a subscribed workspace: one taken because the root moved past the watcher's baseline |
 | `flock.hold.backstop` | — (`cmd=daemon`) | same | the same hold for the detect cycle that runs once per `DETECT_FLOOR_CADENCE` (30 s), the push plane's backstop |
 | `flock.hold.prime` | — (`cmd=daemon`) | same | the same hold for the priming cycle, which sets a new subscription's baseline |
+| `prime.drawer` | — (`cmd=daemon`) | `registry::ring` (priming) | the resident generation's members handed over as the priming cycle's baseline candidates (`node-rev-merkle-spec.md` §6.7): one entry per member, no member read. Absent when priming took the byte snapshot, which reports `snapshot*` |
 | `mw.sql.world` | — (the write door's process: `cmd=daemon`, or the CLI's `cmd=` for an in-process door) | `wire_serve::middleware` | the documents of one `ctx.sql` projection build: the parse of the pending files, and on the door run's first build also the hash-domain walk, read and parse of every disk member (`armed-plane.md` § The ctx surface). One line per build; a call that reuses the projection emits none |
 | `mw.sql.project` | — (same) | `registry::mw_sql` | `view::build_memory` over that world, the extension gate, the spill containment and the settings read the calls are checked against. One line per build |
 | `mw.sql.query` | — (same) | `registry::mw_sql` | one `ctx.sql` call: a fresh connection, `BEGIN`, the statement and its rows, `ROLLBACK`, the settings check. One line per answered call |
@@ -2084,6 +2085,7 @@ registry: slow op run duration_us=10310944 started_unix_ms=1792405850330 on /ws 
 | Ledger phase | Emitted in | Covers |
 |---|---|---|
 | `memo.wait` | `fs::lock_within`, `fs::lock_memo` | waiting for the workspace's resident domain memo: the borrow in `Registry::domain_cache`, the currency pass, the warm rebuild, the run bracket's three observations |
+| `memo.enter` | `Registry::patched_cache_within` | the workspace's cold entry (`node-rev-merkle-spec.md` §6.4): the watcher arm and the checkpoint restore when this op led it, the wait for them when another borrower did. Absent once the workspace has a memo |
 | `memo.apply` | `Registry::patched_cache_within` | the feed's pending dirty set applied under the memo lock: O(dirty), or a whole re-baseline on a doubt collapse |
 | `cookie.wait` | `feed::WorkspaceFeed` barrier | the §6.4 cookie barrier: the wait for the watcher to deliver the sentinel event, at most `DOOR_COOKIE_TIMEOUT` (2 s) on the read plane |
 | `flock.wait` | `run::executor` (delta-mint bracket), `registry::ring` (priming) | waiting to take `.meridian/write.lock`; the hold after it is `flock.hold.<holder>` |
