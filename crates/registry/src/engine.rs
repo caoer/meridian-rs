@@ -233,6 +233,24 @@ impl WorkspaceEngine {
         }
     }
 
+    /// This generation's members as watch-priming candidates (merkle-spec
+    /// §6.7): each version as the generation holds it, under the digest of
+    /// its own bytes, and no member read. A generation that owns its
+    /// documents shares their raw allocations; one built under a residency
+    /// host shares its slots' controller members.
+    pub fn baseline(&self) -> fs::PreparedBaseline {
+        match &self.bodies {
+            Bodies::Eager(docs, _) => {
+                let mut members = fs::PreparedBaseline::default();
+                for (path, doc) in docs {
+                    members.insert_memory(path.clone(), Arc::clone(&doc.raw).into());
+                }
+                members
+            }
+            Bodies::Resident(catalog) => catalog.baseline(),
+        }
+    }
+
     /// The parsed documents of a generation that owns them; `None` for one
     /// built under a residency host, whose bodies are leased.
     #[must_use]

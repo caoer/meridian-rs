@@ -1691,6 +1691,37 @@ impl Registry {
         Ok(ColdGate::Serve)
     }
 
+    /// Watch priming's candidates (merkle-spec §6.7): the resident
+    /// generation's members ([`WorkspaceEngine::baseline`]), for a watcher
+    /// retaining through `watcher`. The generation is first brought current
+    /// with the memo by the incremental pass a read makes
+    /// ([`Self::warm_or_build`]), off the flock, so priming's re-reads under
+    /// the flock are the last instant's movers alone. `None` — priming reads
+    /// the corpus itself — when no generation is resident, when that pass
+    /// fails, or when the generation's bodies are not the watcher's
+    /// provider's: a registry's generations retain through its residency
+    /// host, or hold their documents in memory when it has none.
+    pub(crate) fn priming_candidates(
+        &self,
+        canonical: &Path,
+        watcher: Option<&Arc<dyn model::bytes::ByteRetention>>,
+    ) -> Option<wire_serve::watch::PrimeSnapshot> {
+        let provider = self.residency.as_ref().map(|host| host.retention());
+        match (&provider, watcher) {
+            (None, None) => {}
+            (Some(own), Some(watcher)) if Arc::ptr_eq(own, watcher) => {}
+            _ => return None,
+        }
+        // A cold drawer is never built here: its build reads the corpus too.
+        self.engine_snapshot(canonical)?;
+        self.warm_or_build(canonical).ok()?;
+        let engine = self.engine_snapshot(canonical)?;
+        let handing = timing::phase("prime.drawer");
+        let members = engine.baseline();
+        handing.stop();
+        Some(wire_serve::watch::PrimeSnapshot::held(members, provider))
+    }
+
     /// The workspaces with a resident engine: the set a successor daemon
     /// must hold warm before this one hands over (wire-contract §A.3).
     #[must_use]
@@ -2394,7 +2425,16 @@ impl Registry {
         // budget would let the door wait twice over it.
         let started = Instant::now();
         let left = || budget.map(|b| b.saturating_sub(started.elapsed()));
-        let (cache, feed) = self.resident_memo(workspace, &left)?;
+        let (cache, feed) = if let Some(published) = self.published_memo(workspace) {
+            published
+        } else {
+            // The cold entry, led or waited on: the slow-op ledger's
+            // `memo.enter`.
+            let entering = timing::op::phase("memo.enter");
+            let entered = self.resident_memo(workspace, &left);
+            entering.stop();
+            entered?
+        };
         let ring = {
             let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             rings.get(workspace).cloned()

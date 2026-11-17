@@ -386,6 +386,16 @@ impl Catalog {
         entry.member.parse_retained().ok()
     }
 
+    /// Every member's retained version as a watcher baseline
+    /// ([`super::retention::version`]): no body is loaded.
+    pub fn baseline(&self) -> fs::PreparedBaseline {
+        let mut members = fs::PreparedBaseline::default();
+        for (path, slot) in &self.entries.0 {
+            members.insert_retained(path.clone(), super::retention::version(&slot.member));
+        }
+        members
+    }
+
     /// The generation's slots: the prior of the next incremental pass
     /// ([`update`]).
     #[must_use]

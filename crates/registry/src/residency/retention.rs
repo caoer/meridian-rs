@@ -32,6 +32,14 @@ impl Retention {
 struct Version {
     member: Member,
 }
+/// `member`'s version as a watcher baseline body: one more reference on the
+/// controller member a serving slot already holds, the body
+/// [`Retention::retain`] returns for the same bytes.
+pub(crate) fn version(member: &Member) -> Arc<dyn RetainedBytes> {
+    Arc::new(Version {
+        member: member.clone(),
+    })
+}
 impl ByteRetention for Retention {
     fn retain(&self, bytes: Vec<u8>) -> io::Result<Arc<dyn RetainedBytes>> {
         let source = self.store.retain(&bytes)?;

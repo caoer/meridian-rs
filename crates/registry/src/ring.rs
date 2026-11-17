@@ -399,7 +399,9 @@ impl WorkspaceRing {
     ///
     /// Unlocked first: the pre-observation through the SHARED memo
     /// (`Registry::door_observation`), compared with the baseline, and — when
-    /// priming — the byte snapshot ([`wire_serve::watch::PrimeSnapshot`]).
+    /// priming — the baseline candidates ([`wire_serve::watch::PrimeSnapshot`]):
+    /// the resident generation's members (`Registry::priming_candidates`),
+    /// else the byte snapshot.
     /// Then [`Self::cycle_locked`] under the workspace write flock: reconcile
     /// must never observe a mid-batch state. `force_floor` is the §6.6
     /// fallback clock: once per [`DETECT_FLOOR_CADENCE`] the backstop
@@ -442,18 +444,25 @@ impl WorkspaceRing {
                 return Ok(false);
             }
         }
-        // Priming reads the corpus HERE, before the flock: its bytes seed the
-        // baseline, and its root is written nowhere (merkle-spec §6.7).
+        // Priming takes its members HERE, before the flock: their bytes seed
+        // the baseline, and no root of theirs is written anywhere (merkle-spec
+        // §6.7). The resident generation's members when there is one, read by
+        // nobody; the byte snapshot of the corpus otherwise.
         let snapshot = if was_unprimed {
-            Some(self.retention.as_ref().map_or_else(
-                || wire_serve::watch::PrimeSnapshot::take(ws_root),
-                |retention| {
-                    wire_serve::watch::PrimeSnapshot::take_with_retention(
-                        ws_root,
-                        retention.clone(),
-                    )
+            Some(
+                match registry.priming_candidates(&ws_root.0, self.retention.as_ref()) {
+                    Some(held) => held,
+                    None => self.retention.as_ref().map_or_else(
+                        || wire_serve::watch::PrimeSnapshot::take(ws_root),
+                        |retention| {
+                            wire_serve::watch::PrimeSnapshot::take_with_retention(
+                                ws_root,
+                                retention.clone(),
+                            )
+                        },
+                    )?,
                 },
-            )?)
+            )
         } else {
             None
         };

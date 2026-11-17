@@ -4899,6 +4899,22 @@ fn diff_baseline_entries(
 }
 
 impl PreparedBaseline {
+    /// Add a member whose bytes the host already holds in memory, sharing
+    /// that allocation. Its identity is the digest of those very bytes.
+    pub fn insert_memory(&mut self, path: String, bytes: model::bytes::SharedBytes) {
+        let identity = model::bytes::ByteSource::identity(&bytes);
+        let body = BaselineBody::Memory(bytes);
+        self.0.insert(path, BaselineEntry { identity, body });
+    }
+
+    /// Add a member whose exact version the host already retains, under the
+    /// identity that version carries.
+    pub fn insert_retained(&mut self, path: String, source: Arc<dyn model::bytes::RetainedBytes>) {
+        let identity = source.identity();
+        let body = BaselineBody::Retained(source);
+        self.0.insert(path, BaselineEntry { identity, body });
+    }
+
     /// Compare a complete prepared membership in key order without tree lookups.
     #[must_use]
     pub fn matches_leaves(&self, leaves: &BTreeMap<String, [u8; 32]>) -> bool {

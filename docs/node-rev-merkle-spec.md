@@ -1553,13 +1553,27 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   re-fires detection.
 - The frame's `root_after` is the memo's root — what the read plane stamps, so
   push and read planes cannot disagree.
-- Priming (the subscribe-time baseline) reads the corpus before the flock: one
-  streamed, budgeted byte snapshot with its leaf digests and §6.4 backing
-  handles, unlocked. Under the flock, after the
+- Priming (the subscribe-time baseline) takes its members before the flock,
+  unlocked: every member's bytes with its leaf digest and §6.4 backing handle.
+  Under the flock, after the
   observation, the baseline is built from the memo's leaf view: a member whose
   snapshot digest equals its leaf keeps the snapshot's bytes, any other member
   is re-read and verified against its leaf, and a snapshot member the memo
   lacks is dropped. The baseline root is the observed root.
+- Priming's member source is the workspace's resident generation (§6.8), the
+  drawer: each member's version as the generation holds it, identified by the
+  digest of those bytes, with no member read from disk. Under a host the
+  baseline entry is the generation slot's own controller member; without one
+  it shares the document's raw allocation. A resident generation is first
+  brought current by the incremental pass a read makes (§6.8), before the
+  flock. Disk reads under the flock are then the movers alone — the members
+  whose leaf moved past the generation since that pass, and the members
+  the generation serves no document for (§3 degradation). The byte snapshot
+  below is the source when no generation is resident (priming neither
+  builds a cold drawer nor waits for its build, which reads the corpus
+  too), when that pass fails, or when the generation's bodies are not the
+  watcher's provider's.
+  The byte snapshot is one streamed, budgeted read of the hash domain.
   Under a host retention provider the snapshot reads, digests and retains one
   member at a time and releases its bytes before reading the next, so it never
   holds the corpus's raw bytes; the full snapshot a racing re-read falls back
@@ -1587,9 +1601,11 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   corpus under the ring's state lock, which every writer's ring advance takes.
 - The unlocked snapshot's own root is written nowhere — not the baseline, not
   a frame, not the ring. Taken unlocked, it can fold a batch mid-landing, a
-  root no door committed; only its bytes are reused, each one verified. A
-  re-read that disagrees with its leaf falls back to the full snapshot under
-  the flock.
+  root no door committed; only its bytes are reused, each one verified. The
+  generation's stamp is likewise unused: its members are candidates, each
+  checked against the flock-held leaf. A
+  re-read that disagrees with its leaf falls back to the full byte snapshot
+  under the flock.
 - The ring holds no private fold memo, and a plain mutex keeps the
   single-flight gate. A poisoned gate is recovered like the ring-state mutex:
   poison records a previous unwind, not a currently running cycle. An unwind

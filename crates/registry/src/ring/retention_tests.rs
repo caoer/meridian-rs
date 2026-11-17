@@ -320,6 +320,86 @@ fn a_hosted_registry_rings_retain_their_baseline_through_the_host() {
     );
 }
 
+/// Priming on a warm drawer (merkle-spec §6.7): the candidates are the
+/// resident generation's members, so the priming thread takes no byte
+/// snapshot. The baseline it builds is the one a disk-primed ring holds: an
+/// external batch is told with the same frame, whether a row's before bytes
+/// were the generation's (`m2`, `m4`), a re-read of a member that moved past
+/// it before the flock (`m0`), or of one it never held (`m7`).
+///
+/// *Mutation:* adopt a generation member without the leaf check in
+/// `wire_serve::watch::prime` — `m0`'s row diffs against the generation's
+/// stale bytes and `m5`, gone from disk, is told deleted.
+fn warm_drawer_prime(host: Option<Arc<crate::residency::Host>>) {
+    // Primes `ring`, moving three members between its candidates and the flock.
+    let prime_past_the_candidates =
+        |root: &fs::WorkspaceRoot, ring: &WorkspaceRing, registry: &crate::Registry| {
+            let (announce, announced) = std::sync::mpsc::channel();
+            let (resume, resumed) = std::sync::mpsc::channel();
+            *ring.pause_after_prime_snapshot.lock().unwrap() = Some((announce, resumed));
+            std::thread::scope(|scope| {
+                let prime = scope.spawn(|| {
+                    let ledger = timing::op::begin();
+                    let (primed, _) = ring.prime(root, registry).unwrap();
+                    (primed, ledger.render())
+                });
+                announced.recv_timeout(Duration::from_secs(10)).unwrap();
+                std::fs::write(root.0.join("m0.md"), "# M0\n\nmoved past the drawer\n").unwrap();
+                std::fs::remove_file(root.0.join("m5.md")).unwrap();
+                std::fs::write(root.0.join("m7.md"), "# M7\n\nthe drawer never held it\n").unwrap();
+                resume.send(()).unwrap();
+                prime.join().unwrap()
+            })
+        };
+    let batch = |root: &fs::WorkspaceRoot, ring: &WorkspaceRing, registry: &crate::Registry| {
+        std::fs::write(root.0.join("m0.md"), "# M0\n\nmoved again\n").unwrap();
+        std::fs::write(root.0.join("m2.md"), "# M2\n\nrewritten, back to [[m1]]\n").unwrap();
+        std::fs::remove_file(root.0.join("m4.md")).unwrap();
+        std::fs::remove_file(root.0.join("m7.md")).unwrap();
+        assert!(ring.cycle(root, registry, true).unwrap());
+    };
+
+    let (_dir, root, registry) = hosted_setup(host);
+    registry.warm_or_build(&root.0).unwrap();
+    let ring = registry.ring(&root.0);
+    let (primed, phases) = prime_past_the_candidates(&root, &ring, &registry);
+    assert!(
+        phases.contains("prime.drawer=") && !phases.contains("snapshot"),
+        "priming on a warm drawer read the corpus: [{phases}]"
+    );
+    assert_eq!(primed.0, fs::domain_snapshot(&root).unwrap().1.0);
+
+    let (_disk_dir, disk_root, disk) = hosted_setup(None);
+    let disk_ring = disk.ring(&disk_root.0);
+    let (_, disk_phases) = prime_past_the_candidates(&disk_root, &disk_ring, &disk);
+    assert!(
+        disk_phases.contains("snapshot.read="),
+        "the twin with a cold drawer primes from disk: [{disk_phases}]"
+    );
+    batch(&root, &ring, &registry);
+    batch(&disk_root, &disk_ring, &disk);
+    let (told, want) = (ring.frames_after(0), disk_ring.frames_after(0));
+    assert_eq!(told.len(), 1);
+    assert_eq!(
+        told[0].delta, want[0].delta,
+        "a drawer-primed baseline tells the disk-primed baseline's frame"
+    );
+}
+
+#[test]
+fn priming_on_a_warm_drawer_reads_only_its_movers() {
+    warm_drawer_prime(None);
+}
+
+#[test]
+fn priming_on_a_warm_hosted_drawer_reads_only_its_movers() {
+    let backing = tempfile::tempdir().unwrap();
+    warm_drawer_prime(Some(Arc::new(crate::residency::Host::new(
+        crate::residency::controller::Controller::new(0),
+        crate::raw_store::RawStore::new(backing.path()).unwrap(),
+    ))));
+}
+
 #[test]
 fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
     let (_dir, root, registry) = setup();

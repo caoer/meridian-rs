@@ -356,7 +356,9 @@ pub fn reconcile_delta(
 }
 
 /// Priming's unlocked half (merkle-spec §6.7, the watch plane): every
-/// member's bytes with its leaf digest, read with no flock held. It carries
+/// member's bytes with its leaf digest, taken with no flock held — read from
+/// disk ([`PrimeSnapshot::take`]) or already held by the host
+/// ([`PrimeSnapshot::held`]). It carries
 /// no root, by construction: taken unlocked it can see a batch mid-landing,
 /// and the fold of a torn state is a root no door committed. [`prime`] reuses
 /// only its bytes, each verified against the flock-held memo leaf.
@@ -386,6 +388,18 @@ impl PrimeSnapshot {
         retention: std::sync::Arc<dyn model::bytes::ByteRetention>,
     ) -> Result<Self, Box<ErrorBody>> {
         Self::capture(ws_root, Some(retention))
+    }
+
+    /// Members the host already holds, each under the digest of its own
+    /// bytes: a resident generation's (merkle-spec §6.7). Nothing is read.
+    /// `retention` is the provider the retained members belong to, `None`
+    /// for members held in memory.
+    #[must_use]
+    pub fn held(
+        members: fs::PreparedBaseline,
+        retention: Option<std::sync::Arc<dyn model::bytes::ByteRetention>>,
+    ) -> Self {
+        PrimeSnapshot { members, retention }
     }
 
     fn capture(
