@@ -3279,7 +3279,8 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
 - **Entry currency**: every answered call folds the corpus after the daemon
   accepted it and computes its rows at a generation that stands on that fold
   — the one the call's own warm validated or built, held by the call, never
-  one read back from shared state afterwards. So the rows carry every write
+  one read back from shared state afterwards. A mounted root its links
+  resolve through is taken the same way. So the rows carry every write
   that had landed when the call was accepted. `STALE` therefore says the
   corpus moved between that fold and the post-result sample; it never says
   the rows lag the call's entry. `mrd sql --fresh` on

@@ -373,10 +373,6 @@ fn park_at(gate: &WorkspaceGate, workspace: &Path) {
 /// (an MCP client's per-request floor is 10 s), well over a small corpus build.
 const COLD_BUILD_WAIT: Duration = Duration::from_secs(2);
 
-/// How many times [`Registry::mounted_corpus`] re-warms a mounted root whose
-/// engine the idle reaper reclaimed between the warm and the pin.
-const MOUNT_WARM_ATTEMPTS: usize = 3;
-
 /// §3.2 cold-read state: which workspaces have a background drawer rebuild
 /// running, and the cause of the last rebuild that failed.
 #[derive(Debug, Default)]
@@ -2173,22 +2169,14 @@ impl Registry {
     ) -> Result<Arc<dyn wire_serve::mount_corpus::ServedCorpus>, String> {
         let canonical = workspace::canonicalize(root)
             .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
-        // The idle reaper can reclaim the engine between the warm and the
-        // pin; the same pass re-warms, bounded so a reaper storm cannot spin
-        // this call forever.
-        for _ in 0..MOUNT_WARM_ATTEMPTS {
-            self.warm_or_build(&canonical)
-                .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
-            if let Some(engine) = self.engine_snapshot(&canonical) {
-                let served: Arc<dyn wire_serve::mount_corpus::ServedCorpus> = engine;
-                return Ok(served);
-            }
-        }
-        Err(
-            "the idle reaper reclaimed the mounted root's warm engine between warm and read \
-             — transient; the same request re-warms it"
-                .to_owned(),
-        )
+        // The generation this warm stands on, held by the caller from here:
+        // never a later look at the engines map, which the idle reaper can
+        // empty and a reverted rebuild can regress (`warm_generation`).
+        let (_, engine) = self
+            .warm_generation(&canonical)
+            .map_err(|e| format!("cannot read the mounted corpus: {e}"))?;
+        let served: Arc<dyn wire_serve::mount_corpus::ServedCorpus> = engine;
+        Ok(served)
     }
 
     /// The workspace's resident sql cache handle (§ A.11), opened in its
@@ -4712,19 +4700,20 @@ mod engine_tests {
     }
 
     /// § A.11 entry currency under a revert: the corpus moves v1 → v2 → v1
-    /// while a rebuild at v2 is parked before its insert. A `sql` call
-    /// accepted after the revert validates the resident v1; then the parked
-    /// rebuild lands, because the guard compares content fingerprints and the
-    /// resident equals its witness again. The call still answers at v1, the
-    /// fold it took: it serves from the generation its own warm returned.
+    /// (a member is born and removed again) while a rebuild at v2 is parked
+    /// before its insert. A `sql` call accepted after the revert validates
+    /// the resident v1; then the parked rebuild lands, because the guard
+    /// compares content fingerprints and the resident equals its witness
+    /// again. The call still answers the v1 rows at the fold it took: it
+    /// serves from the generation its own warm returned.
     ///
-    /// *Mutation:* serve from `engine_snapshot` instead — the call answers at
-    /// v2, `STALE`, without the acknowledged revert.
+    /// *Mutation:* serve from `engine_snapshot` instead — the call answers
+    /// the removed member's row at v2, `STALE`.
     #[test]
     fn a_sql_call_answers_at_its_own_fold_when_a_reverted_rebuild_lands_under_it() {
         let home = tempfile::tempdir().unwrap();
         let reg = Arc::new(registry_in(home.path()));
-        let ws = write_ws(home.path(), &[("a.md", "# A v1\n")]);
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
         let canonical = workspace::canonicalize(&ws).unwrap();
         reg.warm_or_build(&ws).unwrap();
         let v1 = reg.with_engine(&canonical, |e| e.unwrap().at_fingerprint.clone());
@@ -4734,7 +4723,7 @@ mod engine_tests {
         *reg.pause_before_insert
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
-        rewrite(&ws, "a.md", "# A v2\n");
+        rewrite(&ws, "b.md", "# B, born at v2\n");
         let parked = {
             let reg = Arc::clone(&reg);
             let ws = ws.clone();
@@ -4743,13 +4732,9 @@ mod engine_tests {
         arrived.recv().expect("a rebuild parked with its v2 build");
 
         // The revert is acknowledged; then the call is accepted and warms.
-        rewrite(&ws, "a.md", "# A v1\n");
+        fs::remove_file(ws.join("b.md")).unwrap();
         let (entry, engine) = reg.warm_generation(&ws).unwrap();
-        assert_eq!(
-            entry,
-            WarmOutcome::Reused,
-            "the resident v1 is current again"
-        );
+        assert_eq!(entry, WarmOutcome::Reused, "the resident v1 is current again");
         release.send(()).unwrap();
         parked.join().unwrap().unwrap();
         assert_ne!(
@@ -4758,19 +4743,26 @@ mod engine_tests {
             "the parked v2 rebuild landed over the validated v1: the case under test"
         );
 
-        let answered = crate::sql_op::serve(&reg, &canonical, &engine, "SELECT count(*) FROM doc")
-            .expect("the call answers");
+        let answered =
+            crate::sql_op::serve(&reg, &canonical, &engine, "SELECT path FROM doc ORDER BY path")
+                .expect("the call answers");
         let wire::ResponseBody::Sql {
             as_of_fingerprint,
             state,
+            rows,
             ..
         } = answered
         else {
             panic!("a sql body");
         };
         assert_eq!(
+            rows,
+            vec![vec![serde_json::json!("a.md")]],
+            "the rows carry the acknowledged removal of b.md"
+        );
+        assert_eq!(
             as_of_fingerprint, v1.0,
-            "the rows are the corpus as folded after the call was accepted"
+            "at the fold the call took after it was accepted"
         );
         assert_eq!(state, "FRESH_AT_SAMPLE", "and disk is still at that fold");
     }
