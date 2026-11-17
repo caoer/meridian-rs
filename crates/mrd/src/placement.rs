@@ -147,7 +147,7 @@ mod linux {
         let deadline = Instant::now() + TIMEOUT + std::time::Duration::from_millis(500);
         loop {
             match child.try_wait() {
-                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(status)) if status.success() => return await_moved(pid, unit, deadline),
                 Ok(Some(status)) => {
                     let mut said = String::new();
                     if let Some(mut err) = child.stderr.take() {
@@ -171,6 +171,27 @@ mod linux {
                 }
                 Err(e) => return Err(format!("busctl: {e}")),
             }
+        }
+    }
+
+    /// Wait until the kernel shows `pid` in `unit`: `StartTransientUnit` answers once the start
+    /// job is queued, and the move is that job's, so only the pid's own cgroup says it happened.
+    fn await_moved(pid: u32, unit: &str, deadline: Instant) -> Result<(), String> {
+        let path = format!("/proc/{pid}/cgroup");
+        let needle = format!("/{unit}");
+        loop {
+            let cgroup = std::fs::read_to_string(&path)
+                .map_err(|e| format!("cannot read the daemon's cgroup: {e}"))?;
+            if cgroup.contains(&needle) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "the user manager took {unit} but the daemon is still in {}",
+                    cgroup.trim()
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 
