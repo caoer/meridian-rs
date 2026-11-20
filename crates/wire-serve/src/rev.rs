@@ -31,7 +31,7 @@ impl Rev {
 // expected/actual/required/changed stay vocabulary-neutral.
 
 /// Response/notification key renames (v2 → v3): `(v2_key, v3_key)`.
-const RESPONSE_KEYS: [(&str, &str); 5] = [
+pub const RESPONSE_KEYS: [(&str, &str); 5] = [
     ("root", "fingerprint"),
     ("root_before", "fingerprint_before"),
     ("root_after", "fingerprint_after"),

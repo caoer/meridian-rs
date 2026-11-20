@@ -103,6 +103,44 @@ impl Node {
     }
 }
 
+/// Optional target qualifiers on a wikilink or embed (`#heading`, `#^block`,
+/// `|alias`). Boxed behind `Option` so plain `[[target]]` links pay zero extra
+/// heap allocation while keeping [`NodeKind`] compact for every node in the tree.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LinkQualifiers {
+    pub heading: Option<String>,
+    pub block: Option<String>,
+    pub alias: Option<String>,
+}
+
+impl LinkQualifiers {
+    /// Box qualifiers only when at least one is present.
+    #[must_use]
+    pub fn from_parts(
+        heading: Option<String>,
+        block: Option<String>,
+        alias: Option<String>,
+    ) -> Option<Box<Self>> {
+        if heading.is_none() && block.is_none() && alias.is_none() {
+            None
+        } else {
+            Some(Box::new(Self {
+                heading,
+                block,
+                alias,
+            }))
+        }
+    }
+}
+
+/// Callout metadata (`type`, `fold`), boxed out of [`NodeKind`] so rare
+/// callout blocks do not inflate every node in the corpus tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalloutInfo {
+    pub r#type: String,
+    pub fold: String,
+}
+
 /// Model node kinds — the policy-schema §2 vocabulary. Richer than the wire's
 /// flat kind enum (sections, paragraphs, lists exist here); the wire projection
 /// is the host's.
@@ -134,25 +172,18 @@ pub enum NodeKind {
         lang: String,
         unterminated: bool,
     },
-    Callout {
-        r#type: String,
-        fold: String,
-    },
+    Callout(Box<CalloutInfo>),
     Table,
     Wikilink {
         target: String,
-        heading: Option<String>,
-        block: Option<String>,
-        alias: Option<String>,
+        qualifiers: Option<Box<LinkQualifiers>>,
     },
     Link {
         target: String,
     },
     Embed {
         target: String,
-        heading: Option<String>,
-        block: Option<String>,
-        alias: Option<String>,
+        qualifiers: Option<Box<LinkQualifiers>>,
     },
     Anchor {
         name: String,
@@ -164,6 +195,24 @@ pub enum NodeKind {
     InlineCode,
     /// Wire-observable leaf.
     Comment,
+}
+
+impl NodeKind {
+    /// For `Wikilink` and `Embed`, borrow `(heading, block, alias)` qualifiers.
+    #[must_use]
+    pub fn link_qualifiers(&self) -> (Option<&str>, Option<&str>, Option<&str>) {
+        match self {
+            Self::Wikilink {
+                qualifiers: Some(q),
+                ..
+            }
+            | Self::Embed {
+                qualifiers: Some(q),
+                ..
+            } => (q.heading.as_deref(), q.block.as_deref(), q.alias.as_deref()),
+            _ => (None, None, None),
+        }
+    }
 }
 
 /// One parsed file: the tree plus the raw bytes it was derived from — spans
@@ -533,16 +582,27 @@ fn leaf_node(raw: &str, kind: NodeKind, span: ByteSpan) -> Node {
 /// Section nodes from the heading list: a section runs from its heading start to
 /// the next heading of level ≤ its own, else EOF — newline-inclusive,
 /// heading-inclusive (contract §1 span sub-laws / compute.py `sections`).
+///
+/// Computed in O(H) via a monotonic stack of open heading levels.
 fn section_nodes(raw: &str, headings: &[(usize, u8, String)]) -> Vec<Node> {
     let len = raw.len();
+    let mut ends = vec![len; headings.len()];
+    let mut stack: Vec<(usize, u8)> = Vec::new();
+    for (i, &(start, level, _)) in headings.iter().enumerate() {
+        while let Some(&(idx, prev_level)) = stack.last() {
+            if level <= prev_level {
+                ends[idx] = start;
+                stack.pop();
+            } else {
+                break;
+            }
+        }
+        stack.push((i, level));
+    }
     headings
         .iter()
-        .enumerate()
-        .map(|(i, (start, level, text))| {
-            let end = headings[i + 1..]
-                .iter()
-                .find(|(_, l, _)| *l <= *level)
-                .map_or(len, |(s, _, _)| *s);
+        .zip(ends)
+        .map(|((start, level, text), end)| {
             leaf_node(
                 raw,
                 NodeKind::Section {
@@ -814,9 +874,7 @@ fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
             alias,
         } => NodeKind::Wikilink {
             target,
-            heading,
-            block,
-            alias,
+            qualifiers: LinkQualifiers::from_parts(heading, block, alias),
         },
         D::Embed {
             target,
@@ -825,11 +883,9 @@ fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
             alias,
         } => NodeKind::Embed {
             target,
-            heading,
-            block,
-            alias,
+            qualifiers: LinkQualifiers::from_parts(heading, block, alias),
         },
-        D::Callout { r#type, fold } => NodeKind::Callout { r#type, fold },
+        D::Callout { r#type, fold } => NodeKind::Callout(Box::new(CalloutInfo { r#type, fold })),
         D::Task { checked, depth } => NodeKind::TaskItem { checked, depth },
         D::Table => NodeKind::Table,
         D::InlineCode => NodeKind::InlineCode,
@@ -887,7 +943,7 @@ fn kind_ordinal(kind: &NodeKind) -> u8 {
         NodeKind::ListItem => 6,
         NodeKind::TaskItem { .. } => 7,
         NodeKind::CodeBlock { .. } => 8,
-        NodeKind::Callout { .. } => 9,
+        NodeKind::Callout(_) => 9,
         NodeKind::Table => 10,
         NodeKind::Wikilink { .. } => 11,
         NodeKind::Link { .. } => 12,
@@ -1604,18 +1660,25 @@ pub enum CorruptCause {
 /// // `_sealed` is private, so this fails to compile outside `model`.
 /// let _ = model::ValidatedBatch { edits: Vec::new(), receipt: None };
 /// ```
-#[expect(
-    clippy::manual_non_exhaustive,
-    reason = "_sealed is a capability seal (only model mints), not future-proofing"
-)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ValidatedBatch {
     /// The content edits, sorted by span start (disjoint — validated).
     pub edits: Vec<ValidatedEdit>,
     /// The receipt append riding inside the same sealed commit, if the request
     /// named a receipt (§6.1).
     pub receipt: Option<ReceiptAppend>,
-    _sealed: (),
+    /// Pre-image body that [`Self::after_doc`] was simulated from (private:
+    /// seals construction to `model`).
+    pre_image: Arc<String>,
+    /// Simulated post-batch [`Document`] already built inside [`validate_batch`]
+    /// so [`candidate_of_batch`] reuses it without a second splice+parse.
+    after_doc: Arc<Document>,
+}
+
+impl PartialEq for ValidatedBatch {
+    fn eq(&self, other: &Self) -> bool {
+        self.edits == other.edits && self.receipt == other.receipt
+    }
 }
 
 /// Write-plane candidate — bytes about to land. Inner `Document` is private;
@@ -1677,6 +1740,20 @@ pub fn candidate_of_batch(
     pre_image: &str,
     sealed: &ValidatedBatch,
 ) -> CandidateDocument {
+    // Fast path (§4.4 one-reparse law): `validate_batch` already built the
+    // exact post-batch Document for `doc.raw`. When `pre_image` is that same
+    // allocation (the 100% production path), reuse the parsed tree directly
+    // instead of splicing, parsing, and BLAKE3-hashing every node a second time.
+    if std::ptr::eq(pre_image.as_ptr(), sealed.pre_image.as_ptr())
+        && pre_image.len() == sealed.pre_image.len()
+    {
+        let mut doc = (*sealed.after_doc).clone();
+        if let NodeKind::Document { path: p, .. } = &mut doc.root.kind {
+            p.clear();
+            p.push_str(path);
+        }
+        return CandidateDocument(doc);
+    }
     let mut raw = pre_image.to_owned();
     // The sealed edits are disjoint and sorted by span start, so splicing
     // back-to-front keeps every remaining span in pre-image coordinates.
@@ -1894,7 +1971,8 @@ pub fn validate_batch(
     // one-reparse law is why they take the built document rather than each
     // building their own.
     let new_raw = apply_regions(raw, &planned);
-    let new_doc = build(new_raw.clone(), syntax::parse(&new_raw));
+    let new_nodes = syntax::parse(&new_raw);
+    let new_doc = build(new_raw, new_nodes);
 
     // 4a. A post-apply parse that loses containment refuses `would_corrupt`.
     if let Some((lost, cause)) = would_corrupt(doc, &planned, &new_doc) {
@@ -1931,7 +2009,8 @@ pub fn validate_batch(
     SpliceVerdict::Validated(ValidatedBatch {
         edits,
         receipt,
-        _sealed: (),
+        pre_image: Arc::clone(&doc.raw),
+        after_doc: Arc::new(new_doc),
     })
 }
 
@@ -2762,7 +2841,32 @@ impl CorpusIndex {
     /// deterministic source-relative-then-shortest pick, not an oracle answer.
     #[must_use]
     pub fn resolve_linkpath(&self, linkpath: &str, from: &str) -> Option<String> {
-        pick_source_relative(&self.linkpath_candidates(linkpath), from)
+        if addr::head_carries_root_separator(linkpath) {
+            return None;
+        }
+        let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
+        let base = key.rsplit('/').next().unwrap_or(key.as_str());
+        if !key.contains('/') {
+            let candidates = self
+                .by_basename
+                .get(base)
+                .or_else(|| self.by_alias.get(&key))?;
+            return pick_source_relative(candidates, from);
+        }
+        if let Some(candidates) = self.by_basename.get(base) {
+            let qualified = format!("{key}.md");
+            let narrowed: Vec<String> = candidates
+                .iter()
+                .filter(|p| matches_qualified_path(p, &qualified))
+                .cloned()
+                .collect();
+            if !narrowed.is_empty() {
+                return pick_source_relative(&narrowed, from);
+            }
+        }
+        self.by_alias
+            .get(&key)
+            .and_then(|candidates| pick_source_relative(candidates, from))
     }
 
     /// [`CorpusIndex::resolve_linkpath`] together with the set it picked from,
@@ -2803,28 +2907,13 @@ impl CorpusIndex {
             return Vec::new();
         }
         let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
-        let base = key.rsplit('/').next().unwrap_or(key.as_str()).to_string();
-        // Subdir linkpath (`a/b`) ⇒ a path ending in `a/b.md` (§4.5), never any
-        // `b.md`: the qualifier is part of the address. Match vault-root
-        // (`a/b.md`) or nested (`c/a/b.md`). A qualifier that matches no
-        // candidate leaves the link DANGLING (unresolved is first-class, §4.5)
-        // — the app never adopts a basename match for a missed path. The
-        // retired bare-basename degradation here turned nonexistent
-        // `agents/x/CARD` spellings into resolved edges onto real homes (or
-        // onto the SOURCE file itself), and the phantom inbound edge then
-        // blocked `mrd rm` of the adopted home (p1-fuzzy-resolve, 2026-08-18).
-        // The full spelling may still name a frontmatter alias: alias
-        // resolution is an exact full-spelling match, not a path walk.
+        let base = key.rsplit('/').next().unwrap_or(key.as_str());
         if key.contains('/') {
-            if let Some(candidates) = self.by_basename.get(&base) {
+            if let Some(candidates) = self.by_basename.get(base) {
                 let qualified = format!("{key}.md");
-                let suffix = format!("/{qualified}");
                 let narrowed: Vec<String> = candidates
                     .iter()
-                    .filter(|p| {
-                        let lower = p.to_lowercase();
-                        lower == qualified || lower.ends_with(&suffix)
-                    })
+                    .filter(|p| matches_qualified_path(p, &qualified))
                     .cloned()
                     .collect();
                 if !narrowed.is_empty() {
@@ -2834,7 +2923,7 @@ impl CorpusIndex {
             return self.by_alias.get(&key).cloned().unwrap_or_default();
         }
         self.by_basename
-            .get(&base)
+            .get(base)
             .or_else(|| self.by_alias.get(&key))
             .cloned()
             .unwrap_or_default()
@@ -3200,6 +3289,29 @@ impl RefResolution {
             _ => None,
         }
     }
+}
+
+/// Case-insensitive check whether `path` equals `qualified_lc` or ends with
+/// `/{qualified_lc}` without allocating for ASCII paths.
+#[inline]
+fn matches_qualified_path(path: &str, qualified_lc: &str) -> bool {
+    if path.is_ascii() && qualified_lc.is_ascii() {
+        let pl = path.len();
+        let ql = qualified_lc.len();
+        if pl == ql {
+            return path.eq_ignore_ascii_case(qualified_lc);
+        }
+        if pl > ql {
+            return path.as_bytes()[pl - ql - 1] == b'/'
+                && path[pl - ql..].eq_ignore_ascii_case(qualified_lc);
+        }
+        return false;
+    }
+    let lower = path.to_lowercase();
+    lower == qualified_lc
+        || (lower.len() > qualified_lc.len()
+            && lower.as_bytes()[lower.len() - qualified_lc.len() - 1] == b'/'
+            && lower.ends_with(qualified_lc))
 }
 
 /// Lowercased file basename without its `.md` suffix — the stage-1 index key.
@@ -6211,6 +6323,20 @@ mod fm_block_scalar_tests {
                 .map(|(_, v)| v.as_str()),
             Some("a b\n"),
             "the flat map stopped publishing the indicator byte"
+        );
+    }
+
+    #[test]
+    fn node_layout_stays_compact() {
+        assert!(
+            size_of::<crate::NodeKind>() <= 40,
+            "NodeKind grew to {} bytes",
+            size_of::<crate::NodeKind>()
+        );
+        assert!(
+            size_of::<crate::Node>() <= 128,
+            "Node grew to {} bytes",
+            size_of::<crate::Node>()
         );
     }
 }

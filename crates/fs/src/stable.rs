@@ -357,7 +357,8 @@ pub(crate) fn read_settled(root: &Path, rel: &Path) -> io::Result<SettledRead> {
     for _ in 0..=SETTLE_RETRIES {
         let mut f = crate::open_nofollow(root, rel)?;
         let before = StatKey::of(&f.metadata()?);
-        let mut bytes = Vec::new();
+        let cap = usize::try_from(before.size).unwrap_or(0).saturating_add(1);
+        let mut bytes = Vec::with_capacity(cap);
         io::Read::read_to_end(&mut f, &mut bytes)?;
         let after = StatKey::of(&f.metadata()?);
         if before == after {

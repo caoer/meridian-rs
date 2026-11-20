@@ -300,7 +300,7 @@ fn classify_fact(raw: &str, node: &Node) -> (&'static str, u32, String) {
         K::ListItem => ("list_item", 0, span_text(raw, node)),
         K::TaskItem { .. } => ("task", 0, span_text(raw, node)),
         K::CodeBlock { .. } => ("code_block", 0, span_text(raw, node)),
-        K::Callout { .. } => ("callout", 0, span_text(raw, node)),
+        K::Callout(_) => ("callout", 0, span_text(raw, node)),
         K::Table => ("table", 0, span_text(raw, node)),
         K::Wikilink { target, .. } => ("wikilink", 0, target.clone()),
         K::Link { target } => ("link", 0, target.clone()),
@@ -476,7 +476,7 @@ pub(crate) fn eval_over_facts(
     let mut total_steps: u64 = 0;
     let mut peak_mem: u64 = 0;
     for predicate in predicates {
-        let run = run_predicate(&globals, predicate, facts, budget)?;
+        let run = run_predicate(globals, predicate, facts, budget)?;
         total_steps = total_steps.saturating_add(run.used_steps);
         peak_mem = peak_mem.max(run.used_mem);
         if total_steps > budget.steps || peak_mem > budget.mem {
@@ -513,7 +513,7 @@ pub(crate) fn eval_document(
     let mut total_steps: u64 = 0;
     let mut peak_mem: u64 = 0;
     for predicate in predicates {
-        match run_predicate(&globals, predicate, facts, budget) {
+        match run_predicate(globals, predicate, facts, budget) {
             Ok(run) => {
                 total_steps = total_steps.saturating_add(run.used_steps);
                 peak_mem = peak_mem.max(run.used_mem);
@@ -578,8 +578,9 @@ struct PredicateRun {
 
 /// Build the `rulepack-api@1` globals: the Starlark standard library plus the
 /// injected `violation()` builtin.
-fn rulepack_globals() -> Globals {
-    GlobalsBuilder::standard().with(rulepack_api).build()
+fn rulepack_globals() -> &'static Globals {
+    static GLOBALS: std::sync::OnceLock<Globals> = std::sync::OnceLock::new();
+    GLOBALS.get_or_init(|| GlobalsBuilder::standard().with(rulepack_api).build())
 }
 
 /// Peak heap-arena bytes as `u64` (saturating) — the memory meter reads. Peak

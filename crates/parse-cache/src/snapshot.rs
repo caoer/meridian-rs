@@ -64,7 +64,13 @@ fn read_payload(
     retain: bool,
 ) -> io::Result<(Vec<u8>, [u8; 32])> {
     let mut hash = record_hasher(tag, digest);
-    let mut bytes = Vec::new();
+    // Cap initial capacity at 64 KiB so normal documents avoid reallocations
+    // while a corrupt/truncated header declaring a huge length cannot OOM.
+    let mut bytes = if retain {
+        Vec::with_capacity(len.min(64 * 1024))
+    } else {
+        Vec::new()
+    };
     let mut buffer = [0; 16 * 1024];
     let mut remaining = len;
     while remaining > 0 {
@@ -143,16 +149,29 @@ fn emit(
     payload: &[u8],
 ) -> io::Result<()> {
     let sum = checksum(tag, digest, payload);
+    emit_with_sum(out, stream, tag, digest, &sum, payload)
+}
+
+/// Write one record whose BLAKE3 checksum `sum` was already verified by
+/// [`records`], avoiding a second full-payload BLAKE3 pass during [`rewrite`].
+fn emit_with_sum(
+    out: &mut impl Write,
+    stream: &mut blake3::Hasher,
+    tag: u8,
+    digest: &[u8; 32],
+    sum: &[u8; 32],
+    payload: &[u8],
+) -> io::Result<()> {
     let len = (payload.len() as u64).to_le_bytes();
     out.write_all(&[tag])?;
     out.write_all(digest)?;
     out.write_all(&len)?;
-    out.write_all(&sum)?;
+    out.write_all(sum)?;
     out.write_all(payload)?;
     stream.update(&[tag]);
     stream.update(digest);
     stream.update(&len);
-    stream.update(&sum);
+    stream.update(sum);
     Ok(())
 }
 
@@ -217,9 +236,9 @@ pub fn rewrite(
             &mut prior,
             &prior_header,
             &wanted,
-            |tag, digest, payload| {
+            |tag, digest, sum, payload| {
                 if tag == 0 && documents.remove(digest).is_some() {
-                    emit(&mut out, &mut stream, 0, digest, &payload)?;
+                    emit_with_sum(&mut out, &mut stream, 0, digest, sum, &payload)?;
                     written.carried += 1;
                 }
                 Ok(true)
@@ -284,7 +303,7 @@ fn records(
     input: &mut impl Read,
     header: &[u8],
     wanted: &BTreeSet<[u8; 32]>,
-    mut visit: impl FnMut(u8, &[u8; 32], Vec<u8>) -> io::Result<bool>,
+    mut visit: impl FnMut(u8, &[u8; 32], &[u8; 32], Vec<u8>) -> io::Result<bool>,
 ) -> io::Result<bool> {
     let mut stream = blake3::Hasher::new();
     stream.update(header);
@@ -333,7 +352,7 @@ fn records(
             continue;
         }
         if retain {
-            sound &= visit(tag[0], &digest, payload)?;
+            sound &= visit(tag[0], &digest, &sum, payload)?;
         }
     }
 }
@@ -371,7 +390,7 @@ pub fn scan(
 ) -> io::Result<Scanned> {
     let (fingerprint, header) = read_header(&mut input, workspace)?;
     let mut adopted = BTreeSet::new();
-    let complete = records(&mut input, &header, wanted, |tag, digest, payload| {
+    let complete = records(&mut input, &header, wanted, |tag, digest, _sum, payload| {
         let object = match tag {
             0 => crate::decode(&payload, digest).map(Object::Doc),
             1 => String::from_utf8(payload)
@@ -394,33 +413,162 @@ pub fn scan(
     })
 }
 
+/// Decode a batch of raw verified records in parallel across worker threads,
+/// keeping memory bounded per batch while utilizing multiple cores for
+/// [`crate::decode`] + per-node revision verification.
+fn decode_batch(batch: Vec<(u8, [u8; 32], Vec<u8>)>) -> (Vec<([u8; 32], Object)>, bool) {
+    const PARALLEL_DECODE_FLOOR: usize = 16;
+    if batch.len() < PARALLEL_DECODE_FLOOR {
+        let mut out = Vec::with_capacity(batch.len());
+        let mut all_ok = true;
+        for (tag, digest, payload) in batch {
+            match decode_record(tag, &digest, payload) {
+                RecordDecoded::Object(obj) => out.push((digest, obj)),
+                RecordDecoded::Abstain => {}
+                RecordDecoded::Corrupt => all_ok = false,
+            }
+        }
+        return (out, all_ok);
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(2, |n| n.get().clamp(2, 8))
+        .min(batch.len());
+    let queue = std::sync::Mutex::new(batch.into_iter());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut local = Vec::new();
+                    let mut local_ok = true;
+                    loop {
+                        let next = queue
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .next();
+                        let Some((tag, digest, payload)) = next else {
+                            break;
+                        };
+                        match decode_record(tag, &digest, payload) {
+                            RecordDecoded::Object(obj) => local.push((digest, obj)),
+                            RecordDecoded::Abstain => {}
+                            RecordDecoded::Corrupt => local_ok = false,
+                        }
+                    }
+                    (local, local_ok)
+                })
+            })
+            .collect();
+        let mut out = Vec::new();
+        let mut all_ok = true;
+        for handle in handles {
+            match handle.join() {
+                Ok((local, ok)) => {
+                    out.extend(local);
+                    all_ok &= ok;
+                }
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        (out, all_ok)
+    })
+}
+
+enum RecordDecoded {
+    Object(Object),
+    Abstain,
+    Corrupt,
+}
+
+fn decode_record(tag: u8, digest: &[u8; 32], payload: Vec<u8>) -> RecordDecoded {
+    match tag {
+        0 => match crate::decode(&payload, digest) {
+            Some(doc) => RecordDecoded::Object(Object::Doc(doc)),
+            None => RecordDecoded::Corrupt,
+        },
+        1 => match String::from_utf8(payload)
+            .ok()
+            .filter(|why| why.starts_with("is not UTF-8 ("))
+        {
+            Some(why) => RecordDecoded::Object(Object::Unserved(why)),
+            None => RecordDecoded::Corrupt,
+        },
+        _ => {
+            if payload.is_empty() {
+                RecordDecoded::Abstain
+            } else {
+                RecordDecoded::Corrupt
+            }
+        }
+    }
+}
+
 /// Restore a usable prefix; current verified digests are the sole selection key.
 ///
 /// # Errors
 /// A missing/incompatible/corrupt header is an error (the caller cold-builds).
 /// Record corruption and interrupted tails return a partial, safe prior.
 pub fn read(
-    input: impl Read,
+    mut input: impl Read,
     workspace: &Path,
     fresh: &BTreeMap<PathBuf, [u8; 32]>,
 ) -> io::Result<Restored> {
+    const DECODE_BATCH: usize = 128;
     let wanted: BTreeSet<_> = fresh.values().copied().collect();
+    let (fingerprint, header) = read_header(&mut input, workspace)?;
     let mut objects = BTreeMap::new();
     let mut invalid_utf8 = BTreeMap::new();
-    let Scanned {
-        fingerprint,
-        complete,
-    } = scan(input, workspace, &wanted, |digest, object| {
-        match object {
-            Object::Doc(doc) => {
-                objects.insert(*digest, Arc::new(doc));
-            }
-            Object::Unserved(why) => {
-                invalid_utf8.insert(*digest, why);
+    let mut seen_digests = BTreeSet::new();
+    let mut batch: Vec<(u8, [u8; 32], Vec<u8>)> = Vec::with_capacity(DECODE_BATCH);
+    let mut decode_sound = true;
+    let flush = |batch: &mut Vec<(u8, [u8; 32], Vec<u8>)>,
+                 objects: &mut BTreeMap<[u8; 32], Arc<model::Document>>,
+                 invalid_utf8: &mut BTreeMap<[u8; 32], String>,
+                 decode_sound: &mut bool| {
+        if batch.is_empty() {
+            return;
+        }
+        let (decoded, ok) = decode_batch(std::mem::take(batch));
+        *decode_sound &= ok;
+        for (digest, object) in decoded {
+            match object {
+                Object::Doc(doc) => {
+                    objects.entry(digest).or_insert_with(|| Arc::new(doc));
+                }
+                Object::Unserved(why) => {
+                    invalid_utf8.entry(digest).or_insert(why);
+                }
             }
         }
-        Ok(())
-    })?;
+    };
+    let stream_sound = records(
+        &mut input,
+        &header,
+        &wanted,
+        |tag, digest, _sum, payload| {
+            if tag == 2 {
+                return Ok(payload.is_empty());
+            }
+            if seen_digests.insert(*digest) {
+                batch.push((tag, *digest, payload));
+                if batch.len() >= DECODE_BATCH {
+                    flush(
+                        &mut batch,
+                        &mut objects,
+                        &mut invalid_utf8,
+                        &mut decode_sound,
+                    );
+                }
+            }
+            Ok(true)
+        },
+    )?;
+    flush(
+        &mut batch,
+        &mut objects,
+        &mut invalid_utf8,
+        &mut decode_sound,
+    );
+    let complete = stream_sound && decode_sound;
     let mut restored = Restored {
         docs: Docs::new(),
         unserved: BTreeMap::new(),

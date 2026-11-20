@@ -118,10 +118,31 @@ impl RadixChildMap {
     /// the name's key path (§4.2.4).
     pub fn set(&mut self, name: &[u8], kind: ChildKind, hash: [u8; 32]) {
         match &mut self.root {
-            Some(root) => set_rec(root, name, 0, kind, hash, &mut self.ops),
+            Some(root) => set_rec(root, name, 0, kind, hash, &mut self.ops, true),
             None => {
-                self.root = Some(new_leaf(name.to_vec(), kind, hash, &mut self.ops));
+                self.root = Some(new_leaf(name.to_vec(), kind, hash, &mut self.ops, true));
             }
+        }
+    }
+
+    /// Bulk-build insert: mutates trie structure without re-hashing ancestors
+    /// on every leaf. Caller MUST call [`Self::finalize_hashes`] before reading
+    /// [`Self::dir_value`], eliminating ~95%+ of redundant intermediate vertex
+    /// hashes during cold builds and checkpoint restores.
+    pub fn set_deferred(&mut self, name: &[u8], kind: ChildKind, hash: [u8; 32]) {
+        match &mut self.root {
+            Some(root) => set_rec(root, name, 0, kind, hash, &mut self.ops, false),
+            None => {
+                self.root = Some(new_leaf(name.to_vec(), kind, hash, &mut self.ops, false));
+            }
+        }
+    }
+
+    /// Compute every vertex hash in a single bottom-up post-order pass after
+    /// one or more [`Self::set_deferred`] calls.
+    pub fn finalize_hashes(&mut self) {
+        if let Some(root) = &mut self.root {
+            rehash_subtree(root, &mut self.ops);
         }
     }
 
@@ -336,20 +357,29 @@ fn vertex_heap(vertex: &Vertex) -> usize {
 }
 
 /// A fresh single-entry vertex, hashed.
-fn new_leaf(ext: Vec<u8>, kind: ChildKind, hash: [u8; 32], ops: &mut Counters) -> Box<Vertex> {
+fn new_leaf(
+    ext: Vec<u8>,
+    kind: ChildKind,
+    hash: [u8; 32],
+    ops: &mut Counters,
+    hash_now: bool,
+) -> Box<Vertex> {
     let mut v = Box::new(Vertex {
         ext,
         terminal: Terminal::One(kind, hash),
         children: Vec::new(),
         vhash: [0; 32],
     });
-    rehash(&mut v, ops);
+    if hash_now {
+        rehash(&mut v, ops);
+    }
     v
 }
 
 /// §4.2.2's vertex pre-image: `"mrk2.vtx" ‖ varint(len(ext)) ‖ ext ‖
 /// terminal_frame ‖ children_frame`. Varints are minimal-form unsigned
 /// LEB128 (§4.2 definitions).
+#[cfg(test)]
 fn vertex_preimage(v: &Vertex) -> Vec<u8> {
     let mut pre = Vec::with_capacity(8 + 2 + v.ext.len() + 66 + 2 + v.children.len() * 33);
     pre.extend_from_slice(TAG_VERTEX);
@@ -376,12 +406,71 @@ fn vertex_preimage(v: &Vertex) -> Vec<u8> {
     pre
 }
 
-/// Recompute and store `v`'s hash; count the work.
+/// Encode `value` as minimal-form unsigned LEB128 into a stack buffer and feed
+/// it into `hasher`, returning the number of bytes written.
+#[inline]
+fn hash_uleb128(hasher: &mut blake3::Hasher, mut value: usize) -> usize {
+    let mut buf = [0u8; 10];
+    let mut n = 0usize;
+    loop {
+        let mut byte = u8::try_from(value & 0x7f).unwrap_or(0);
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        buf[n] = byte;
+        n += 1;
+        if value == 0 {
+            break;
+        }
+    }
+    hasher.update(&buf[..n]);
+    n
+}
+
+/// Recompute and store `v`'s hash by streaming §4.2.2's pre-image directly into
+/// `blake3::Hasher` without allocating an intermediate buffer; count the work.
 fn rehash(v: &mut Vertex, ops: &mut Counters) {
-    let pre = vertex_preimage(v);
-    v.vhash = *blake3::hash(&pre).as_bytes();
+    let mut hasher = blake3::Hasher::new();
+    let mut bytes = TAG_VERTEX.len();
+    hasher.update(TAG_VERTEX);
+    bytes += hash_uleb128(&mut hasher, v.ext.len());
+    hasher.update(&v.ext);
+    bytes += v.ext.len();
+    match &v.terminal {
+        Terminal::None => {
+            hasher.update(&[0x00]);
+            bytes += 1;
+        }
+        Terminal::One(kind, hash) => {
+            hasher.update(&[0x01, kind.byte()]);
+            hasher.update(hash);
+            bytes += 2 + hash.len();
+        }
+        Terminal::Both { file, dir } => {
+            hasher.update(&[0x02]);
+            hasher.update(file);
+            hasher.update(dir);
+            bytes += 1 + file.len() + dir.len();
+        }
+    }
+    bytes += hash_uleb128(&mut hasher, v.children.len());
+    for (slot, child) in &v.children {
+        hasher.update(&[*slot]);
+        hasher.update(&child.vhash);
+        bytes += 1 + child.vhash.len();
+    }
+    v.vhash = *hasher.finalize().as_bytes();
     ops.vertex_hashes += 1;
-    ops.hashed_bytes += u64::try_from(pre.len()).unwrap_or(u64::MAX);
+    ops.hashed_bytes += u64::try_from(bytes).unwrap_or(u64::MAX);
+}
+
+/// Post-order hash of an entire radix subtree (one hash per vertex).
+fn rehash_subtree(v: &mut Vertex, ops: &mut Counters) {
+    for (_, child) in &mut v.children {
+        rehash_subtree(child, ops);
+    }
+    rehash(v, ops);
 }
 
 /// Longest common prefix length of two byte strings.
@@ -390,8 +479,9 @@ fn lcp(a: &[u8], b: &[u8]) -> usize {
 }
 
 /// Insert/update `(name, kind) → hash` in the subtree at `v`, which owns
-/// `name[pos..]`. Re-hashes on unwind, so exactly the descent path (plus a
-/// split's one relocated vertex) is recomputed.
+/// `name[pos..]`. When `hash_now` is true, re-hashes on unwind so exactly the
+/// descent path (plus a split's one relocated vertex) is recomputed; when
+/// false (bulk build), skips hashing until [`RadixChildMap::finalize_hashes`].
 fn set_rec(
     v: &mut Vertex,
     name: &[u8],
@@ -399,6 +489,7 @@ fn set_rec(
     kind: ChildKind,
     hash: [u8; 32],
     ops: &mut Counters,
+    hash_now: bool,
 ) {
     let rem = &name[pos..];
     let k = lcp(rem, &v.ext);
@@ -414,7 +505,9 @@ fn set_rec(
             children: mem::take(&mut v.children),
             vhash: [0; 32],
         });
-        rehash(&mut moved, ops);
+        if hash_now {
+            rehash(&mut moved, ops);
+        }
         v.ext.truncate(k);
         if rem.len() == k {
             // The name ends exactly at the split: it becomes this vertex's
@@ -424,7 +517,7 @@ fn set_rec(
         } else {
             // A true branch: two children, slots strictly ascending.
             let new_slot = rem[k];
-            let leaf = new_leaf(rem[k + 1..].to_vec(), kind, hash, ops);
+            let leaf = new_leaf(rem[k + 1..].to_vec(), kind, hash, ops, hash_now);
             v.children = if new_slot < moved_slot {
                 vec![(new_slot, leaf), (moved_slot, moved)]
             } else {
@@ -439,14 +532,24 @@ fn set_rec(
         let branch_pos = pos + v.ext.len();
         let slot = name[branch_pos];
         match v.children.binary_search_by_key(&slot, |(b, _)| *b) {
-            Ok(i) => set_rec(&mut v.children[i].1, name, branch_pos + 1, kind, hash, ops),
+            Ok(i) => set_rec(
+                &mut v.children[i].1,
+                name,
+                branch_pos + 1,
+                kind,
+                hash,
+                ops,
+                hash_now,
+            ),
             Err(i) => {
-                let leaf = new_leaf(name[branch_pos + 1..].to_vec(), kind, hash, ops);
+                let leaf = new_leaf(name[branch_pos + 1..].to_vec(), kind, hash, ops, hash_now);
                 v.children.insert(i, (slot, leaf));
             }
         }
     }
-    rehash(v, ops);
+    if hash_now {
+        rehash(v, ops);
+    }
 }
 
 /// Result of a removal inside the subtree.

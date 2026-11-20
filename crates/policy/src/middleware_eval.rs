@@ -144,8 +144,9 @@ pub fn run_middleware(
 /// the door vocabulary — `refuse`, `set_field`, `create`, `send`, `sql`,
 /// `read`. `sql` and `read` are the same function values bound at `ctx.sql` /
 /// `ctx.read`; both spellings reach one implementation.
-fn middleware_globals() -> Globals {
-    GlobalsBuilder::standard().with(middleware_api).build()
+fn middleware_globals() -> &'static Globals {
+    static GLOBALS: std::sync::OnceLock<Globals> = std::sync::OnceLock::new();
+    GLOBALS.get_or_init(|| GlobalsBuilder::standard().with(middleware_api).build())
 }
 
 /// The metered evaluation body (runs on the large stack).
@@ -175,7 +176,7 @@ fn eval_middleware(
             // heap; keep that heap alive from the module's.
             module.frozen_heap().add_reference(globals.heap());
             let heap = module.heap();
-            let ctx_value = alloc_ctx(heap, &globals, input);
+            let ctx_value = alloc_ctx(heap, globals, input);
 
             let mut eval = Evaluator::new(&module);
             // GC OFF, load-bearing (mw-splice-engine-eof, 2026-08-18):
@@ -214,7 +215,7 @@ fn eval_middleware(
             let mut depth_overflow = false;
             let mut fault: Option<String> = None;
             let mut missing = false;
-            match eval.eval_module(ast, &globals) {
+            match eval.eval_module(ast, globals) {
                 Ok(_) => match module.get("middleware") {
                     Some(entry) => {
                         if let Err(e) = eval.eval_function(entry, &[ctx_value], &[]) {

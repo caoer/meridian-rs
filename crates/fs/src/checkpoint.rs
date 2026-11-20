@@ -239,56 +239,79 @@ impl Snapshot {
     /// Encode captured state without holding or consulting any live memo.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
+        use std::io::Write as _;
+
         let identity = &self.identity;
         let domain_version = self.domain_version;
         let tree_root = self.tree_root;
-        let mut payload: Vec<u8> = Vec::with_capacity(256 + self.leaves.len() * 128);
-        payload.extend_from_slice(b"workspace ");
-        payload.extend_from_slice(identity.workspace.as_os_str().as_bytes());
-        payload.push(b'\n');
-        payload.extend_from_slice(
-            format!("version {domain_version} {}\n", model::HASH_LAW_RADIX).as_bytes(),
+        // Single-buffer encode: reserve the fixed-size header prefix
+        // (`VERSION_LINE\nsum <64 hex>\n`), write rows directly with zero
+        // per-row String allocations, then fill the 64-byte BLAKE3 hex digest
+        // in place.
+        let mut out: Vec<u8> = Vec::with_capacity(336 + self.leaves.len() * 128);
+        out.extend_from_slice(VERSION_LINE);
+        out.extend_from_slice(b"\nsum ");
+        let sum_offset = out.len();
+        out.extend_from_slice(&[b'0'; 64]);
+        out.push(b'\n');
+        let payload_start = out.len();
+
+        out.extend_from_slice(b"workspace ");
+        out.extend_from_slice(identity.workspace.as_os_str().as_bytes());
+        out.push(b'\n');
+        let _ = writeln!(out, "version {domain_version} {}", model::HASH_LAW_RADIX);
+        let _ = writeln!(
+            out,
+            "journal {} {}",
+            identity.journal_seq, identity.journal_instance
         );
-        payload.extend_from_slice(
-            format!(
-                "journal {} {}\n",
-                identity.journal_seq, identity.journal_instance
-            )
-            .as_bytes(),
-        );
-        payload.extend_from_slice(format!("tree-root {}\n", hex(&tree_root)).as_bytes());
-        payload.extend_from_slice(format!("leaves {}\n", self.leaves.len()).as_bytes());
+        let mut hex_buf = [0u8; 64];
+        write_hex32(&tree_root, &mut hex_buf);
+        out.extend_from_slice(b"tree-root ");
+        out.extend_from_slice(&hex_buf);
+        out.push(b'\n');
+        let _ = writeln!(out, "leaves {}", self.leaves.len());
         for (rel, entry) in &self.leaves {
             let bytes = rel.as_os_str().as_bytes();
             let (dev, ino, size, mtime, ctime) = entry.key.raw_parts();
             // Spoil on save when the row is racily clean, or when nothing
             // calibrated says otherwise (see the smudge note above).
-            let seen = match entry.seen {
+            match entry.seen {
                 Some(stamp) => {
-                    format!("{}.{}", stamp.0, stamp.1)
+                    let _ = write!(
+                        out,
+                        "{dev} {ino} {size} {}.{} {}.{} {}.{} ",
+                        mtime.0, mtime.1, ctime.0, ctime.1, stamp.0, stamp.1,
+                    );
                 }
-                _ => "-".to_owned(),
-            };
-            payload.extend_from_slice(
-                format!(
-                    "{dev} {ino} {size} {}.{} {}.{} {seen} {} ",
-                    mtime.0,
-                    mtime.1,
-                    ctime.0,
-                    ctime.1,
-                    hex(&entry.digest)
-                )
-                .as_bytes(),
-            );
-            payload.extend_from_slice(bytes);
-            payload.push(b'\n');
+                None => {
+                    let _ = write!(
+                        out,
+                        "{dev} {ino} {size} {}.{} {}.{} - ",
+                        mtime.0, mtime.1, ctime.0, ctime.1,
+                    );
+                }
+            }
+            write_hex32(&entry.digest, &mut hex_buf);
+            out.extend_from_slice(&hex_buf);
+            out.push(b' ');
+            out.extend_from_slice(bytes);
+            out.push(b'\n');
         }
-        let mut out = Vec::with_capacity(payload.len() + 80);
-        out.extend_from_slice(VERSION_LINE);
-        out.push(b'\n');
-        out.extend_from_slice(format!("sum {}\n", blake3::hash(&payload).to_hex()).as_bytes());
-        out.extend_from_slice(&payload);
+        let digest = blake3::hash(&out[payload_start..]);
+        write_hex32(digest.as_bytes(), &mut hex_buf);
+        out[sum_offset..sum_offset + 64].copy_from_slice(&hex_buf);
         out
+    }
+}
+
+/// Format 32 bytes as lowercase ASCII hex into a stack buffer (zero allocation).
+#[inline]
+fn write_hex32(bytes: &[u8; 32], out: &mut [u8; 64]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (i, &b) in bytes.iter().enumerate() {
+        out[i * 2] = HEX[(b >> 4) as usize];
+        out[i * 2 + 1] = HEX[(b & 0x0f) as usize];
     }
 }
 
@@ -360,10 +383,11 @@ pub fn restore(
         let (line, rest) = split_line(lines).ok_or(Discard::Format("unterminated row"))?;
         lines = rest;
         let (rel, entry) = parse_row(line).ok_or(Discard::Format("unparseable row"))?;
-        cache.tree.set_leaf(&rel, entry.digest);
+        cache.tree.set_leaf_deferred(&rel, entry.digest);
         cache.leaves.insert(rel, entry);
         rows += 1;
     }
+    cache.tree.finalize_deferred();
     if rows != count {
         return Err(Discard::Format("row count mismatch"));
     }
@@ -467,6 +491,7 @@ fn parse_hex32(field: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// 32 bytes → 64 lowercase hex chars.
+#[cfg(test)]
 fn hex(bytes: &[u8; 32]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(64);

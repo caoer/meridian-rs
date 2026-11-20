@@ -15,7 +15,7 @@
 //! (`Registry::register` still writes the sentinel BEFORE the insert, so a
 //! sentinel failure leaves no entry — one entry iff one sentinel, unchanged).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -128,10 +128,11 @@ impl Slot {
     }
 }
 
-/// One workspace's open SQL cache and the tick of its last use.
+/// One workspace's open SQL cache, its FIFO turnstile, and the tick of its last use.
 #[derive(Debug)]
 struct SqlHandle {
     store: Arc<Mutex<view::store::SqlStore>>,
+    queue: Arc<crate::sql_op::SqlQueue>,
     used: u64,
 }
 
@@ -250,6 +251,13 @@ pub struct Registry {
     /// Signaled by every background rebuild exit (landed, failed, or
     /// panicked) — what the kicking read's bounded wait parks on.
     cold_builds_done: Condvar,
+    /// Single-flight coalescing for concurrent warm/incremental rebuilds
+    /// targeting the same `(workspace, fingerprint)`. Followers wait for the
+    /// leader to publish that generation instead of duplicating `update_corpus`
+    /// map clones and parses; distinct fingerprints still run concurrently and
+    /// linearize at the `engines` witness guard.
+    warm_flights: Mutex<HashSet<(PathBuf, String)>>,
+    warm_flights_done: Condvar,
     /// Self-handle for the background rebuild thread the cold gate spawns.
     /// Dead (`Weak::new()`) on a bare [`Registry::new`] — the in-process
     /// lane (`in_process_registry`: the CLI direct lane and fixtures), where
@@ -384,6 +392,35 @@ struct ColdBuilds {
     /// cleared) by the next cold read as `io_error{cause}` — warming never
     /// masks a broken corpus; the read after that kicks a fresh rebuild.
     failed: HashMap<PathBuf, String>,
+}
+
+/// Outcome of entering a `(workspace, fingerprint)` single-flight rebuild slot.
+enum WarmFlight<'a> {
+    /// This caller owns the rebuild for `(workspace, fingerprint)`.
+    Build(WarmFlightGuard<'a>),
+    /// A concurrent leader published this exact fingerprint; adopt it.
+    Adopted(Arc<WorkspaceEngine>),
+    /// Leader ended without publishing this fingerprint; re-check disk.
+    Retry,
+}
+
+/// Drop guard removing an active `(workspace, fingerprint)` flight and waking
+/// waiting callers even on error or unwind.
+struct WarmFlightGuard<'a> {
+    registry: &'a Registry,
+    key: (PathBuf, String),
+}
+
+impl Drop for WarmFlightGuard<'_> {
+    fn drop(&mut self) {
+        let mut flights = self
+            .registry
+            .warm_flights
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        flights.remove(&self.key);
+        self.registry.warm_flights_done.notify_all();
+    }
 }
 
 /// What the §3.2 cold gate tells a serving door to do.
@@ -1209,6 +1246,8 @@ impl Registry {
             // Cold: no rebuild in flight, no recorded failure.
             cold_builds: Mutex::new(ColdBuilds::default()),
             cold_builds_done: Condvar::new(),
+            warm_flights: Mutex::new(HashSet::new()),
+            warm_flights_done: Condvar::new(),
             // Dead on the in-process lane; `new_shared` (the daemon) binds it.
             myself: Weak::new(),
             state,
@@ -1950,6 +1989,41 @@ impl Registry {
     ///
     /// # Errors
     /// As [`Self::warm_or_build`].
+    /// Claim single-flight ownership of building `(canonical, fingerprint)`,
+    /// or wait until an in-flight leader finishes and adopt its published
+    /// engine if it matches `fingerprint`.
+    fn enter_warm_flight(
+        &self,
+        canonical: &Path,
+        fingerprint: &model::MerkleRoot,
+    ) -> WarmFlight<'_> {
+        let flight_key = (canonical.to_path_buf(), fingerprint.0.clone());
+        let mut flights = self
+            .warm_flights
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if flights.contains(&flight_key) {
+            let guard = self
+                .warm_flights_done
+                .wait_while(flights, |f| f.contains(&flight_key))
+                .unwrap_or_else(PoisonError::into_inner);
+            drop(guard);
+            let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+            return match engines.get(canonical) {
+                Some(engine) if engine.at_fingerprint == *fingerprint => {
+                    WarmFlight::Adopted(Arc::clone(engine))
+                }
+                _ => WarmFlight::Retry,
+            };
+        }
+        flights.insert(flight_key.clone());
+        WarmFlight::Build(WarmFlightGuard {
+            registry: self,
+            key: flight_key,
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn warm_generation(
         &self,
         workspace: &Path,
@@ -2006,6 +2080,19 @@ impl Registry {
                     ),
                     None => (None, None),
                 }
+            };
+
+            // Single-flight for concurrent rebuilds targeting this exact
+            // `(canonical, fingerprint)`: followers wait for the leader to
+            // publish instead of duplicating O(N) map clones and parses.
+            let _flight = match self.enter_warm_flight(&canonical, &fingerprint) {
+                WarmFlight::Build(guard) => guard,
+                WarmFlight::Adopted(engine) => {
+                    let outcome =
+                        parsed.map_or(WarmOutcome::Reused, |docs| WarmOutcome::Built { docs });
+                    return Ok((outcome, engine));
+                }
+                WarmFlight::Retry => continue,
             };
 
             // Content changed → incremental pass against the resident build
@@ -2189,6 +2276,21 @@ impl Registry {
         &self,
         workspace: &Path,
     ) -> Result<Arc<Mutex<view::store::SqlStore>>, view::ViewError> {
+        self.sql_store_with_queue(workspace).map(|(store, _)| store)
+    }
+
+    /// [`Self::sql_store`] together with its FIFO [`crate::sql_op::SqlQueue`]
+    /// turnstile for concurrent `mrd sql` callers.
+    pub(crate) fn sql_store_with_queue(
+        &self,
+        workspace: &Path,
+    ) -> Result<
+        (
+            Arc<Mutex<view::store::SqlStore>>,
+            Arc<crate::sql_op::SqlQueue>,
+        ),
+        view::ViewError,
+    > {
         let tick = self.sql_clock.fetch_add(1, Ordering::Relaxed);
         let mut stores = self
             .sql_stores
@@ -2198,7 +2300,7 @@ impl Registry {
         // close below passes over it.
         let hit = stores.get_mut(workspace).map(|handle| {
             handle.used = tick;
-            Arc::clone(&handle.store)
+            (Arc::clone(&handle.store), Arc::clone(&handle.queue))
         });
         let budget = self.sql_budget;
         if let Some(budget) = budget {
@@ -2218,8 +2320,8 @@ impl Registry {
                 drop(stores.remove(&key));
             }
         }
-        if let Some(store) = hit {
-            return Ok(store);
+        if let Some(found) = hit {
+            return Ok(found);
         }
         let drawer = cache::drawer_dir(&self.cache_root, workspace);
         let store = view::store::SqlStore::open_limited(
@@ -2227,14 +2329,16 @@ impl Registry {
             budget.map(|budget| budget.cache_limit),
         )?;
         let store = Arc::new(Mutex::new(store));
+        let queue = Arc::new(crate::sql_op::SqlQueue::default());
         stores.insert(
             workspace.to_path_buf(),
             SqlHandle {
                 store: Arc::clone(&store),
+                queue: Arc::clone(&queue),
                 used: tick,
             },
         );
-        Ok(store)
+        Ok((store, queue))
     }
 
     /// The workspaces with an open sql cache: what a history compaction looks

@@ -672,40 +672,25 @@ fn walk(
             emit_section_chunk(node, path, section, doc, counters, rows);
             child_gov = Some(section);
         }
-        NodeKind::Wikilink {
-            target,
-            heading,
-            block,
-            alias,
-        }
-        | NodeKind::Embed {
-            target,
-            heading,
-            block,
-            alias,
-        } => {
+        NodeKind::Wikilink { target, qualifiers } | NodeKind::Embed { target, qualifiers } => {
             let kind = if matches!(node.kind, NodeKind::Embed { .. }) {
                 "embed"
             } else {
                 "wikilink"
             };
-            let (dest, candidates) = resolve_dest(
-                index,
-                target,
-                heading.as_deref(),
-                block.as_deref(),
-                path,
-                corpus,
-                mounts,
-            );
+            let heading = qualifiers.as_deref().and_then(|q| q.heading.as_deref());
+            let block = qualifiers.as_deref().and_then(|q| q.block.as_deref());
+            let alias = qualifiers.as_deref().and_then(|q| q.alias.as_deref());
+            let (dest, candidates) =
+                resolve_dest(index, target, heading, block, path, corpus, mounts);
             emit_link(
                 node,
                 path,
                 kind,
                 target,
-                heading.as_deref(),
-                block.as_deref(),
-                alias.as_deref(),
+                heading,
+                block,
+                alias,
                 dest.as_ref(),
                 &candidates,
                 counters,

@@ -191,3 +191,9 @@ notify = { path = "vendor/notify" }
 # first release carrying the fix. libduckdb-sys comes from the same tree, so
 # `bundled` builds its tarball.
 duckdb = { git = "https://git.0xdao.app/caoer115/duckdb-rs", rev = "07e9ff1159c78da930269e49b6f3b0533e0b6016" }
+
+# Release builds enable ThinLTO so hot paths across the 29-crate workspace
+# (`timing`, `addr`, `syntax`, `model`, `wire-map`, `fs`, `wire-serve`,
+# `registry`) inline across crate boundaries without FatLTO link-time blowup.
+[profile.release]
+lto = "thin"

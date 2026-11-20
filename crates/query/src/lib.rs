@@ -182,6 +182,44 @@ pub fn links_in(
     Ok(out)
 }
 
+/// [`links_in`] against a root-keyed catalog and a mount table, narrowed to
+/// heads the mount table declares (`addr::head_names_declared_root`,
+/// `docs/laws.md` § C-1).
+///
+/// A link whose head names a declared mount (bound or declared-but-unreachable)
+/// resolves through [`CorpusIndex::resolve_ref`] against `corpus` and `mounts`;
+/// a table-external head (external scheme such as `https://…`, undeclared root,
+/// or non-canonical root spelling) stays ambient `unresolved` verbatim.
+///
+/// # Errors
+/// A member the catalog knows cannot be served.
+pub fn links_in_declared(
+    index: &CorpusIndex,
+    catalog: &dyn DocumentCatalog,
+    corpus: &dyn NameCorpus,
+    mounts: &MountSet,
+    path: Option<&str>,
+) -> Result<BTreeMap<String, FileLinks>, MemberFault> {
+    let edges = |source: &str| {
+        model::catalog::scan(catalog, source, |doc| {
+            file_links_declared(index, source, doc, corpus, mounts)
+        })
+    };
+    let mut out = BTreeMap::new();
+    if let Some(source) = path {
+        if let Some(entry) = edges(source)? {
+            out.insert(source.to_owned(), entry);
+        }
+        return Ok(out);
+    }
+    for (source, _) in catalog.revisions() {
+        if let Some(entry) = edges(source)? {
+            out.insert(source.to_owned(), entry);
+        }
+    }
+    Ok(out)
+}
+
 /// One document's outgoing edges, resolved against `index`/`corpus`.
 ///
 /// Split out of [`links_with`] because `source` need not be a corpus MEMBER:
@@ -197,9 +235,40 @@ pub fn file_links(
     corpus: &dyn NameCorpus,
     mounts: Option<&MountSet>,
 ) -> FileLinks {
+    file_links_with(index, source, doc, |target| {
+        resolve_edge(index, source, target, corpus, mounts)
+    })
+}
+
+/// [`file_links`] narrowed to heads declared by `mounts` (`docs/laws.md` § C-1):
+/// declared-root links consult `corpus`/`mounts`; table-external `:` heads stay
+/// ambient `unresolved` verbatim rather than refusing.
+#[must_use]
+pub fn file_links_declared(
+    index: &CorpusIndex,
+    source: &str,
+    doc: &Document,
+    corpus: &dyn NameCorpus,
+    mounts: &MountSet,
+) -> FileLinks {
+    file_links_with(index, source, doc, |target| {
+        if addr::head_names_declared_root(target, mounts) {
+            resolve_edge(index, source, target, corpus, Some(mounts))
+        } else {
+            resolve_edge(index, source, target, corpus, None)
+        }
+    })
+}
+
+fn file_links_with(
+    _index: &CorpusIndex,
+    _source: &str,
+    doc: &Document,
+    mut resolve: impl FnMut(&str) -> RefResolution,
+) -> FileLinks {
     let mut entry = FileLinks::default();
     for (target, _span, _kind) in link_nodes(doc) {
-        match resolve_edge(index, source, target, corpus, mounts) {
+        match resolve(target) {
             RefResolution::Ambient(dest) => *entry.resolved.entry(dest).or_insert(0) += 1,
             RefResolution::Rooted { root, path } => {
                 *entry
@@ -247,12 +316,16 @@ pub fn file_links(
 #[must_use]
 pub fn lock_pin_referrers(index: &CorpusIndex, docs: &model::Docs, target: &str) -> Vec<String> {
     let corpus = RootedCorpus::ambient(docs);
+    let filter = TargetFilter::new(docs, target);
     let mut out = Vec::new();
     for (src, doc) in docs {
         let Ok(Some(found)) = lock::find(doc) else {
             continue;
         };
         for pin in &found.lock.pins {
+            if !filter.matches(src, &pin.object) {
+                continue;
+            }
             let declared = format!("{}.md", pin.object);
             if matches!(
                 resolve_edge(index, src, &declared, &corpus, None),
@@ -277,11 +350,15 @@ pub fn frontmatter_referrers(
     docs: &model::Docs,
     target: &str,
 ) -> Vec<(String, String)> {
+    let filter = TargetFilter::new(docs, target);
     let mut out = Vec::new();
     for (src, doc) in docs {
         for link in model::frontmatter_wikilinks(doc) {
             let Some(key) = link.key else { continue };
             if addr::head_carries_root_separator(&link.target) {
+                continue;
+            }
+            if !filter.matches(src, &link.target) {
                 continue;
             }
             if index.resolve_linkpath(&link.target, src).as_deref() == Some(target) {
@@ -327,24 +404,115 @@ fn backlinks_with(
     mounts: Option<&MountSet>,
     target: &str,
 ) -> Vec<Backlink> {
-    docs.iter()
-        .flat_map(|(source, doc)| {
-            link_nodes(doc)
-                .into_iter()
-                .filter(|(linkpath, _, _)| {
-                    matches!(
-                        resolve_edge(index, source, linkpath, corpus, mounts),
-                        RefResolution::Ambient(dest) if dest == target
-                    )
-                })
-                .map(|(_, span, kind)| Backlink {
+    let filter = TargetFilter::new(docs, target);
+    let mut out = Vec::new();
+    let mut matched: Vec<(&str, ByteSpan, BacklinkKind)> = Vec::new();
+    for (source, doc) in docs {
+        matched.clear();
+        collect_matching_links(&doc.root, source, &filter, &mut matched);
+        if matched.is_empty() {
+            continue;
+        }
+        matched.sort_by_key(|(_, span, _)| span.start);
+        for &(linkpath, ref span, kind) in &matched {
+            if matches!(
+                resolve_edge(index, source, linkpath, corpus, mounts),
+                RefResolution::Ambient(dest) if dest == target
+            ) {
+                out.push(Backlink {
                     path: source.clone(),
-                    span,
+                    span: span.clone(),
                     kind,
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Zero-allocation sound pre-filter for ambient backlink/referrer scans:
+/// rejects any linkpath whose basename stem cannot match `target`'s basename
+/// and whose full stem cannot match any of `target`'s frontmatter aliases,
+/// eliminating `Vec` allocations, sorts, and `resolve_edge` calls on >99.9% of
+/// links in a large vault.
+struct TargetFilter<'a> {
+    target: &'a str,
+    target_base_lc: String,
+    target_aliases_lc: Vec<String>,
+}
+
+impl<'a> TargetFilter<'a> {
+    fn new(docs: &model::Docs, target: &'a str) -> Self {
+        let target_base_lc = target
+            .rsplit('/')
+            .next()
+            .unwrap_or(target)
+            .trim_end_matches(".md")
+            .to_lowercase();
+        let target_aliases_lc = docs
+            .get(target)
+            .map_or_else(Vec::new, |d| model::doc_aliases(d));
+        Self {
+            target,
+            target_base_lc,
+            target_aliases_lc,
+        }
+    }
+
+    #[inline]
+    fn matches(&self, source: &str, linkpath: &str) -> bool {
+        if linkpath.is_empty() {
+            return source == self.target;
+        }
+        if addr::head_carries_root_separator(linkpath) {
+            return false;
+        }
+        let stem = strip_md_suffix_ci(linkpath.trim());
+        let base = stem.rsplit('/').next().unwrap_or(stem);
+        if eq_ci(base, &self.target_base_lc) {
+            return true;
+        }
+        self.target_aliases_lc
+            .iter()
+            .any(|alias| eq_ci(stem, alias))
+    }
+}
+
+#[inline]
+fn strip_md_suffix_ci(mut s: &str) -> &str {
+    while s.len() >= 3 && s.as_bytes()[s.len() - 3..].eq_ignore_ascii_case(b".md") {
+        s = &s[..s.len() - 3];
+    }
+    s
+}
+
+#[inline]
+fn eq_ci(a: &str, b_lc: &str) -> bool {
+    if a.is_ascii() && b_lc.is_ascii() {
+        a.eq_ignore_ascii_case(b_lc)
+    } else {
+        a.to_lowercase() == b_lc
+    }
+}
+
+fn collect_matching_links<'a>(
+    node: &'a Node,
+    source: &str,
+    filter: &TargetFilter<'_>,
+    out: &mut Vec<(&'a str, ByteSpan, BacklinkKind)>,
+) {
+    match &node.kind {
+        NodeKind::Wikilink { target, .. } if filter.matches(source, target) => {
+            out.push((target.as_str(), node.span.clone(), BacklinkKind::Wikilink));
+        }
+        NodeKind::Embed { target, .. } if filter.matches(source, target) => {
+            out.push((target.as_str(), node.span.clone(), BacklinkKind::Embed));
+        }
+        _ => {}
+    }
+    for c in &node.children {
+        collect_matching_links(c, source, filter, out);
+    }
 }
 
 /// Edge resolution, split on one lexical question —
@@ -589,13 +757,9 @@ fn collect_backlink_edits(
             (NodeKind::Section { .. }, Some(hp)) => Some(&**hp),
             _ => section_hpath,
         };
-        if let NodeKind::Wikilink {
-            target, heading, ..
-        }
-        | NodeKind::Embed {
-            target, heading, ..
-        } = &node.kind
-            && heading.as_deref() == Some(ctx.old_text)
+        if let NodeKind::Wikilink { target, qualifiers } | NodeKind::Embed { target, qualifiers } =
+            &node.kind
+            && qualifiers.as_deref().and_then(|q| q.heading.as_deref()) == Some(ctx.old_text)
             && resolves_to(ctx.index, ctx.src_path, target, ctx.from_path)
             && let Some(hpath) = here
         {

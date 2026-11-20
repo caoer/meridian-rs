@@ -53,6 +53,8 @@ use serde_json::{Map, Value};
 use wire::{ErrorBody, ErrorCode, Op, ResponseBody, ResponsePayload, Root};
 use wire_serve::rev::Rev;
 
+mod v3_stream;
+
 use crate::engine::WorkspaceEngine;
 use crate::protocol::{Request, Response};
 use crate::registry::{
@@ -1469,7 +1471,7 @@ fn accept_loop<G>(
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
-                thread::sleep(ACCEPT_POLL);
+                poll_listener(listener, ACCEPT_POLL);
             }
             Err(e) => {
                 drop(gate);
@@ -1481,6 +1483,24 @@ fn accept_loop<G>(
             }
         }
     }
+}
+
+/// Park on `listener` until a connection is ready or `timeout` elapses.
+///
+/// Replaces a blind `thread::sleep(ACCEPT_POLL)` on `WouldBlock`: incoming
+/// dials wake immediately instead of waiting out the rest of a 20 ms sleep
+/// quantum, while idle shutdown/handover checks still run on every tick.
+fn poll_listener(listener: &UnixListener, timeout: Duration) {
+    use std::os::unix::io::AsRawFd;
+
+    let mut pfd = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: `pfd` is a valid stack-allocated `pollfd` for the open listener fd.
+    let _ = unsafe { libc::poll(&raw mut pfd, 1, timeout_ms) };
 }
 
 /// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
@@ -2068,12 +2088,7 @@ fn handle_line(
 /// attach `meta: {duration_us}` for dispatched ops (U7, engine work only).
 pub(crate) fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> String {
     let mut out = if rev == Rev::V3 {
-        let mut v = serde_json::to_value(response).expect("wire response serializes");
-        wire_serve::rev::project_response(&mut v);
-        if let Some(us) = duration_us {
-            wire_serve::rev::attach_meta(&mut v, us);
-        }
-        serde_json::to_string(&v).expect("wire response serializes")
+        v3_stream::serialize_v3(response, duration_us)
     } else {
         // Frozen v2 never grows a field: drop v3-additive extras here.
         let demoted = wire_serve::rev::demote_v2(response);
@@ -2415,21 +2430,10 @@ fn dispatch_read(
                 display_path,
             },
         ),
-        Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
-            let as_of = engine_root(engine);
-            wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
-            let live = as_of.clone();
-            wire_serve::read::links(
-                &fs::WorkspaceRoot(ws.to_path_buf()),
-                &engine.index,
-                engine,
-                &engine.unserved,
-                path.as_ref(),
-                as_of,
-                0,
-                || Ok(live),
-            )
-        }),
+        Op::Links { path, require_root } => {
+            let engine = warm_engine_pinned(registry, ws)?;
+            crate::links_op::serve(registry, &engine, ws, path.as_ref(), require_root.as_ref())
+        }
         Op::Root {
             scope,
             scope_bytes,
