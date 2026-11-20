@@ -27,9 +27,10 @@
 //! seats. What still serializes is the append, which is the one thing that
 //! genuinely needs a single actor.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::Path as StdPath;
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -188,6 +189,97 @@ const SQL_STORE_POLL: Duration = Duration::from_millis(10);
 /// `wait` is a parameter rather than a read of the constant so the contention
 /// path can be gated in milliseconds instead of the production bound's
 /// seconds; the one production caller passes [`SQL_STORE_WAIT`].
+/// Bounded FIFO turnstile for one workspace's SQL store append/open critical
+/// section: waiters wake in strict arrival order via `Condvar` with zero
+/// polling delay instead of racing `try_lock` + 5 ms sleeps.
+#[derive(Debug, Default)]
+pub(crate) struct SqlQueue {
+    state: Mutex<SqlQueueState>,
+    cv: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct SqlQueueState {
+    held: bool,
+    next_ticket: u64,
+    waiters: VecDeque<u64>,
+}
+
+pub(crate) struct SqlQueueGuard {
+    queue: Arc<SqlQueue>,
+}
+
+impl Drop for SqlQueueGuard {
+    fn drop(&mut self) {
+        let mut s = self
+            .queue
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        s.held = false;
+        self.queue.cv.notify_all();
+    }
+}
+
+impl SqlQueue {
+    fn acquire_within(
+        self: &Arc<Self>,
+        ws: &StdPath,
+        wait: Duration,
+    ) -> Result<SqlQueueGuard, Box<ErrorBody>> {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !s.held && s.waiters.is_empty() {
+            s.held = true;
+            return Ok(SqlQueueGuard {
+                queue: Arc::clone(self),
+            });
+        }
+        let ticket = s.next_ticket;
+        s.next_ticket = s.next_ticket.wrapping_add(1);
+        s.waiters.push_back(ticket);
+        let deadline = Instant::now() + wait;
+        loop {
+            if !s.held && s.waiters.front() == Some(&ticket) {
+                s.waiters.pop_front();
+                s.held = true;
+                return Ok(SqlQueueGuard {
+                    queue: Arc::clone(self),
+                });
+            }
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                let was_front = s.waiters.front() == Some(&ticket);
+                if let Some(pos) = s.waiters.iter().position(|&t| t == ticket) {
+                    s.waiters.remove(pos);
+                }
+                if was_front {
+                    self.cv.notify_all();
+                }
+                return Err(lock_timeout_error(ws, wait));
+            };
+            s = self
+                .cv
+                .wait_timeout(s, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+fn lock_timeout_error(ws: &StdPath, wait: Duration) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::LockTimeout);
+    e.message = Some(format!(
+        "another sql call has held this workspace's projection cache for \
+         longer than the {:.1}s service bound, so this call gave up its turn \
+         rather than hold the connection past the host's request deadline. \
+         The other call is still running and was not disturbed; its own \
+         answer is unaffected. Transient — the same request may succeed. \
+         Workspace: {}",
+        wait.as_secs_f32(),
+        ws.display()
+    ));
+    Box::new(e)
+}
+
 fn lock_store_bounded<'s, T>(
     store: &'s Mutex<T>,
     ws: &StdPath,
@@ -203,18 +295,7 @@ fn lock_store_bounded<'s, T>(
             Err(TryLockError::Poisoned(p)) => return Ok(p.into_inner()),
             Err(TryLockError::WouldBlock) => {
                 if Instant::now() >= deadline {
-                    let mut e = ErrorBody::new(ErrorCode::LockTimeout);
-                    e.message = Some(format!(
-                        "another sql call has held this workspace's projection cache for \
-                         longer than the {:.1}s service bound, so this call gave up its turn \
-                         rather than hold the connection past the host's request deadline. \
-                         The other call is still running and was not disturbed; its own \
-                         answer is unaffected. Transient — the same request may succeed. \
-                         Workspace: {}",
-                        wait.as_secs_f32(),
-                        ws.display()
-                    ));
-                    return Err(Box::new(e));
+                    return Err(lock_timeout_error(ws, wait));
                 }
                 thread::sleep(SQL_STORE_POLL);
             }
@@ -252,10 +333,13 @@ pub(crate) fn serve(
         // the cache through this `Arc`. The read below takes its own clone of
         // it (`begin_held_read`), so the cache stays held until the read ends
         // (merkle-spec §6.4).
-        let store = registry
-            .sql_store(ws)
+        let (store, queue) = registry
+            .sql_store_with_queue(ws)
             .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
-        let mut guard = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
+        let started = Instant::now();
+        let _ticket = queue.acquire_within(ws, SQL_STORE_WAIT)?;
+        let remaining = SQL_STORE_WAIT.saturating_sub(started.elapsed());
+        let mut guard = lock_store_bounded(&store, ws, remaining)?;
         append_escalating(registry, &mut guard, append)?;
         guard
             .begin_held_read(&store)

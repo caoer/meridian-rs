@@ -39,6 +39,7 @@ mod engine;
 #[cfg(test)]
 mod entry_fixture;
 mod feed;
+mod links_op;
 mod mounts;
 pub mod mw_sql;
 mod parsed_cache;

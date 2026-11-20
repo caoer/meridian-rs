@@ -10,10 +10,10 @@
 //! **Never does:** know what ops mean, validate op fields (typed edge is
 //! `wire` at the serving host's boundary), touch the filesystem or the model.
 
-use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
@@ -144,18 +144,43 @@ const ID_MAX_EXCLUSIVE: u64 = 1 << 53; // 9_007_199_254_740_992
 /// The line is not a JSON object — a `bad_frame`, the caller's to answer — same
 /// error convention as [`Codec::decode`].
 pub fn scan_id(line: &str) -> io::Result<IdScan> {
-    let obj: BTreeMap<String, Box<RawValue>> =
-        serde_json::from_str(line).map_err(io::Error::other)?;
-    Ok(match obj.get("id") {
-        None => IdScan::Notification,
-        Some(raw) => {
-            let lexeme = raw.get();
-            match lexeme.parse::<u64>() {
-                Ok(n) if n < ID_MAX_EXCLUSIVE => IdScan::Request(n),
-                _ => IdScan::BadId(lexeme.to_owned()),
+    struct Scan(IdScan);
+
+    impl<'de> Deserialize<'de> for Scan {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct ObjVisitor;
+            impl<'de> Visitor<'de> for ObjVisitor {
+                type Value = IdScan;
+
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a JSON object")
+                }
+
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<IdScan, A::Error> {
+                    let mut verdict = IdScan::Notification;
+                    while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+                        if key == "id" {
+                            let raw: &'de RawValue = map.next_value()?;
+                            let lexeme = raw.get();
+                            verdict = match lexeme.parse::<u64>() {
+                                Ok(n) if n < ID_MAX_EXCLUSIVE => IdScan::Request(n),
+                                _ => IdScan::BadId(lexeme.to_owned()),
+                            };
+                        } else {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                    }
+                    Ok(verdict)
+                }
             }
+
+            deserializer.deserialize_map(ObjVisitor).map(Scan)
         }
-    })
+    }
+
+    serde_json::from_str::<Scan>(line)
+        .map(|scan| scan.0)
+        .map_err(io::Error::other)
 }
 
 #[cfg(test)]

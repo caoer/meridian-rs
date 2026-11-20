@@ -247,7 +247,17 @@ pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> Con
     }
     // R31: the recompute is fallible, so `Green` is reachable only for a span
     // with canonical bytes; an empty one never reaches the compare.
-    let Ok(actual) = fingerprint_span(doc, span, &syntax::anchor_removals(&doc.raw)) else {
+    // Fast path: if the already-parsed tree contains no `NodeKind::Anchor`,
+    // `syntax::anchor_removals(&doc.raw)` is guaranteed empty — skip a full
+    // re-parse of the document on every pin verification.
+    let owned_removals;
+    let removals: &[std::ops::Range<usize>] = if doc_has_anchor(&doc.root) {
+        owned_removals = syntax::anchor_removals(&doc.raw);
+        &owned_removals
+    } else {
+        &[]
+    };
+    let Ok(actual) = fingerprint_span(doc, span, removals) else {
         return ContentVerdict::EmptySpan;
     };
     if actual.0 == pinned {
@@ -255,6 +265,14 @@ pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> Con
     } else {
         ContentVerdict::Red { actual }
     }
+}
+
+/// True iff the already-parsed tree contains at least one [`crate::NodeKind::Anchor`].
+fn doc_has_anchor(node: &Node) -> bool {
+    if matches!(node.kind, crate::NodeKind::Anchor { .. }) {
+        return true;
+    }
+    node.children.iter().any(doc_has_anchor)
 }
 
 /// The class of a pinned rev (design 2 §2.3). Choosing the class is the

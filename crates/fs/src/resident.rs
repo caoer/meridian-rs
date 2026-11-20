@@ -196,19 +196,66 @@ impl ResidentTree {
     /// enter the fold, the composition lints loudly (once per key), and
     /// [`Self::fold_at`] refuses the key and everything through it.
     pub fn set_leaf(&mut self, rel: &Path, digest: [u8; 32]) -> bool {
+        self.set_leaf_inner(rel, digest, true)
+    }
+
+    /// Bulk-build counterpart to [`Self::set_leaf`]: inserts into the
+    /// directory's [`RadixChildMap`] without re-hashing on every leaf. Caller
+    /// MUST invoke [`Self::finalize_deferred`] before reading any fold.
+    pub fn set_leaf_deferred(&mut self, rel: &Path, digest: [u8; 32]) -> bool {
+        self.set_leaf_inner(rel, digest, false)
+    }
+
+    /// Finalize vertex hashes for every directory populated via
+    /// [`Self::set_leaf_deferred`].
+    pub fn finalize_deferred(&mut self) {
+        for key in &self.dirty {
+            if let Some(node) = self.nodes.get_mut(key) {
+                node.map.finalize_hashes();
+            }
+        }
+    }
+
+    fn set_leaf_inner(&mut self, rel: &Path, digest: [u8; 32], hash_now: bool) -> bool {
         let path = crate::hash_name(rel);
+        // Fast path for normalized relative paths whose parent directory is
+        // already composed: zero heap allocations on idempotent memo hits and
+        // single-lookup updates without re-splitting or cloning ancestor keys.
+        if !path.is_empty()
+            && !path.starts_with(b"/")
+            && !path.ends_with(b"/")
+            && !path.windows(2).any(|w| w == b"//")
+        {
+            let (parent, name) = split_parent(path);
+            if let Some(node) = self.nodes.get(parent) {
+                if node.map.get(name, ChildKind::File) == Some(digest) {
+                    return false;
+                }
+                if self.nodes.contains_key(path) {
+                    self.lint_collision(path);
+                }
+                let map = &mut self.node_mut(parent).map;
+                if hash_now {
+                    map.set(name, ChildKind::File, digest);
+                } else {
+                    map.set_deferred(name, ChildKind::File, digest);
+                }
+                self.mark_dirty(parent.to_vec());
+                return true;
+            }
+        }
         let segs: Vec<&[u8]> = split_segments(path);
         let Some((name, dirs)) = segs.split_last() else {
             return false;
         };
         // Compose the directory chain, detecting collisions as they form.
-        let mut dir_key: Vec<u8> = Vec::new();
+        let mut dir_key: Vec<u8> = Vec::with_capacity(path.len());
         for seg in dirs {
-            let parent_key = dir_key.clone();
+            let parent_len = dir_key.len();
             push_segment(&mut dir_key, seg);
             if !self.nodes.contains_key(&dir_key) {
                 let collides = self
-                    .node(&parent_key)
+                    .node(&dir_key[..parent_len])
                     .map
                     .get(seg, ChildKind::File)
                     .is_some();
@@ -221,16 +268,20 @@ impl ResidentTree {
         if self.node(&dir_key).map.get(name, ChildKind::File) == Some(digest) {
             return false;
         }
-        let mut file_key = dir_key.clone();
-        push_segment(&mut file_key, name);
-        if self.nodes.contains_key(&file_key) {
+        let dir_len = dir_key.len();
+        push_segment(&mut dir_key, name);
+        if self.nodes.contains_key(&dir_key) {
             // A directory already lives at this name (its Dir entry may
             // still be pending refold — nodes, not the map, hold that fact).
-            self.lint_collision(&file_key);
+            self.lint_collision(&dir_key);
         }
-        self.node_mut(&dir_key)
-            .map
-            .set(name, ChildKind::File, digest);
+        dir_key.truncate(dir_len);
+        let map = &mut self.node_mut(&dir_key).map;
+        if hash_now {
+            map.set(name, ChildKind::File, digest);
+        } else {
+            map.set_deferred(name, ChildKind::File, digest);
+        }
         self.mark_dirty(dir_key);
         true
     }
