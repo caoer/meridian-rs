@@ -104,6 +104,46 @@ impl Node {
     }
 }
 
+/// The qualifiers of a wikilink or embed (`#heading`, `#^block`, `|alias`),
+/// boxed so that [`NodeKind`] stays 40 bytes and [`Node`] 120. A link with no
+/// qualifier holds `None` and allocates nothing; a qualified link allocates one
+/// box of 72 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkQualifiers {
+    pub heading: Option<String>,
+    pub block: Option<String>,
+    pub alias: Option<String>,
+}
+
+impl LinkQualifiers {
+    /// The boxed qualifiers, or `None` when all three are absent — so every
+    /// tree holds one spelling of an unqualified link.
+    #[must_use]
+    pub fn from_parts(
+        heading: Option<String>,
+        block: Option<String>,
+        alias: Option<String>,
+    ) -> Option<Box<Self>> {
+        if heading.is_none() && block.is_none() && alias.is_none() {
+            None
+        } else {
+            Some(Box::new(Self {
+                heading,
+                block,
+                alias,
+            }))
+        }
+    }
+}
+
+/// A callout's `type` and `fold`, boxed so that [`NodeKind`] stays 40 bytes;
+/// each callout allocates one box of 48 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalloutInfo {
+    pub r#type: String,
+    pub fold: String,
+}
+
 /// Model node kinds — the policy-schema §2 vocabulary. Richer than the wire's
 /// flat kind enum (sections, paragraphs, lists exist here); the wire projection
 /// is the host's.
@@ -135,25 +175,18 @@ pub enum NodeKind {
         lang: String,
         unterminated: bool,
     },
-    Callout {
-        r#type: String,
-        fold: String,
-    },
+    Callout(Box<CalloutInfo>),
     Table,
     Wikilink {
         target: String,
-        heading: Option<String>,
-        block: Option<String>,
-        alias: Option<String>,
+        qualifiers: Option<Box<LinkQualifiers>>,
     },
     Link {
         target: String,
     },
     Embed {
         target: String,
-        heading: Option<String>,
-        block: Option<String>,
-        alias: Option<String>,
+        qualifiers: Option<Box<LinkQualifiers>>,
     },
     Anchor {
         name: String,
@@ -815,9 +848,7 @@ fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
             alias,
         } => NodeKind::Wikilink {
             target,
-            heading,
-            block,
-            alias,
+            qualifiers: LinkQualifiers::from_parts(heading, block, alias),
         },
         D::Embed {
             target,
@@ -826,11 +857,9 @@ fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
             alias,
         } => NodeKind::Embed {
             target,
-            heading,
-            block,
-            alias,
+            qualifiers: LinkQualifiers::from_parts(heading, block, alias),
         },
-        D::Callout { r#type, fold } => NodeKind::Callout { r#type, fold },
+        D::Callout { r#type, fold } => NodeKind::Callout(Box::new(CalloutInfo { r#type, fold })),
         D::Task { checked, depth } => NodeKind::TaskItem { checked, depth },
         D::Table => NodeKind::Table,
         D::InlineCode => NodeKind::InlineCode,
@@ -888,7 +917,7 @@ fn kind_ordinal(kind: &NodeKind) -> u8 {
         NodeKind::ListItem => 6,
         NodeKind::TaskItem { .. } => 7,
         NodeKind::CodeBlock { .. } => 8,
-        NodeKind::Callout { .. } => 9,
+        NodeKind::Callout(_) => 9,
         NodeKind::Table => 10,
         NodeKind::Wikilink { .. } => 11,
         NodeKind::Link { .. } => 12,
@@ -6370,6 +6399,25 @@ mod fm_block_scalar_tests {
                 .map(|(_, v)| v.as_str()),
             Some("a b\n"),
             "the flat map stopped publishing the indicator byte"
+        );
+    }
+}
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod node_layout_tests {
+    /// Every node of every resident tree carries this layout, so a variant that
+    /// grows past 32 payload bytes moves the residency ledger's per-node cost.
+    #[test]
+    fn node_layout_stays_compact() {
+        assert!(
+            size_of::<crate::NodeKind>() <= 40,
+            "NodeKind grew to {} bytes",
+            size_of::<crate::NodeKind>()
+        );
+        assert!(
+            size_of::<crate::Node>() <= 120,
+            "Node grew to {} bytes",
+            size_of::<crate::Node>()
         );
     }
 }

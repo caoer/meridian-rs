@@ -803,16 +803,9 @@ fn resolve_page(
 /// Every `[[target#^block]]` link in the tree, as (target, block) borrowed off
 /// the parsed nodes — the addresses a decoration can key on.
 fn collect_links<'a>(node: &'a model::Node, out: &mut Vec<(&'a String, &'a String)>) {
-    if let model::NodeKind::Wikilink {
-        target,
-        block: Some(block),
-        ..
-    }
-    | model::NodeKind::Embed {
-        target,
-        block: Some(block),
-        ..
-    } = &node.kind
+    if let model::NodeKind::Wikilink { target, qualifiers }
+    | model::NodeKind::Embed { target, qualifiers } = &node.kind
+        && let Some(block) = qualifiers.as_deref().and_then(|q| q.block.as_ref())
     {
         out.push((target, block));
     }

@@ -141,42 +141,32 @@ impl Encoder {
                 self.string(lang)?;
                 self.byte(u8::from(*unterminated))?;
             }
-            NodeKind::Callout { r#type, fold } => {
+            NodeKind::Callout(info) => {
                 self.byte(9)?;
-                self.string(r#type)?;
-                self.string(fold)?;
+                self.string(&info.r#type)?;
+                self.string(&info.fold)?;
             }
             NodeKind::Table => self.byte(10)?,
-            NodeKind::Wikilink {
-                target,
-                heading,
-                block,
-                alias,
-            } => {
+            NodeKind::Wikilink { target, qualifiers } => {
                 self.byte(11)?;
                 self.link(
                     target,
-                    heading.as_deref(),
-                    block.as_deref(),
-                    alias.as_deref(),
+                    qualifiers.as_deref().and_then(|q| q.heading.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.block.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.alias.as_deref()),
                 )?;
             }
             NodeKind::Link { target } => {
                 self.byte(12)?;
                 self.string(target)?;
             }
-            NodeKind::Embed {
-                target,
-                heading,
-                block,
-                alias,
-            } => {
+            NodeKind::Embed { target, qualifiers } => {
                 self.byte(13)?;
                 self.link(
                     target,
-                    heading.as_deref(),
-                    block.as_deref(),
-                    alias.as_deref(),
+                    qualifiers.as_deref().and_then(|q| q.heading.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.block.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.alias.as_deref()),
                 )?;
             }
             NodeKind::Anchor { name } => {
@@ -291,25 +281,29 @@ impl Decoder<'_> {
                 lang: self.string()?,
                 unterminated: self.flag()?,
             },
-            9 => NodeKind::Callout {
+            9 => NodeKind::Callout(Box::new(model::CalloutInfo {
                 r#type: self.string()?,
                 fold: self.string()?,
-            },
+            })),
             10 => NodeKind::Table,
             11 => NodeKind::Wikilink {
                 target: self.string()?,
-                heading: self.optional()?,
-                block: self.optional()?,
-                alias: self.optional()?,
+                qualifiers: model::LinkQualifiers::from_parts(
+                    self.optional()?,
+                    self.optional()?,
+                    self.optional()?,
+                ),
             },
             12 => NodeKind::Link {
                 target: self.string()?,
             },
             13 => NodeKind::Embed {
                 target: self.string()?,
-                heading: self.optional()?,
-                block: self.optional()?,
-                alias: self.optional()?,
+                qualifiers: model::LinkQualifiers::from_parts(
+                    self.optional()?,
+                    self.optional()?,
+                    self.optional()?,
+                ),
             },
             14 => NodeKind::Anchor {
                 name: self.string()?,

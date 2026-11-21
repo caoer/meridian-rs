@@ -163,7 +163,9 @@ fn kind_heap(kind: &NodeKind) -> usize {
         | NodeKind::Link { target: text }
         | NodeKind::Anchor { name: text }
         | NodeKind::Tag { name: text } => text.capacity(),
-        NodeKind::Callout { r#type, fold } => r#type.capacity().saturating_add(fold.capacity()),
+        NodeKind::Callout(info) => size_of::<crate::CalloutInfo>()
+            .saturating_add(info.r#type.capacity())
+            .saturating_add(info.fold.capacity()),
         NodeKind::Frontmatter { map } => map.0.iter().fold(
             map.0
                 .capacity()
@@ -174,23 +176,16 @@ fn kind_heap(kind: &NodeKind) -> usize {
                     .saturating_add(value.capacity())
             },
         ),
-        NodeKind::Wikilink {
-            target,
-            heading,
-            block,
-            alias,
+        NodeKind::Wikilink { target, qualifiers } | NodeKind::Embed { target, qualifiers } => {
+            let mut bytes = target.capacity();
+            if let Some(q) = qualifiers {
+                bytes = bytes.saturating_add(size_of::<crate::LinkQualifiers>());
+                for text in [&q.heading, &q.block, &q.alias].into_iter().flatten() {
+                    bytes = bytes.saturating_add(text.capacity());
+                }
+            }
+            bytes
         }
-        | NodeKind::Embed {
-            target,
-            heading,
-            block,
-            alias,
-        } => [heading, block, alias]
-            .into_iter()
-            .flatten()
-            .fold(target.capacity(), |bytes, text| {
-                bytes.saturating_add(text.capacity())
-            }),
         NodeKind::Paragraph
         | NodeKind::List
         | NodeKind::ListItem

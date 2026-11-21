@@ -301,7 +301,7 @@ fn classify_fact(raw: &str, node: &Node) -> (&'static str, u32, String) {
         K::ListItem => ("list_item", 0, span_text(raw, node)),
         K::TaskItem { .. } => ("task", 0, span_text(raw, node)),
         K::CodeBlock { .. } => ("code_block", 0, span_text(raw, node)),
-        K::Callout { .. } => ("callout", 0, span_text(raw, node)),
+        K::Callout(_) => ("callout", 0, span_text(raw, node)),
         K::Table => ("table", 0, span_text(raw, node)),
         K::Wikilink { target, .. } => ("wikilink", 0, target.clone()),
         K::Link { target } => ("link", 0, target.clone()),
