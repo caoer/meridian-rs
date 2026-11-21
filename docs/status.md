@@ -1632,6 +1632,13 @@ bulk cost, the untested are perf rungs awaiting their first baseline. Refresh:
 cargo bench -p perfsuite
 ```
 
+`tools/ab-bench` compares release binaries of different commits from outside
+the engine: it runs the same `mrd` commands against each binary, each with its
+own cache root, daemon and copy of the fixture, in interleaved rounds, and
+reports per-round medians with a gain, loss or none verdict. Nothing is
+compiled into the trees under comparison, so any commit that builds can be an
+arm. Scenarios, fixtures and the verdict rule: `tools/ab-bench/README.md`.
+
 ### The timing mode — `MRD_TIMING`
 
 `perfsuite` measures a tree you built; `MRD_TIMING` measures the binary you
