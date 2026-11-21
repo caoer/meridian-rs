@@ -250,6 +250,14 @@ pub struct Registry {
     /// Signaled by every background rebuild exit (landed, failed, or
     /// panicked) — what the kicking read's bounded wait parks on.
     cold_builds_done: Condvar,
+    /// The `(workspace, fingerprint)` rebuilds in flight in
+    /// [`Registry::warm_generation`]: of the callers that miss at one
+    /// fingerprint, the one holding the key rebuilds and the rest wait for
+    /// its generation (merkle-spec §6.8). Never held while another lock is
+    /// taken.
+    warm_flights: Mutex<WarmFlights>,
+    /// Signaled each time a flight leaves `warm_flights`.
+    warm_flights_done: Condvar,
     /// Self-handle for the background rebuild thread the cold gate spawns.
     /// Dead (`Weak::new()`) on a bare [`Registry::new`] — the in-process
     /// lane (`in_process_registry`: the CLI direct lane and fixtures), where
@@ -302,6 +310,13 @@ pub struct Registry {
     #[cfg(test)]
     pub(crate) pause_in_reap_window:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    /// Test-only count of the callers that found a flight in `warm_flights`
+    /// and committed to waiting on it, taken under the flights lock. A test
+    /// reads it to know a waiter is in the wait before it lets the rebuild
+    /// go. `cfg(test)` excludes it from every release build by construction
+    /// (same seam class as `pause_before_insert`).
+    #[cfg(test)]
+    pub(crate) warm_flight_waits: AtomicU64,
     /// Test-only gate: a floor census that has measured announces itself on
     /// the first channel, then parks on the second before it returns its
     /// total, so a later census can overtake it. One-shot, same seam class as
@@ -384,6 +399,51 @@ struct ColdBuilds {
     /// cleared) by the next cold read as `io_error{cause}` — warming never
     /// masks a broken corpus; the read after that kicks a fresh rebuild.
     failed: HashMap<PathBuf, String>,
+}
+
+/// The rebuilds in flight, by `(workspace, fingerprint)`.
+#[derive(Debug, Default)]
+struct WarmFlights {
+    /// Each flight's id. A waiter parks while its key still maps to the id
+    /// it found, so it waits for that one rebuild and never for a later one
+    /// under the same key.
+    live: HashMap<(PathBuf, String), u64>,
+    /// The id the newest flight took.
+    last: u64,
+}
+
+/// What [`Registry::enter_warm_flight`] tells a caller that missed at
+/// `(workspace, fingerprint)`.
+enum WarmFlight<'a> {
+    /// No engine is resident at this fingerprint and this caller holds its
+    /// flight: it runs the rebuild, and holds the key until the guard drops.
+    Build(WarmFlightGuard<'a>),
+    /// An engine is resident at this fingerprint — published by the rebuild
+    /// this caller waited on, or before this caller took the flight: serve
+    /// it.
+    Adopted(Arc<WorkspaceEngine>),
+    /// The rebuild this caller waited on ended with another fingerprint
+    /// resident, or none: take a new currency fold.
+    Retry,
+}
+
+/// Holds one key in `Registry::warm_flights`. Dropping it — at publication,
+/// on an error return, on unwind — removes the key and wakes the waiters.
+struct WarmFlightGuard<'a> {
+    registry: &'a Registry,
+    key: (PathBuf, String),
+}
+
+impl Drop for WarmFlightGuard<'_> {
+    fn drop(&mut self) {
+        let mut flights = self
+            .registry
+            .warm_flights
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        flights.live.remove(&self.key);
+        self.registry.warm_flights_done.notify_all();
+    }
 }
 
 /// What the §3.2 cold gate tells a serving door to do.
@@ -1209,6 +1269,8 @@ impl Registry {
             // Cold: no rebuild in flight, no recorded failure.
             cold_builds: Mutex::new(ColdBuilds::default()),
             cold_builds_done: Condvar::new(),
+            warm_flights: Mutex::new(WarmFlights::default()),
+            warm_flights_done: Condvar::new(),
             // Dead on the in-process lane; `new_shared` (the daemon) binds it.
             myself: Weak::new(),
             state,
@@ -1222,6 +1284,8 @@ impl Registry {
             pause_before_borrow: Mutex::new(None),
             #[cfg(test)]
             pause_in_reap_window: Mutex::new(None),
+            #[cfg(test)]
+            warm_flight_waits: AtomicU64::new(0),
             #[cfg(test)]
             pause_after_census: Mutex::new(None),
             #[cfg(test)]
@@ -1929,6 +1993,13 @@ impl Registry {
     /// No clock ordering decides freshness — every comparison is between
     /// fingerprints, each the fold of a build's own leaf set.
     ///
+    /// Callers that miss at ONE fingerprint share one rebuild
+    /// (`enter_warm_flight`, merkle-spec §6.8): the first runs the pass, the
+    /// others wait for it and serve the generation it published. When that
+    /// pass leaves no generation at a waiter's fingerprint, the waiter goes
+    /// around: at a new fingerprint it shares again, at one it already
+    /// waited at it rebuilds on its own.
+    ///
     /// # Errors
     /// Canonicalize failure or corpus unreadable. A non-UTF-8 MEMBER is not an
     /// error: it degrades per-file (`fs::build_corpus` skips and reports it) —
@@ -1950,6 +2021,10 @@ impl Registry {
     ///
     /// # Errors
     /// As [`Self::warm_or_build`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one loop whose arms share the witness, the prior and the flight; splitting it hides the lock order"
+    )]
     pub(crate) fn warm_generation(
         &self,
         workspace: &Path,
@@ -1962,6 +2037,9 @@ impl Registry {
         // until the first rebuild: only a call that parsed nothing may report
         // `Reused` — the outcome's zero-parse proof stays per-call.
         let mut parsed: Option<usize> = None;
+        // The folds at which this call waited on another caller's rebuild
+        // and was left without a generation.
+        let mut waited_at: Vec<model::MerkleRoot> = Vec::new();
 
         let cache = self.domain_cache(&canonical);
         loop {
@@ -2005,6 +2083,29 @@ impl Registry {
                         Some(Arc::clone(engine)),
                     ),
                     None => (None, None),
+                }
+            };
+
+            // One rebuild per `(workspace, fingerprint)`: the first caller to
+            // miss at this fold runs the pass below, the rest wait here and
+            // serve its generation. A caller back at a fold whose rebuild it
+            // waited on and got nothing from runs the pass outside the
+            // flight: a call waits at one fold once, so the callers behind a
+            // failing pass fail side by side, never one after another.
+            let flight = if waited_at.contains(&fingerprint) {
+                None
+            } else {
+                match self.enter_warm_flight(&canonical, &fingerprint) {
+                    WarmFlight::Build(guard) => Some(guard),
+                    WarmFlight::Adopted(engine) => {
+                        let outcome =
+                            parsed.map_or(WarmOutcome::Reused, |docs| WarmOutcome::Built { docs });
+                        return Ok((outcome, engine));
+                    }
+                    WarmFlight::Retry => {
+                        waited_at.push(fingerprint);
+                        continue;
+                    }
                 }
             };
 
@@ -2088,6 +2189,9 @@ impl Registry {
                     let engine = Arc::new(engine);
                     engines.insert(canonical.clone(), Arc::clone(&engine));
                     drop(engines);
+                    // Published: the waiters serve it now, ahead of the
+                    // host's census below.
+                    drop(flight);
                     if let Some(host) = &self.residency {
                         // The host floor reaches this generation for as long
                         // as anything holds it (merkle-spec §6.4).
@@ -2103,6 +2207,57 @@ impl Registry {
             // The resident engine moved while this pass was off the lock: a
             // concurrent rebuild landed, and this build may be the older disk
             // state. Never regress on a guess — go around and re-derive.
+        }
+    }
+
+    /// Take the `(canonical, fingerprint)` rebuild, or wait for the caller
+    /// that holds it — for that one rebuild, never for a later one under the
+    /// same key. Either way the caller then reads the engines map, holding
+    /// no other lock, and serves the resident engine when it is stamped with
+    /// `fingerprint`: the warm-hit condition of [`Self::warm_generation`],
+    /// read once more. A caller that took the rebuild and finds that engine
+    /// gives the rebuild back.
+    fn enter_warm_flight(
+        &self,
+        canonical: &Path,
+        fingerprint: &model::MerkleRoot,
+    ) -> WarmFlight<'_> {
+        let key = (canonical.to_path_buf(), fingerprint.0.clone());
+        let mut flights = self
+            .warm_flights
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let held = flights.live.get(&key).copied();
+        let lead = if let Some(held) = held {
+            #[cfg(test)]
+            self.warm_flight_waits.fetch_add(1, Ordering::SeqCst);
+            drop(
+                self.warm_flights_done
+                    .wait_while(flights, |flights| flights.live.get(&key) == Some(&held))
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+            None
+        } else {
+            flights.last += 1;
+            let id = flights.last;
+            flights.live.insert(key.clone(), id);
+            drop(flights);
+            Some(WarmFlightGuard {
+                registry: self,
+                key,
+            })
+        };
+        let resident = self
+            .engines
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(canonical)
+            .filter(|engine| engine.at_fingerprint == *fingerprint)
+            .map(Arc::clone);
+        match (resident, lead) {
+            (Some(engine), _) => WarmFlight::Adopted(engine),
+            (None, Some(guard)) => WarmFlight::Build(guard),
+            (None, None) => WarmFlight::Retry,
         }
     }
 
@@ -7188,6 +7343,192 @@ mod engine_tests {
             "disk is unchanged since the v2 build, so the next warm reuses — \
              a Built here is the self-heal of a regressed engine"
         );
+    }
+
+    type Warmed = io::Result<(WarmOutcome, Arc<WorkspaceEngine>)>;
+
+    /// How long a warm that must answer is given: long enough that a loaded
+    /// box is never mistaken for a parked one.
+    const ANSWERS: Duration = Duration::from_secs(10);
+
+    /// `warm_generation` on its own thread, its answer on the channel.
+    fn warm_on_a_thread(reg: &Arc<Registry>, ws: &Path) -> std::sync::mpsc::Receiver<Warmed> {
+        let (answer, answered) = std::sync::mpsc::channel();
+        let (reg, ws) = (Arc::clone(reg), ws.to_path_buf());
+        std::thread::spawn(move || {
+            let _ = answer.send(reg.warm_generation(&ws));
+        });
+        answered
+    }
+
+    /// A warm at the corpus state now on disk, parked on the
+    /// `pause_before_insert` gate: its pass is built and unpublished, and it
+    /// holds the flight for that fingerprint. Returns the gate's release and
+    /// the warm's answer.
+    fn a_rebuild_parked_before_its_insert(
+        reg: &Arc<Registry>,
+        ws: &Path,
+    ) -> (
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<Warmed>,
+    ) {
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *reg.pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_rx));
+        let answered = warm_on_a_thread(reg, ws);
+        arrived.recv().expect("the rebuild reached the pause gate");
+        (release, answered)
+    }
+
+    /// Returns once `count` warms have committed to waiting on a flight.
+    fn until_flight_waits(reg: &Registry, count: u64) {
+        let deadline = Instant::now() + ANSWERS;
+        while reg.warm_flight_waits.load(Ordering::SeqCst) < count {
+            assert!(
+                Instant::now() < deadline,
+                "a warm that missed at the fingerprint of a rebuild in flight \
+                 did not wait for it"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// merkle-spec §6.8, readers that miss at one fold share one pass. A warm
+    /// that misses at the fingerprint another caller is already rebuilding
+    /// waits for that rebuild and serves its generation, parsing nothing.
+    #[test]
+    fn a_warm_missing_at_a_fingerprint_in_flight_serves_that_rebuild() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A v1\n"), ("b.md", "# B\n")]);
+        reg.warm_or_build(&ws).unwrap();
+        rewrite(&ws, "a.md", "# A v2\n");
+
+        let (release, leader) = a_rebuild_parked_before_its_insert(&reg, &ws);
+        let waiter = warm_on_a_thread(&reg, &ws);
+        until_flight_waits(&reg, 1);
+        release.send(()).expect("the rebuild parked on the gate");
+
+        let (led, built) = leader.recv_timeout(ANSWERS).unwrap().unwrap();
+        let (outcome, served) = waiter.recv_timeout(ANSWERS).unwrap().unwrap();
+        assert_eq!(led, WarmOutcome::Built { docs: 1 });
+        assert_eq!(
+            outcome,
+            WarmOutcome::Reused,
+            "the waiter parsed nothing, so its outcome is the zero-parse one"
+        );
+        assert!(
+            Arc::ptr_eq(&built, &served),
+            "the waiter serves the very generation the rebuild published"
+        );
+    }
+
+    /// The other end of that wait, at a new fold: the rebuild a warm waited
+    /// on lost its insert to v3, and by then disk is at v4 with another
+    /// caller rebuilding it. The waiter serves nothing stamped with another
+    /// fold: it takes a new currency fold and shares the rebuild at that one.
+    #[test]
+    fn a_waiter_left_without_its_fingerprint_shares_the_rebuild_at_its_new_fold() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A v1\n"), ("b.md", "# B\n")]);
+        reg.warm_or_build(&ws).unwrap();
+        rewrite(&ws, "a.md", "# A v2\n");
+
+        let (release_v2, first) = a_rebuild_parked_before_its_insert(&reg, &ws);
+        let waiter = warm_on_a_thread(&reg, &ws);
+        until_flight_waits(&reg, 1);
+
+        // v3 is published over the witness of the parked v2 build, so that
+        // build cannot insert. Disk then moves to v4, and a second rebuild
+        // parks holding the v4 flight, unpublished.
+        rewrite(&ws, "a.md", "# A v3\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 }
+        );
+        rewrite(&ws, "a.md", "# A v4\n");
+        let (release_v4, second) = a_rebuild_parked_before_its_insert(&reg, &ws);
+
+        // The v2 build lets go with v3 resident and v4 on disk: it and its
+        // waiter both take the v4 fold and wait on the v4 flight.
+        release_v2
+            .send(())
+            .expect("the v2 rebuild parked on the gate");
+        until_flight_waits(&reg, 3);
+        release_v4
+            .send(())
+            .expect("the v4 rebuild parked on the gate");
+
+        let (_, built) = second.recv_timeout(ANSWERS).unwrap().unwrap();
+        let (outcome, served) = waiter.recv_timeout(ANSWERS).unwrap().unwrap();
+        let (_, by_first) = first.recv_timeout(ANSWERS).unwrap().unwrap();
+        assert_eq!(
+            outcome,
+            WarmOutcome::Reused,
+            "the waiter parsed nothing at either fold"
+        );
+        assert!(
+            Arc::ptr_eq(&served, &built),
+            "the waiter serves the v4 generation, never the v3 one resident \
+             when it woke"
+        );
+        assert!(Arc::ptr_eq(&by_first, &built));
+    }
+
+    /// And at the same fold: the rebuild a warm waited on lost its insert to
+    /// v3 while disk went back to the v2 bytes, so nothing is resident at the
+    /// waiter's fold and its new currency fold is one it already waited at.
+    /// It runs that pass itself and waits on no flight a second time.
+    #[test]
+    fn a_waiter_back_at_the_fold_it_waited_at_rebuilds_without_waiting_again() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A v1\n"), ("b.md", "# B\n")]);
+        reg.warm_or_build(&ws).unwrap();
+        rewrite(&ws, "a.md", "# A v2\n");
+
+        let (release, first) = a_rebuild_parked_before_its_insert(&reg, &ws);
+        let waiter = warm_on_a_thread(&reg, &ws);
+        until_flight_waits(&reg, 1);
+
+        rewrite(&ws, "a.md", "# A v3\n");
+        assert_eq!(
+            reg.warm_or_build(&ws).unwrap(),
+            WarmOutcome::Built { docs: 1 }
+        );
+        rewrite(&ws, "a.md", "# A v2\n");
+
+        // Both callers now rebuild v2: the one that lost its insert takes
+        // the flight again, the waiter stays outside it. Whichever pass
+        // reaches the re-armed gate first parks there; the other publishes.
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (again, again_rx) = std::sync::mpsc::channel();
+        *reg.pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, again_rx));
+        release.send(()).expect("the rebuild parked on the gate");
+        arrived.recv().expect("a v2 rebuild reached the gate");
+        again.send(()).expect("that rebuild parked on the gate");
+
+        let (outcome, served) = waiter.recv_timeout(ANSWERS).unwrap().unwrap();
+        let (_, by_first) = first.recv_timeout(ANSWERS).unwrap().unwrap();
+        let (now, resident) = reg.warm_generation(&ws).unwrap();
+        assert_eq!(now, WarmOutcome::Reused, "v2 is resident and current");
+        assert_eq!(
+            outcome,
+            WarmOutcome::Built { docs: 1 },
+            "the waiter ran the v2 pass itself"
+        );
+        assert_eq!(
+            reg.warm_flight_waits.load(Ordering::SeqCst),
+            1,
+            "neither caller waited on a flight after the first wait"
+        );
+        assert!(Arc::ptr_eq(&served, &resident));
+        assert!(Arc::ptr_eq(&by_first, &resident));
     }
 
     /// P2 crash recovery: cold start, first query rebuilds from disk (no new machinery).
