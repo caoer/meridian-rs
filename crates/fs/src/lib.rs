@@ -1099,7 +1099,8 @@ type DirMemo = BTreeMap<PathBuf, DirSeen>;
 struct DirSeen {
     key: StatKey,
     seen: Option<stable::FsStamp>,
-    entries: Vec<DirEntryKind>,
+    /// Shared with every scan that reuses this listing ([`scan_dir`]).
+    entries: Arc<[DirEntryKind]>,
 }
 
 /// One remembered directory entry: its name and its `read_dir` file type — the
@@ -1169,7 +1170,7 @@ impl DomainCache {
             bytes = entries.iter().fold(
                 bytes
                     .saturating_add(path.capacity())
-                    .saturating_add(entries.capacity().saturating_mul(size_of::<DirEntryKind>())),
+                    .saturating_add(model::allocation::arc_dyn_bytes(&**entries)),
                 |bytes, entry| {
                     let DirEntryKind {
                         name,
@@ -2086,7 +2087,7 @@ struct DirScan {
     /// ([`stable::TrustCtx::record_seen`] — `None` under the untrusted
     /// floor, so a later pass re-enumerates).
     seen: Option<stable::FsStamp>,
-    entries: Vec<DirEntryKind>,
+    entries: Arc<[DirEntryKind]>,
     enumerated: bool,
 }
 
@@ -2126,7 +2127,7 @@ fn scan_dir(
         prior
             .get(rel_dir)
             .filter(|seen| seen.key == key && trust.trusts(&key, seen.seen))
-            .map(|seen| (seen.entries.clone(), seen.seen))
+            .map(|seen| (Arc::clone(&seen.entries), seen.seen))
     });
     let (entries, seen, enumerated) = if let Some((entries, seen)) = remembered {
         (entries, seen, false)
@@ -2145,7 +2146,7 @@ fn scan_dir(
                 name: entry.file_name(),
             });
         }
-        (entries, trust.record_seen(), true)
+        (Arc::from(entries), trust.record_seen(), true)
     };
     Ok(DirScan {
         key,
