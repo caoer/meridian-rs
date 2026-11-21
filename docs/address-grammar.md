@@ -252,6 +252,12 @@ and refuses.
 **Acceptance half:** F3 must resolve, with bytes from the target root (criterion 3), proven by
 editing the file there. All-grey passes F1, F2 and F4 and ships nothing.
 
+**Where F1 and F2 grey.** The grey is the address plane's answer (`resolve_ref`), on every door
+that takes an address: `walk`, pins, a named read. The `links` edge map asks the address plane
+only about a head the mount table declares (`wire-contract.md` §4.6, Cross-root edges): a
+`sessions` the table does not declare leaves F1 and F2 `unresolved` there, exit 0, and C-3 keeps
+both off the ambient root's file.
+
 ---
 
 ## 6. The unmounted-root refusal — (f), the verbatim exemplar

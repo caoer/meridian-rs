@@ -2015,7 +2015,8 @@ run.** Callers that fold and report it under their own `cmd=`: `mrd sql`,
 resident rebuild, its watch loop. It also repeats per mount corpus (`load_mounts_for` →
 `build_docs_at`, calling `fs::domain_snapshot`): once for the workspace corpus,
 once per mounted root addressed — lock-addressed on
-`walk`/`check`/`status`/`walk_op`, link-addressed on `links`/`sql`/`sql_op`.
+`walk`/`check`/`status`/`walk_op`, link-addressed on
+`links`/`sql`/`sql_op`/`links_op`.
 
 **But do not price a run by that count — some full-corpus folds emit no phase
 at all.** The write doors observe through `fs::DomainCache`
