@@ -3552,8 +3552,16 @@ pub fn update_corpus_with<S: SlotMap>(
 /// `parallel_floor` or more movers are all loaded first, in parallel
 /// ([`load_movers`]), then applied in mover order; fewer are loaded and
 /// applied one at a time ([`load_mover`]). Both arms apply the same loaded
-/// movers in the same order, so the floor decides when a mover is read and
-/// when `publish` first runs, never what the pass returns.
+/// movers in the same order, so for a `publish` that cannot fail and has no
+/// effect of its own ([`update_corpus`]'s) the floor decides only when a
+/// mover is read, never what the pass returns.
+///
+/// The parallel arm calls `publish` only after every mover has loaded. With a
+/// `publish` that can fail, or that acts on each mover, the arms differ: when
+/// one mover's `publish` fails and a later mover cannot be read, the
+/// one-at-a-time arm returns the `publish` failure and the parallel arm
+/// returns the read refusal, having published nothing. A caller with such a
+/// `publish` passes `usize::MAX` ([`update_corpus_with`]).
 fn update_corpus_at<S: SlotMap>(
     root: &WorkspaceRoot,
     prior: &CorpusPrior<'_, S>,
@@ -7475,10 +7483,10 @@ mod update_corpus_parallel_tests {
         Ok((update, published))
     }
 
-    /// 40 movers — edits, additions, a removal, a non-UTF-8 body, a
-    /// non-UTF-8 name where the filesystem stores one, a mover that vanishes
-    /// after the leaf pass and one whose bytes move again after it — give the
-    /// same pass on both arms, field by field.
+    /// 38 movers — edits, additions, a removal, a non-UTF-8 body, a mover
+    /// that vanishes after the leaf pass and one whose bytes move again after
+    /// it — and a 39th with a non-UTF-8 name where the filesystem stores one,
+    /// give the same pass on both arms, field by field.
     #[test]
     fn the_parallel_load_returns_the_one_at_a_time_pass() {
         let (_tmp, root) = workspace(48);
@@ -7520,7 +7528,7 @@ mod update_corpus_parallel_tests {
         let (parallel, parallel_published) = pass(&root, &prior, &moves, &fresh_root, 0).unwrap();
 
         // The degrade shapes are in the product, so the comparison below is
-        // over them and not over 40 plain edits.
+        // over them and not over plain edits alone.
         assert!(serial.unserved[&member(7)].contains("is not UTF-8"));
         assert!(!serial.docs.contains_key(&member(11)), "vanished mover");
         assert!(!serial.leaves.contains_key(Path::new(&member(11))));
