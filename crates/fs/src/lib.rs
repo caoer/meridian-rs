@@ -25,7 +25,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError};
 
 pub mod base;
@@ -1099,7 +1099,8 @@ type DirMemo = BTreeMap<PathBuf, DirSeen>;
 struct DirSeen {
     key: StatKey,
     seen: Option<stable::FsStamp>,
-    entries: Vec<DirEntryKind>,
+    /// Shared with every scan that reuses this listing ([`scan_dir`]).
+    entries: Arc<[DirEntryKind]>,
 }
 
 /// One remembered directory entry: its name and its `read_dir` file type — the
@@ -1169,7 +1170,7 @@ impl DomainCache {
             bytes = entries.iter().fold(
                 bytes
                     .saturating_add(path.capacity())
-                    .saturating_add(entries.capacity().saturating_mul(size_of::<DirEntryKind>())),
+                    .saturating_add(model::allocation::arc_dyn_bytes(&**entries)),
                 |bytes, entry| {
                     let DirEntryKind {
                         name,
@@ -2086,7 +2087,7 @@ struct DirScan {
     /// ([`stable::TrustCtx::record_seen`] — `None` under the untrusted
     /// floor, so a later pass re-enumerates).
     seen: Option<stable::FsStamp>,
-    entries: Vec<DirEntryKind>,
+    entries: Arc<[DirEntryKind]>,
     enumerated: bool,
 }
 
@@ -2126,7 +2127,7 @@ fn scan_dir(
         prior
             .get(rel_dir)
             .filter(|seen| seen.key == key && trust.trusts(&key, seen.seen))
-            .map(|seen| (seen.entries.clone(), seen.seen))
+            .map(|seen| (Arc::clone(&seen.entries), seen.seen))
     });
     let (entries, seen, enumerated) = if let Some((entries, seen)) = remembered {
         (entries, seen, false)
@@ -2145,7 +2146,7 @@ fn scan_dir(
                 name: entry.file_name(),
             });
         }
-        (entries, trust.record_seen(), true)
+        (Arc::from(entries), trust.record_seen(), true)
     };
     Ok(DirScan {
         key,
@@ -3502,6 +3503,10 @@ fn prior_holes<S: SlotMap>(prior: &CorpusPrior<'_, S>) -> Vec<LeafMove> {
 /// [`served_root`], byte-identical to what [`domain_snapshot`] folds over
 /// the same tree state.
 ///
+/// [`PARALLEL_UPDATE_FLOOR`] or more movers are loaded in parallel
+/// ([`load_movers`]) and applied in mover order, so the product and the
+/// refusal are the one-at-a-time pass's.
+///
 /// # Errors
 /// I/O failure loading the domain config or reading a moved member.
 pub fn update_corpus(
@@ -3510,13 +3515,24 @@ pub fn update_corpus(
     moves: &[LeafMove],
     fresh_root: Option<&model::MerkleRoot>,
 ) -> io::Result<CorpusUpdate> {
-    update_corpus_with(root, prior, moves, fresh_root, |_, doc| Ok(Arc::new(doc)))
+    update_corpus_at(
+        root,
+        prior,
+        moves,
+        fresh_root,
+        PARALLEL_UPDATE_FLOOR,
+        |_, doc| Ok(Arc::new(doc)),
+    )
 }
 
 /// [`update_corpus`] over any [`SlotMap`]: each parsed mover is entered into
 /// the name index, then handed to `publish`, whose slot the pass holds in its
 /// place. The rows of a replaced or removed member are removed by the
 /// aliases its prior slot was indexed under, so no prior document is read.
+///
+/// Movers load one at a time: each is published before the next is read, so
+/// a `publish` that sheds the document holds one mover's tree at a time
+/// (merkle-spec §6.8).
 ///
 /// # Errors
 /// I/O failure loading the domain config or reading a moved member, a
@@ -3527,6 +3543,31 @@ pub fn update_corpus_with<S: SlotMap>(
     prior: &CorpusPrior<'_, S>,
     moves: &[LeafMove],
     fresh_root: Option<&model::MerkleRoot>,
+    publish: impl FnMut(&str, model::Document) -> io::Result<S::Slot>,
+) -> io::Result<CorpusUpdate<S>> {
+    update_corpus_at(root, prior, moves, fresh_root, usize::MAX, publish)
+}
+
+/// The incremental pass behind [`update_corpus`] and [`update_corpus_with`].
+/// `parallel_floor` or more movers are all loaded first, in parallel
+/// ([`load_movers`]), then applied in mover order; fewer are loaded and
+/// applied one at a time ([`load_mover`]). Both arms apply the same loaded
+/// movers in the same order, so for a `publish` that cannot fail and has no
+/// effect of its own ([`update_corpus`]'s) the floor decides only when a
+/// mover is read, never what the pass returns.
+///
+/// The parallel arm calls `publish` only after every mover has loaded. With a
+/// `publish` that can fail, or that acts on each mover, the arms differ: when
+/// one mover's `publish` fails and a later mover cannot be read, the
+/// one-at-a-time arm returns the `publish` failure and the parallel arm
+/// returns the read refusal, having published nothing. A caller with such a
+/// `publish` passes `usize::MAX` ([`update_corpus_with`]).
+fn update_corpus_at<S: SlotMap>(
+    root: &WorkspaceRoot,
+    prior: &CorpusPrior<'_, S>,
+    moves: &[LeafMove],
+    fresh_root: Option<&model::MerkleRoot>,
+    parallel_floor: usize,
     mut publish: impl FnMut(&str, model::Document) -> io::Result<S::Slot>,
 ) -> io::Result<CorpusUpdate<S>> {
     let domain = domain::Domain::load(root)?;
@@ -3551,7 +3592,8 @@ pub fn update_corpus_with<S: SlotMap>(
     // The built set equals the planned one unless a mover's bytes moved
     // again (or vanished) between the leaf pass and this read.
     let mut diverged = false;
-    for (rel, want) in moves.iter().chain(&holes) {
+    let work: Vec<&LeafMove> = moves.iter().chain(&holes).collect();
+    let mut apply = |rel: &PathBuf, mover: LoadedMover| -> io::Result<()> {
         let rel_str = rel.to_str();
         let was = rel_str
             .and_then(|rel| docs.remove(rel))
@@ -3560,48 +3602,23 @@ pub fn update_corpus_with<S: SlotMap>(
             unserved.remove(rel);
         }
         leaves.remove(rel);
-        let now = match want {
-            None => None,
-            Some(want) => match fs::read(root.0.join(rel)) {
-                Ok(bytes) => {
-                    let digest = model::leaf_digest(&bytes);
-                    diverged |= digest != *want;
-                    leaves.insert(rel.clone(), digest);
-                    Some(bytes)
-                }
-                // Vanished since the leaf pass: not part of what this pass
-                // builds, exactly as a fresh walk would report it.
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    diverged = true;
-                    None
-                }
-                Err(e) => {
-                    return Err(corpus_member_refusal(
-                        e.kind(),
-                        &display_name(hash_name(rel)),
-                        format!("cannot be read ({e})"),
-                    ));
-                }
-            },
-        };
+        diverged |= mover.diverged;
+        if let Some(digest) = mover.digest {
+            leaves.insert(rel.clone(), digest);
+        }
         // Non-UTF-8 NAME: integrity-covered, never servable — the leaf
         // alone is the whole member.
         let Some(rel_str) = rel_str else {
-            continue;
+            return Ok(());
         };
-        let doc = match now.map(String::from_utf8) {
-            None => None,
-            Some(Ok(text)) => {
+        let doc = match mover.body {
+            MoverBody::Absent => None,
+            MoverBody::Doc(doc) => {
                 parsed += 1;
-                // Parse borrowing, then MOVE the text in (`parse_member`).
-                let nodes = syntax::parse(&text);
-                Some(model::build(text, nodes))
+                Some(doc)
             }
-            Some(Err(e)) => {
-                unserved.insert(
-                    rel_str.to_owned(),
-                    format!("is not UTF-8 ({})", e.utf8_error()),
-                );
+            MoverBody::Unserved(condition) => {
+                unserved.insert(rel_str.to_owned(), condition);
                 None
             }
         };
@@ -3611,6 +3628,17 @@ pub fn update_corpus_with<S: SlotMap>(
         if let Some(doc) = doc {
             let slot = publish(rel_str, doc)?;
             docs.insert(rel_str.to_owned(), slot);
+        }
+        Ok(())
+    };
+    if work.len() >= parallel_floor {
+        let loaded = load_movers(root, &work)?;
+        for ((rel, _), mover) in work.into_iter().zip(loaded) {
+            apply(rel, mover)?;
+        }
+    } else {
+        for mover in work {
+            apply(&mover.0, load_mover(root, mover)?)?;
         }
     }
     let index = if let Some(index) = index {
@@ -3641,6 +3669,135 @@ pub fn update_corpus_with<S: SlotMap>(
         parsed,
         indexed,
     })
+}
+
+/// Movers at or above this count are loaded in parallel by [`update_corpus`].
+const PARALLEL_UPDATE_FLOOR: usize = 16;
+
+/// One mover as [`load_mover`] found it on disk, before the pass's maps see
+/// it.
+struct LoadedMover {
+    /// The digest of the bytes read — the leaf the pass records. `None` for
+    /// a mover that is gone.
+    digest: Option<[u8; 32]>,
+    /// The mover left the planned set: the bytes read are not the planned
+    /// ones, or it vanished between the leaf pass and this read.
+    diverged: bool,
+    body: MoverBody,
+}
+
+/// What a loaded mover gives the corpus.
+enum MoverBody {
+    /// Nothing to serve: gone, or a non-UTF-8 name (its leaf alone is the
+    /// whole member).
+    Absent,
+    /// The document parsed from the bytes the digest was taken over.
+    Doc(model::Document),
+    /// Non-UTF-8 content: the unserved condition.
+    Unserved(String),
+}
+
+/// Load one mover: read it now, re-derive its digest from the very bytes
+/// read, and parse those bytes. Touches the disk and nothing else, so movers
+/// load in any order and on any thread.
+fn load_mover(root: &WorkspaceRoot, (rel, want): &LeafMove) -> io::Result<LoadedMover> {
+    let Some(want) = want else {
+        return Ok(LoadedMover {
+            digest: None,
+            diverged: false,
+            body: MoverBody::Absent,
+        });
+    };
+    let bytes = match fs::read(root.0.join(rel)) {
+        Ok(bytes) => bytes,
+        // Vanished since the leaf pass: not part of what this pass
+        // builds, exactly as a fresh walk would report it.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(LoadedMover {
+                digest: None,
+                diverged: true,
+                body: MoverBody::Absent,
+            });
+        }
+        Err(e) => {
+            return Err(corpus_member_refusal(
+                e.kind(),
+                &display_name(hash_name(rel)),
+                format!("cannot be read ({e})"),
+            ));
+        }
+    };
+    let digest = model::leaf_digest(&bytes);
+    let body = if rel.to_str().is_none() {
+        MoverBody::Absent
+    } else {
+        match String::from_utf8(bytes) {
+            Ok(text) => {
+                // Parse borrowing, then MOVE the text in (`parse_member`).
+                let nodes = syntax::parse(&text);
+                MoverBody::Doc(model::build(text, nodes))
+            }
+            Err(e) => MoverBody::Unserved(format!("is not UTF-8 ({})", e.utf8_error())),
+        }
+    };
+    Ok(LoadedMover {
+        digest: Some(digest),
+        diverged: digest != *want,
+        body,
+    })
+}
+
+/// [`load_mover`] over every mover of `work`, on scoped workers, returned in
+/// `work` order — or the refusal of the FIRST mover in `work` order that
+/// fails, the one a one-at-a-time loop stops at.
+///
+/// Workers claim movers one index at a time from a shared cursor, so one
+/// large member never holds a fixed share of the list behind it. Once a mover
+/// fails no further index is claimed: indexes are claimed in order, so every
+/// mover before the failed one is already claimed and is loaded to its end,
+/// which makes the lowest failed index among the loaded rows the first
+/// failure of the whole list. A worker panic resumes on the caller (the
+/// [`member_identities`] posture).
+fn load_movers(root: &WorkspaceRoot, work: &[&LeafMove]) -> io::Result<Vec<LoadedMover>> {
+    // Each worker reads files, so the width is the read sweep's
+    // ([`read_and_digest_members`], where the measurement is recorded), not
+    // the parse sweep's.
+    let workers = std::thread::available_parallelism()
+        .map_or(2, |n| n.get().clamp(2, 4))
+        .min(work.len());
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let mut rows: Vec<(usize, io::Result<LoadedMover>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut rows = Vec::new();
+                    while !failed.load(Ordering::Relaxed) {
+                        let at = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(mover) = work.get(at) else {
+                            break;
+                        };
+                        let loaded = load_mover(root, mover);
+                        if loaded.is_err() {
+                            failed.store(true, Ordering::Relaxed);
+                        }
+                        rows.push((at, loaded));
+                    }
+                    rows
+                })
+            })
+            .collect();
+        let mut rows = Vec::with_capacity(work.len());
+        for handle in handles {
+            match handle.join() {
+                Ok(worker_rows) => rows.extend(worker_rows),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        rows
+    });
+    rows.sort_unstable_by_key(|(at, _)| *at);
+    rows.into_iter().map(|(_, loaded)| loaded).collect()
 }
 
 /// Move one member's rows in a prior build's name index from its prior
@@ -7273,6 +7430,170 @@ mod read_digest_parallel_tests {
             reference[..PARALLEL_READ_FLOOR - 1],
             "len < floor: serial, the same leading rows"
         );
+    }
+}
+
+#[cfg(test)]
+mod update_corpus_parallel_tests {
+    //! Gates for [`super::update_corpus`]'s parallel mover load
+    //! ([`super::load_movers`]): the pass run through the floor knob on both
+    //! arms over one disk state, with every degrade shape among the movers,
+    //! must return the same product and the same refusal.
+
+    use super::{
+        CorpusPrior, CorpusUpdate, LeafMove, WorkspaceRoot, build_corpus, corpus_member_error,
+        domain_snapshot_with_leaves, leaf_delta, update_corpus_at,
+    };
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::io;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    fn member(i: usize) -> String {
+        format!("d{}/m{i:04}.md", i % 3)
+    }
+
+    fn workspace(n: usize) -> (tempfile::TempDir, WorkspaceRoot) {
+        let tmp = tempfile::tempdir().unwrap();
+        for d in 0..3 {
+            fs::create_dir(tmp.path().join(format!("d{d}"))).unwrap();
+        }
+        for i in 0..n {
+            fs::write(tmp.path().join(member(i)), format!("# Note {i}\n\nv1\n")).unwrap();
+        }
+        let root = WorkspaceRoot(fs::canonicalize(tmp.path()).unwrap());
+        (tmp, root)
+    }
+
+    /// One pass at `floor`, with the order `publish` saw the movers in.
+    fn pass(
+        root: &WorkspaceRoot,
+        prior: &CorpusPrior<'_>,
+        moves: &[LeafMove],
+        fresh_root: &model::MerkleRoot,
+        floor: usize,
+    ) -> io::Result<(CorpusUpdate, Vec<String>)> {
+        let mut published = Vec::new();
+        let update = update_corpus_at(root, prior, moves, Some(fresh_root), floor, |rel, doc| {
+            published.push(rel.to_owned());
+            Ok(Arc::new(doc))
+        })?;
+        Ok((update, published))
+    }
+
+    /// 38 movers — edits, additions, a removal, a non-UTF-8 body, a mover
+    /// that vanishes after the leaf pass and one whose bytes move again after
+    /// it — and a 39th with a non-UTF-8 name where the filesystem stores one,
+    /// give the same pass on both arms, field by field.
+    #[test]
+    fn the_parallel_load_returns_the_one_at_a_time_pass() {
+        let (_tmp, root) = workspace(48);
+        let (files, prior_leaves, _) = domain_snapshot_with_leaves(&root).unwrap();
+        let (index, prior_docs, prior_unserved) = build_corpus(files);
+        let index = Arc::new(index);
+        let prior = CorpusPrior {
+            docs: &prior_docs,
+            unserved: &prior_unserved,
+            leaves: &prior_leaves,
+            index: Some(&index),
+        };
+
+        // The change the leaf pass plans: 36 edits (one re-aliased, one to a
+        // non-UTF-8 body), one removal, two additions.
+        for i in 0..36 {
+            fs::write(root.0.join(member(i)), format!("# Note {i}\n\nv2\n")).unwrap();
+        }
+        fs::write(
+            root.0.join(member(3)),
+            "---\naliases: [third]\n---\n# Note 3\n",
+        )
+        .unwrap();
+        fs::write(root.0.join(member(7)), [0xff, 0xfe, 0x01]).unwrap();
+        fs::remove_file(root.0.join(member(40))).unwrap();
+        fs::write(root.0.join("d0/added.md"), "# Added\n").unwrap();
+        let odd_name = Path::new(std::ffi::OsStr::from_bytes(b"d1/odd-\xff.md"));
+        let odd_stored = fs::write(root.0.join(odd_name), "# Odd name\n").is_ok();
+        let (_, fresh_leaves, fresh_root) = domain_snapshot_with_leaves(&root).unwrap();
+        let moves = leaf_delta(&prior_leaves, fresh_leaves.iter().map(|(rel, d)| (rel, *d)));
+        assert_eq!(moves.len(), 38 + usize::from(odd_stored));
+
+        // After the leaf pass: one mover vanishes, one moves again.
+        fs::remove_file(root.0.join(member(11))).unwrap();
+        fs::write(root.0.join(member(19)), "# Note 19\n\nv3\n").unwrap();
+
+        let (serial, serial_published) =
+            pass(&root, &prior, &moves, &fresh_root, usize::MAX).unwrap();
+        let (parallel, parallel_published) = pass(&root, &prior, &moves, &fresh_root, 0).unwrap();
+
+        // The degrade shapes are in the product, so the comparison below is
+        // over them and not over plain edits alone.
+        assert!(serial.unserved[&member(7)].contains("is not UTF-8"));
+        assert!(!serial.docs.contains_key(&member(11)), "vanished mover");
+        assert!(!serial.leaves.contains_key(Path::new(&member(11))));
+        assert!(!serial.docs.contains_key(&member(40)), "removed member");
+        assert_eq!(*serial.docs[&member(19)].raw, "# Note 19\n\nv3\n");
+        assert_eq!(serial.leaves.contains_key(odd_name), odd_stored);
+        assert_ne!(serial.root, fresh_root, "the built set diverged");
+        assert_eq!(
+            serial.index.resolve_linkpath("third", "d0/added.md"),
+            Some(member(3))
+        );
+        assert_eq!(
+            serial.parsed, 35,
+            "34 edits still present and UTF-8, one addition"
+        );
+
+        assert_eq!(parallel_published, serial_published, "publish order");
+        assert_eq!(parallel.unserved, serial.unserved);
+        assert_eq!(parallel.leaves, serial.leaves);
+        assert_eq!(parallel.root, serial.root);
+        assert_eq!(parallel.parsed, serial.parsed);
+        assert_eq!(parallel.indexed, serial.indexed);
+        assert_eq!(parallel.index, serial.index);
+        assert_eq!(
+            parallel.docs.keys().collect::<Vec<_>>(),
+            serial.docs.keys().collect::<Vec<_>>()
+        );
+        for (rel, doc) in &serial.docs {
+            let other = &parallel.docs[rel];
+            assert_eq!(other.raw, doc.raw, "{rel} raw");
+            assert_eq!(
+                format!("{:?}", other.root),
+                format!("{:?}", doc.root),
+                "{rel} tree"
+            );
+        }
+    }
+
+    /// With two movers unreadable, both arms refuse the pass naming the
+    /// first one in mover order.
+    #[test]
+    fn the_first_unreadable_mover_in_order_refuses_both_arms() {
+        let (_tmp, root) = workspace(40);
+        // A directory where the member was: the read fails with something
+        // other than `NotFound`, for every user.
+        for i in [5, 30] {
+            fs::remove_file(root.0.join(member(i))).unwrap();
+            fs::create_dir(root.0.join(member(i))).unwrap();
+        }
+        let moves: Vec<LeafMove> = (0..40)
+            .map(|i| (PathBuf::from(member(i)), Some([0; 32])))
+            .collect();
+        let (docs, unserved, leaves) = (model::Docs::new(), BTreeMap::new(), BTreeMap::new());
+        let prior = CorpusPrior {
+            docs: &docs,
+            unserved: &unserved,
+            leaves: &leaves,
+            index: None,
+        };
+        let fresh_root = super::served_root(&[], 0);
+        for floor in [usize::MAX, 0] {
+            let err = pass(&root, &prior, &moves, &fresh_root, floor).unwrap_err();
+            let refused = corpus_member_error(&err).expect("a member refusal");
+            assert_eq!(refused.member, member(5), "floor {floor}: {err}");
+        }
     }
 }
 
