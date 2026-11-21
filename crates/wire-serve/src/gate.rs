@@ -63,6 +63,37 @@ pub fn gate_write(
     enforce_gate(root, &change, subject_doc)
 }
 
+/// [`gate_write`] against a law the door resolved itself: the splice and
+/// create doors resolve once under the write flock and hand the same
+/// [`policy::ArmedLaw`] to their middleware leg and to this gate, so both legs
+/// of one write judge one snapshot. `law` is the resolution at the write's own
+/// path — the path `after` is stamped with.
+///
+/// # Errors
+/// A `convention_fault` / `armed_drift` / `binding_break` / `index_integrity`
+/// refusal — the write must not land.
+#[allow(clippy::too_many_arguments)]
+pub fn gate_write_with_law(
+    law: &policy::ArmedLaw,
+    before: &model::Document,
+    after: &model::Document,
+    edits: &[model::Edit],
+    op: policy::ChangeOp,
+    actor: Option<&str>,
+    force: bool,
+    subject_doc: &model::Document,
+) -> Result<GatePass, Box<ErrorBody>> {
+    let change = policy::derive_change(
+        before,
+        after,
+        edits,
+        policy::Invocation { op, actor, force },
+        &[],
+        &no_edges,
+    );
+    enforce_gate_with_law(law, &change, subject_doc)
+}
+
 /// The path a write targets — the after state's, falling back to the before
 /// state's for a remove. It is the path the armed law is resolved at, so it must
 /// be the same one [`policy::gate`] classifies the door law against.
@@ -89,7 +120,21 @@ pub fn enforce_gate(
     subject_doc: &model::Document,
 ) -> Result<GatePass, Box<ErrorBody>> {
     let law = armed_disk::resolve_at(root, target_path(change));
-    match policy::gate(change, &law) {
+    enforce_gate_with_law(&law, change, subject_doc)
+}
+
+/// [`enforce_gate`] against a law the caller resolved at the change's target
+/// path.
+///
+/// # Errors
+/// A `convention_fault` / `armed_drift` / `binding_break` / `index_integrity`
+/// refusal — the write must not land.
+pub fn enforce_gate_with_law(
+    law: &policy::ArmedLaw,
+    change: &policy::Change,
+    subject_doc: &model::Document,
+) -> Result<GatePass, Box<ErrorBody>> {
+    match policy::gate(change, law) {
         policy::GateOutcome::Ok(findings) => Ok(GatePass {
             verdicts: findings_to_verdicts(findings, subject_doc),
         }),

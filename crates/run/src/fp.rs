@@ -9,12 +9,12 @@ use model::{CandidateDocument, Document, EditKind, PutAt, SpliceRequest, Target,
 
 use crate::executor::ExecError;
 
-/// The document this batch is about to commit — the sealed edits dry-applied to
-/// the pre-image and reparsed. The SAME bytes `fs::apply_batch` writes, so every
-/// judgment downstream (this strip, the lock artifact guard, the armed gate, the
-/// post-apply revs) reads one candidate with one spelling.
-pub(crate) fn candidate(page: &str, doc: &Document, sealed: &ValidatedBatch) -> CandidateDocument {
-    model::candidate_of_batch(page, &doc.raw, sealed)
+/// The document this batch is about to commit — the post-batch document the
+/// sealed batch was validated into. The SAME bytes `fs::apply_batch` writes, so
+/// every judgment downstream (this strip, the lock artifact guard, the armed
+/// gate, the post-apply revs) reads one candidate with one spelling.
+pub(crate) fn candidate(page: &str, sealed: &ValidatedBatch) -> CandidateDocument {
+    model::candidate_of_batch(page, sealed)
 }
 
 /// One `@fp` token run in the candidate, classified by WHO put it there.
@@ -44,11 +44,11 @@ fn classify(
     // The after image, walked ONCE. The sealed spans index the pre-image and are
     // sorted and disjoint, so a single forward scan places every inserted text
     // AND every surviving run in after coordinates — no shift arithmetic.
-    let mut inserted: Vec<(Range<usize>, Range<usize>)> = Vec::with_capacity(sealed.edits.len());
-    let mut retained: Vec<(Range<usize>, usize)> = Vec::with_capacity(sealed.edits.len() + 1);
+    let mut inserted: Vec<(Range<usize>, Range<usize>)> = Vec::with_capacity(sealed.edits().len());
+    let mut retained: Vec<(Range<usize>, usize)> = Vec::with_capacity(sealed.edits().len() + 1);
     let mut after_pos = 0usize;
     let mut pre_pos = 0usize;
-    for e in &sealed.edits {
+    for e in sealed.edits() {
         let gap = e.span.start.saturating_sub(pre_pos);
         if gap > 0 {
             retained.push((after_pos..after_pos + gap, pre_pos));
@@ -252,7 +252,7 @@ pub(crate) fn strip_candidate(
             });
         }
     };
-    *after_doc = candidate(page, doc, sealed);
+    *after_doc = candidate(page, sealed);
 
     // THE ASSERTION (R32 (1)'s wording): this write INTRODUCES no token. Live on
     // the real apply, not test-only — a door that reaches these bytes without
@@ -315,7 +315,7 @@ mod tests {
         else {
             panic!("the batch validates — only the claim it composes is the question");
         };
-        let after = candidate("page.md", &doc, &sealed);
+        let after = candidate("page.md", &sealed);
         assert_eq!(
             syntax::fp_removals(after.raw()).len(),
             1,
@@ -363,7 +363,7 @@ mod tests {
         else {
             panic!("the batch validates");
         };
-        let after = candidate("page.md", &doc, &sealed);
+        let after = candidate("page.md", &sealed);
         let before_facts: Vec<Target> = vec![model::resolve(&doc, &sub).unwrap()];
         let origins = classify(&doc, after.document(), &sealed, &before_facts, "page.md")
             .expect("an unrelated edit on a damaged page classifies");

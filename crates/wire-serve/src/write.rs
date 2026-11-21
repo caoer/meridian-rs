@@ -576,7 +576,7 @@ pub fn splice(
     // and the verdicts, on both the dry and real paths (§4.4 one-reparse law) —
     // the real commit writes exactly these bytes, so evaluating this simulated
     // doc is evaluating the committed doc.
-    let mut after_doc = build_after_doc(&doc, &sealed, &args.path);
+    let mut after_doc = build_after_doc(&sealed, &args.path);
 
     // The middleware door (armed-plane Part A2, § A.2.1): one eval per armed
     // in-scope middleware page, id ascending, over the pending set — after
@@ -585,9 +585,13 @@ pub fn splice(
     // gate), so a middleware cannot smuggle bytes past an armed check;
     // cross-file transforms and births become sealed-set members; sends
     // become response intents the host realizes.
+    // One armed-law resolution per write, under this write flock: the
+    // middleware leg and the check gate below both judge this snapshot.
+    let armed_law = crate::armed_disk::resolve_at(root, &args.path.0);
     let mut sealed = sealed;
     let mw = run_door_middleware(
         root,
+        &armed_law,
         &args.path,
         args.actor.as_deref(),
         args.force,
@@ -676,8 +680,8 @@ pub fn splice(
     // before the dry short-circuit; never-armed is a no-op. `args.force`
     // escapes a binding-break / block refusal (rendered as a `forced:`-marked
     // verdict); the index-integrity floor never escapes.
-    let gate_pass = crate::gate::gate_write(
-        root,
+    let gate_pass = crate::gate::gate_write_with_law(
+        &armed_law,
         &doc,
         after_doc.document(),
         &batch.edits,
@@ -1062,33 +1066,21 @@ fn armed_set_members(mw: &MwEmitted, delta: &Delta) -> Vec<wire::ArmedSetMember>
     rows
 }
 
-/// The armed in-scope middleware rows at `path`, `id` ascending. Armed-law
-/// FAULTS are not consulted here — the check gate downstream refuses them
-/// (a red/unloadable/unevaluable middleware row is `block`-mode and fails
-/// closed there), so a fault can never read as "no middleware".
+/// The armed in-scope middleware rows at `path`, `id` ascending, selected
+/// from a law the caller resolved. Armed-law FAULTS are not consulted here —
+/// the check gate downstream refuses them (a red/unloadable/unevaluable
+/// middleware row is `block`-mode and fails closed there), so a fault can
+/// never read as "no middleware".
+///
+/// The caller resolves because every door mounts two armed legs over one write
+/// (middleware, then CHECK) and both must judge ONE snapshot: the wire doors
+/// resolve once under the write flock, and the run plane — whose `run.lock`
+/// does not exclude wire writers — resolves once per apply.
 ///
 /// Public because the RUN plane mounts the same door over its own pending
 /// splice (`run::gate`, U4.2 byte-landing parity). WHICH rows fire at a path
-/// is one law; a second spelling in `run` is how the two doors would come to
-/// disagree about what is armed.
-#[must_use]
-pub fn middleware_rows(root: &fs::WorkspaceRoot, path: &str) -> Vec<policy::ArmedRule> {
-    middleware_rows_of(&crate::armed_disk::resolve_at(root, path), path)
-}
-
-/// [`middleware_rows`] over a law the caller ALREADY resolved — the row
-/// selection alone, with the disk read lifted out.
-///
-/// Split out for the run plane, which mounts two armed legs over ONE apply
-/// (middleware at 3b, CHECK at 6c) and must judge both against ONE snapshot:
-/// `run.lock` does not exclude wire writers, so two resolves from disk let a
-/// concurrent splice rewriting `meridian/armed-rules.md` between them have the
-/// two legs of one write evaluating DIFFERENT law. The run plane resolves once
-/// and feeds that snapshot here.
-///
-/// The selection itself stays in this module on purpose — WHICH rows fire at a
-/// path is one law, and a second spelling in `run` is how the two doors would
-/// come to disagree about what is armed. Only the READ moved.
+/// is one law, so the selection lives here alone; a second spelling in `run`
+/// is how the two doors would come to disagree about what is armed.
 #[must_use]
 pub fn middleware_rows_of(law: &policy::ArmedLaw, path: &str) -> Vec<policy::ArmedRule> {
     let mut rows: Vec<policy::ArmedRule> = law
@@ -1164,10 +1156,9 @@ fn birth_candidate(content_path: &str, body: String) -> model::CandidateDocument
 /// LANDING member bytes are re-minted at `commit_set` from read#2.
 fn member_overlay_candidate(
     content_path: &str,
-    raw: &str,
     sealed: &model::ValidatedBatch,
 ) -> model::CandidateDocument {
-    model::candidate_of_batch(content_path, raw, sealed)
+    model::candidate_of_batch(content_path, sealed)
 }
 
 /// One wire frontmatter upsert — the shape every middleware `set_field`
@@ -1201,6 +1192,7 @@ fn mw_upsert(key: String, value: String) -> Edit {
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_door_middleware(
     root: &fs::WorkspaceRoot,
+    armed_law: &policy::ArmedLaw,
     path: &Path,
     actor: Option<&str>,
     force: bool,
@@ -1214,7 +1206,7 @@ fn run_door_middleware(
     after_doc: &mut model::CandidateDocument,
     before_facts: &mut Vec<model::Target>,
 ) -> Result<MwEmitted, Box<ErrorBody>> {
-    let rows = middleware_rows(root, &path.0);
+    let rows = middleware_rows_of(armed_law, &path.0);
     let mut out = MwEmitted::default();
     if rows.is_empty() {
         return Ok(out);
@@ -1370,7 +1362,7 @@ fn run_door_middleware(
                     return Err(verdict_to_wire(&refused, effective_edits, doc, path));
                 }
             };
-            *after_doc = build_after_doc(doc, sealed, path);
+            *after_doc = build_after_doc(sealed, path);
             world.stage(&path.0, after_doc.raw());
         }
 
@@ -1396,7 +1388,7 @@ fn run_door_middleware(
                     ));
                 }
             };
-            let candidate = member_overlay_candidate(&p, &base.raw, &member_sealed);
+            let candidate = member_overlay_candidate(&p, &member_sealed);
             world.stage(&p, candidate.raw());
         }
     }
@@ -1422,12 +1414,13 @@ fn run_door_middleware(
 /// As [`run_door_middleware`], plus the V1 cross-file refusal.
 fn run_birth_middleware(
     root: &fs::WorkspaceRoot,
+    armed_law: &policy::ArmedLaw,
     path: &Path,
     actor: Option<&str>,
     fields: &BTreeMap<String, String>,
     mut candidate: model::CandidateDocument,
 ) -> Result<(model::CandidateDocument, Vec<MwIntent>, SelfKeys), Box<ErrorBody>> {
-    let rows = middleware_rows(root, &path.0);
+    let rows = middleware_rows_of(armed_law, &path.0);
     let mut intents = Vec::new();
     let mut self_keys = SelfKeys::new();
     if rows.is_empty() {
@@ -1509,7 +1502,7 @@ fn run_birth_middleware(
                     return Err(verdict_to_wire(&refused, &self_edits, &base, path));
                 }
             };
-            candidate = model::candidate_of_batch(&path.0, &base.raw, &mw_sealed);
+            candidate = model::candidate_of_batch(&path.0, &mw_sealed);
             // The transformed candidate is re-guarded HERE (its own U12
             // discharge site): a middleware value could smuggle a stored-form
             // violation into the born bytes between the door's pre-middleware
@@ -1825,7 +1818,7 @@ fn validate_set_member(
             ));
         }
     };
-    let mut after_doc = build_after_doc(&doc, &sealed, &file.path);
+    let mut after_doc = build_after_doc(&sealed, &file.path);
     let mut sealed = sealed;
     strip_fp_candidate(
         &doc,
@@ -2068,7 +2061,7 @@ fn validate_set_entries(
                         });
                     }
                 };
-                let candidate = model::candidate_of_batch(content_path, &before.raw, &sealed);
+                let candidate = model::candidate_of_batch(content_path, &sealed);
                 (Some(before), Some(sealed), candidate)
             }
             CommitSetEntry::Birth { content_path, body } => {
@@ -2488,9 +2481,12 @@ pub fn create_with_cache(
     // The middleware door on the birth (armed-plane Part A2): self
     // transforms land IN the born bytes — one receipt, no unstamped birth —
     // and `send` intents ride the reply. Every guard below judges the FINAL
-    // candidate, so a middleware cannot smuggle bytes past them.
+    // candidate, so a middleware cannot smuggle bytes past them. The armed law
+    // is resolved once here; the birth middleware and the gate below share it.
+    let armed_law = crate::armed_disk::resolve_at(root, &args.path.0);
     let (after_doc, mw_intents, mw_self_keys) = run_birth_middleware(
         root,
+        &armed_law,
         &args.path,
         args.actor.as_deref(),
         &args.fields,
@@ -2533,8 +2529,8 @@ pub fn create_with_cache(
     // workspace. Guarded create carries no `--force`: there is no forced-birth
     // path, and the wire `create` op declares no `force` field.
     verdicts.extend(
-        crate::gate::gate_write(
-            root,
+        crate::gate::gate_write_with_law(
+            &armed_law,
             &crate::gate::absent_doc(&args.path),
             after_doc.document(),
             &[],
@@ -5583,11 +5579,11 @@ type Retained = Vec<(std::ops::Range<usize>, usize)>;
 /// Shared by the `@fp` strip ([`classify_fp`]) and U12's stored-form translation
 /// ([`classify_cross_root`]), which ask the same question of the same candidate.
 fn splice_index(doc: &model::Document, sealed: &model::ValidatedBatch) -> (Inserted, Retained) {
-    let mut inserted: Inserted = Vec::with_capacity(sealed.edits.len());
-    let mut retained: Retained = Vec::with_capacity(sealed.edits.len() + 1);
+    let mut inserted: Inserted = Vec::with_capacity(sealed.edits().len());
+    let mut retained: Retained = Vec::with_capacity(sealed.edits().len() + 1);
     let mut after_pos = 0usize;
     let mut pre_pos = 0usize;
-    for e in &sealed.edits {
+    for e in sealed.edits() {
         let gap = e.span.start.saturating_sub(pre_pos);
         if gap > 0 {
             retained.push((after_pos..after_pos + gap, pre_pos));
@@ -5754,7 +5750,7 @@ fn strip_fp_candidate(
             )));
         }
     };
-    *after_doc = build_after_doc(doc, sealed, path);
+    *after_doc = build_after_doc(sealed, path);
 
     // The candidate introduces no token. Live on every write path, dry and real
     // alike — a door that reaches these bytes without passing the strip refuses
@@ -5975,7 +5971,7 @@ fn translate_stored_candidate(
             )));
         }
     };
-    *after_doc = build_after_doc(doc, sealed, path);
+    *after_doc = build_after_doc(sealed, path);
 
     // The closing rung goes through the same door-facing guard every other door
     // calls, so "which doors are guarded" is answerable by counting one name.
@@ -6262,7 +6258,7 @@ pub fn overlay_candidate(
     };
     match model::validate_batch(doc, None, &batch, None) {
         model::SpliceVerdict::Validated(sealed) => {
-            Ok(model::candidate_of_batch(&path.0, &doc.raw, &sealed).into_document())
+            Ok(model::candidate_of_batch(&path.0, &sealed).into_document())
         }
         refused => Err(verdict_to_wire(&refused, &lowered.edits, doc, path)),
     }
@@ -6390,16 +6386,12 @@ fn model_edits_and_before_facts(
     Ok((model_edits, before_facts))
 }
 
-/// The post-batch document state, built once (§4.4 one-reparse law): apply the
-/// sealed span edits in memory → reparse → build, stamping the document path so
-/// §11.1 verdicts carry it. Both the armed AFTER facts and the verdicts read
-/// this doc, on both the dry and real paths.
-fn build_after_doc(
-    doc: &model::Document,
-    sealed: &model::ValidatedBatch,
-    path: &Path,
-) -> model::CandidateDocument {
-    model::candidate_of_batch(&path.0, &doc.raw, sealed)
+/// The post-batch document state (§4.4 one-reparse law): the document the
+/// sealed batch was validated into, with the document path stamped so §11.1
+/// verdicts carry it. Both the armed AFTER facts and the verdicts read this
+/// doc, on both the dry and real paths.
+fn build_after_doc(sealed: &model::ValidatedBatch, path: &Path) -> model::CandidateDocument {
+    model::candidate_of_batch(&path.0, sealed)
 }
 
 /// The armed AFTER facts, resolved against the shared post-batch state
@@ -6516,7 +6508,7 @@ fn born_armed_edit(
     let title = birth.title.as_str();
     let refuse = || birth_unrepresentable(edit, title);
     let pos = sealed
-        .edits
+        .edits()
         .iter()
         .position(|e| e.index == batch_index)
         .ok_or_else(refuse)?;
@@ -6524,7 +6516,8 @@ fn born_armed_edit(
     // The stated offset must point at a heading opener in the sealed text; a
     // sealed text rewritten out of shape refuses rather than misplacing the
     // birth.
-    if sealed.edits[pos].text.as_bytes().get(birth.heading_offset) != Some(&b'#') {
+    let text = &sealed.edits()[pos].text;
+    if text.as_bytes().get(birth.heading_offset) != Some(&b'#') {
         return Err(refuse());
     }
     let heading_start = landed + birth.heading_offset;
@@ -6555,13 +6548,13 @@ fn born_armed_edit(
 /// Two readers: a birth (which heading position to read the born node from) and
 /// a `remove` (the zero-width point the struck line vacated, § A.6.6).
 fn landed_offset(sealed: &model::ValidatedBatch, batch_index: usize) -> Option<usize> {
-    let pos = sealed.edits.iter().position(|e| e.index == batch_index)?;
-    let (added, removed) = sealed.edits[..pos]
+    let pos = sealed.edits().iter().position(|e| e.index == batch_index)?;
+    let (added, removed) = sealed.edits()[..pos]
         .iter()
         .fold((0usize, 0usize), |(a, r), e| {
             (a + e.text.len(), r + e.span.len())
         });
-    (sealed.edits[pos].span.start + added).checked_sub(removed)
+    (sealed.edits()[pos].span.start + added).checked_sub(removed)
 }
 
 /// The birth's own `target_identity` refusal: the batch commits nothing, and
@@ -7043,7 +7036,7 @@ pub fn commit_batch(
     // blind-splicing stale spans into moved bytes. The seam mints the candidate
     // for the bytes it is about to land, and `fs` refuses a candidate that is
     // not this batch's splice result.
-    let candidate = model::candidate_of_batch(&req.content_path, &before_content.raw, &sealed);
+    let candidate = model::candidate_of_batch(&req.content_path, &sealed);
     // The artifact guard at the commit seam: this is the public door, and a
     // caller reaching it directly has passed no translation at all.
     stored_form_guard_lazy(

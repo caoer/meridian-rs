@@ -77,7 +77,7 @@ fn apply_plan(root: &fs::WorkspaceRoot, plan: &RenamePlan) {
                     None,
                     &sealed,
                     doc.raw.as_bytes(),
-                    &model::candidate_of_batch(path, &doc.raw, &sealed),
+                    &model::candidate_of_batch(path, &sealed),
                 )
                 .expect("apply_batch lands the rename splice");
             }
@@ -191,7 +191,7 @@ fn gate1_falsification_body_dropping_rename_loses_block_id() {
         None,
         &sealed,
         doc.raw.as_bytes(),
-        &model::candidate_of_batch("page.md", &doc.raw, &sealed),
+        &model::candidate_of_batch("page.md", &sealed),
     )
     .expect("apply");
 
