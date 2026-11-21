@@ -2415,21 +2415,10 @@ fn dispatch_read(
                 display_path,
             },
         ),
-        Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
-            let as_of = engine_root(engine);
-            wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
-            let live = as_of.clone();
-            wire_serve::read::links(
-                &fs::WorkspaceRoot(ws.to_path_buf()),
-                &engine.index,
-                engine,
-                &engine.unserved,
-                path.as_ref(),
-                as_of,
-                0,
-                || Ok(live),
-            )
-        }),
+        Op::Links { path, require_root } => {
+            let engine = warm_engine_pinned(registry, ws)?;
+            crate::links_op::serve(registry, &engine, ws, path.as_ref(), require_root.as_ref())
+        }
         Op::Root {
             scope,
             scope_bytes,

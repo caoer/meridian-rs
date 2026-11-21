@@ -2150,7 +2150,8 @@ impl Registry {
         engines.get(canonical).cloned()
     }
 
-    /// A mounted root's corpus for the pin and link planes (`walk`, `sql`):
+    /// A mounted root's corpus for the pin and link planes (`walk`, `sql`,
+    /// `links`):
     /// this daemon's resident engine for that root, warmed through the same
     /// [`warm_or_build`](Self::warm_or_build) every served workspace warms
     /// through — parsed once, refreshed O(dirty) — never a per-call rebuild

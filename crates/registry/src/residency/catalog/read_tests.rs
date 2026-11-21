@@ -144,6 +144,7 @@ fn cold_catalog_link_scan_covers_every_member_after_body_and_source_loss() {
             catalog,
             &BTreeMap::new(),
             path.map(|p| wire::Path(p.to_owned())).as_ref(),
+            |_| Ok(wire_serve::mount_corpus::MountCorpora::default()),
             stamp,
             0,
             || Ok(live),

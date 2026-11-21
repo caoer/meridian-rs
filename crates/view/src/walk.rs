@@ -413,13 +413,13 @@ fn walk_world<W: PinWorld>(
 /// resolve into. Mounted root corpora exist so `resolve_ref` can answer a
 /// rooted spelling, so a workspace carrying none needs zero.
 ///
-/// `path` mirrors the links plane: `None` scans the whole ambient corpus;
-/// `Some` scans that one file. Each document's roots are
-/// [`model::catalog::link_roots`], the per-member fact a generation catalog
-/// answers from its descriptors.
+/// `None` scans the whole ambient corpus; `Some` scans that one file. Each
+/// document's roots are [`model::catalog::link_roots`], the per-member fact a
+/// generation catalog answers from its descriptors, and the fact the `links`
+/// serve reads for its own needed set (`wire_serve::read::links`).
 ///
-/// Shared owner for the CLI verbs (`mrd sql`, `mrd links`) and the § A.11
-/// wire serve path — two assemblies would hand two corpora to one resolver.
+/// Shared owner for the eager `sql` projections (`mrd sql`, the armed check
+/// plane) — two assemblies would hand two corpora to one resolver.
 #[must_use]
 pub fn link_addressed_roots(docs: &model::Docs, path: Option<&str>) -> BTreeSet<addr::MountName> {
     docs.iter()
