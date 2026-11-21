@@ -353,9 +353,8 @@ fn fence_unterminated(slice: &str) -> bool {
         return false;
     };
     let orun = ft.chars().take_while(|&c| c == fchar).count();
-    let last = match slice.lines().last() {
-        Some(l) if slice.lines().count() > 1 => l,
-        _ => return true,
+    let Some(last) = lines.next_back() else {
+        return true;
     };
     let indent = last.len() - last.trim_start_matches(' ').len();
     let lt = last.trim_start_matches(' ');
@@ -667,6 +666,11 @@ pub fn strip_fp(input: &str) -> std::borrow::Cow<'_, str> {
 #[must_use]
 pub fn anchor_removals(input: &str) -> Vec<Range<usize>> {
     let file = input.as_bytes();
+    // An anchor token starts at a `^` byte, so a caret-free file has none and
+    // is not parsed.
+    if !file.contains(&b'^') {
+        return Vec::new();
+    }
     let mut out: Vec<Range<usize>> = Vec::new();
     for node in parse(input) {
         if !matches!(node.kind, DialectKind::Anchor { .. }) {
@@ -1214,6 +1218,11 @@ mod tests {
                 ..
             }
         )));
+        // The opener is never its own closer: a one-line fence is unterminated,
+        // with or without a line terminator.
+        assert!(fence_unterminated("```"));
+        assert!(fence_unterminated("```\n"));
+        assert!(!fence_unterminated("```\n```"));
     }
 
     #[test]
