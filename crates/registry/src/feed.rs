@@ -1301,6 +1301,25 @@ mod tests {
         );
     }
 
+    /// merkle-spec §6.4, the stream that can vouch: `FSEvents` cannot, so a
+    /// barrier there answers `Unproven` at once, writes no sentinel and opens
+    /// no doubt. CI builds Linux only; this runs on a Mac.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_barrier_on_fsevents_answers_unproven_without_a_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("watcher");
+        let began = Instant::now();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(10)),
+            CookieOutcome::Unproven
+        );
+        assert!(began.elapsed() < Duration::from_secs(1), "the barrier waited");
+        assert_eq!(feed.cookie_written(), 0, "a sentinel was written");
+        assert!(feed.rescan_record().is_empty(), "the barrier opened a doubt");
+    }
+
     /// The barrier's proof arm, live kernel stream: the sentinel write comes
     /// back through the ordered stream as `Seen`, the sighting never enters
     /// the dirty set (the cookie is proof-of-delivery, not dirt), and the
