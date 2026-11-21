@@ -565,13 +565,21 @@ engine-side.
   creating the sentinel empty both leave it open, admitting a callback batch
   atomically does not help because the early entry is as often in an earlier
   batch, and `FSEventStreamFlushSync` returns before the daemon has
-  delivered the events it had not yet read. The sound answer on FSEvents is
-  the §6.2 extent-refresh floor for every guard-grade question. The engine
-  vouches from a sighting there all the same, because that floor is a stat
-  sweep of every member: 1.9 s against 42 ms for one read, and the same for
-  one write, on a root of 222,000 members. So a `Seen` on FSEvents is a
-  measured bound, not a proof, and what closes it is a floor cheap enough
-  to answer every guard-grade question there.
+  delivered the events it had not yet read. So a `Seen` on FSEvents is a
+  measured bound, not a proof, and the sound answer there is the §6.2
+  extent-refresh floor. The engine takes it wherever a guard is decided or
+  a baseline is set: the write door's observation, the priming cycle and
+  the backstop cycle ask no barrier on FSEvents, write no sentinel, and
+  make a floor pass (§6.7, what a floor pass costs). A read does not: a
+  floor pass per read costs more than the bound it would close. A read
+  keeps the vouch for the corpus token and checks the one document it names
+  against disk (§6.7, the named document). On FSEvents a read therefore
+  guarantees this much: the document at the path the request names, and a
+  mint scoped to one file, are never older than a write that completed
+  before the request began; `corpus_fingerprint`, a folder or root mint,
+  name resolution and `sql` rows are current to the measured bound. A
+  premise minted at that bound is re-checked by the write door at door
+  grade, so a stale one refuses and never lands a write.
 - **The base-plane count.** Beside the md dirty set, the feed keeps one
   counter of events that can move a `.base` member, and every doubt collapse
   advances it too (the event classes: `base-projection.md` §7). It holds no
@@ -1509,7 +1517,8 @@ it floor passes — the domain walk plus one `lstat` per member.
 > the workspace's one resident memo (§6.1) through the §6.4 vouch, at the grade
 > the question needs. The §6.2 extent-refresh floor answers only a named miss —
 > no live feed, cookie `Unproven`/`Refused`, a doubt collapse, an untrusted
-> memo, no baseline — and never on a timer against a healthy feed. A stat
+> memo, no baseline, a guard-grade question on a stream that does not prove
+> order (§6.4) — and never on a timer against a healthy feed. A stat
 > signature or other evidence-grade instrument may gate pure-latency work (the
 > prewarm's standing license), never the content root: a served answer is
 > always stamped with a root folded from content digests — the overlay's
@@ -1522,9 +1531,21 @@ Two grades, bound to their consumers:
 | warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss. The barrier makes the stamp current for the ambient premise tokens a read mints (`wire-contract.md` §5.4 and its §2 mint law); it costs one sentinel write plus delivery, bounded by the door cookie budget |
 | `wire-contract.md` § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
 | `wire-contract.md` §4.7 scoped mint (`fingerprint {scope}`) | the scope's token now? | current-as-of-the-question | same call, same vouch; the scope folds from the same memo under the same lock (`Registry::currency_refresh_with`). A mint is a premise a write door re-checks at door grade, so it needs no grade above the read family's. Every agent read and premise-less put mints one, so an unvouched floor here is O(corpus) per call, serialized on the workspace memo |
-| write door `root_before` — the wire doors and the run plane's delta-mint bracket | §6.1 door-entry observation | guard | `Registry::door_observation`, unchanged; the bracket's `root_after` is the commit's own overlay, as at a wire door |
+| write door `root_before` — the wire doors and the run plane's delta-mint bracket | §6.1 door-entry observation | guard | `Registry::door_observation`: barrier, take-and-apply, vouch, floor on a named miss. On a stream that does not prove order it asks no barrier and takes the floor (`door.floor.stream_unordered`). The bracket's `root_after` is the commit's own overlay, as at a wire door |
 | prewarm quiet check | may this sweep be skipped? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. `domain_stat_signature` walk survives only with no live feed (`FeedSlot::Failed`), under the quiet backoff |
 | `wire-contract.md` §4.7 detect pre-check (`WorkspaceRing::detect`) | root moved since baseline? | latency-only + fallback clock | the same O(1) quiet check through the shared memo; the private fold memo serves `prime` and the miss path only. §6.6's poll survives: even under a quiet vouch the backstop runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane's guard against silent capture loss. The backstop is a stat pass that holds no memo lock across its I/O: it snapshots the memo's member keys under the lock (`DomainCache::backstop_snapshot`), walks and stats the domain unlocked, reads bytes only for members the floor would not trust on a key match (`fs::backstop_movers`), and hands every disagreement to the feed as a dirty hint (§6.4 additional-feed door). It re-reads the domain config unlocked first; a config the memo has not observed (including a non-member legacy config, which raises no member event) marks `vouch-failure`, and the observation becomes the full sweep. The cycle's vouched observation then applies the hints at O(dirty). A hint only adds work and never grants trust. Without a live feed there is nothing to hint into, and the backstop is the true floor, as before. A floor held under the shared memo on a 63k-member root parks every reader for the whole sweep |
+
+**The named document.** On a stream that does not prove order (§6.4), a
+request that names one document — `toc`, `cat`, `extract`, `read`, and a mint
+scoped to a file — stats that path before its currency pass
+(`Registry::sight_named`). The memo's record stands when it is the same file
+under the §6.2 trust decision: the same `lstat` key on a record outside the
+racy window, or absent on both sides. Otherwise the path goes to the feed as
+a dirty hint (§6.4 additional-feed door), the pass's take-and-apply re-reads
+that one member, the root moves, and the incremental pass serves the document
+as it stands on disk. The cost is one `lstat` and one short memo lock per
+request. A hint only adds work and never grants trust. On an ordered stream
+the check does not run: `Seen` already covers the document.
 
 **The cookie holdoff (posture, both doors).** A `CookieTimeout` collapse is
 sticky doubt until the next take, which converts it to a full sweep and clears
@@ -1570,7 +1591,10 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   waited for still arrive. The backstop cycle (once per `DETECT_FLOOR_CADENCE`)
   and the priming cycle make the full §6.1 door-grade observation, floor
   included, so a dead feed, a sticky `Failed` slot or a sustained `Unproven`
-  delays a frame by at most `DETECT_FLOOR_CADENCE`.
+  delays a frame by at most `DETECT_FLOOR_CADENCE`. On a stream that does not
+  prove order that observation is always the floor (§6.4), so a write an
+  ordinary cycle's sighting ran ahead of is told when its own event arrives,
+  and at the latest by the next backstop cycle.
 - The classifier diffs those digests against the watcher's retained baseline
   (entries carry a leaf digest and the §6.4 byte handle), reads bytes only for
   movers, and mints the same frames. Renames pair by digest (byte-equality's
