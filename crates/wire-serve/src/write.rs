@@ -576,7 +576,7 @@ pub fn splice(
     // and the verdicts, on both the dry and real paths (§4.4 one-reparse law) —
     // the real commit writes exactly these bytes, so evaluating this simulated
     // doc is evaluating the committed doc.
-    let mut after_doc = build_after_doc(&doc, &sealed, &args.path);
+    let mut after_doc = build_after_doc(&sealed, &args.path);
 
     // The middleware door (armed-plane Part A2, § A.2.1): one eval per armed
     // in-scope middleware page, id ascending, over the pending set — after
@@ -1164,10 +1164,9 @@ fn birth_candidate(content_path: &str, body: String) -> model::CandidateDocument
 /// LANDING member bytes are re-minted at `commit_set` from read#2.
 fn member_overlay_candidate(
     content_path: &str,
-    raw: &str,
     sealed: &model::ValidatedBatch,
 ) -> model::CandidateDocument {
-    model::candidate_of_batch(content_path, raw, sealed)
+    model::candidate_of_batch(content_path, sealed)
 }
 
 /// One wire frontmatter upsert — the shape every middleware `set_field`
@@ -1370,7 +1369,7 @@ fn run_door_middleware(
                     return Err(verdict_to_wire(&refused, effective_edits, doc, path));
                 }
             };
-            *after_doc = build_after_doc(doc, sealed, path);
+            *after_doc = build_after_doc(sealed, path);
             world.stage(&path.0, after_doc.raw());
         }
 
@@ -1396,7 +1395,7 @@ fn run_door_middleware(
                     ));
                 }
             };
-            let candidate = member_overlay_candidate(&p, &base.raw, &member_sealed);
+            let candidate = member_overlay_candidate(&p, &member_sealed);
             world.stage(&p, candidate.raw());
         }
     }
@@ -1509,7 +1508,7 @@ fn run_birth_middleware(
                     return Err(verdict_to_wire(&refused, &self_edits, &base, path));
                 }
             };
-            candidate = model::candidate_of_batch(&path.0, &base.raw, &mw_sealed);
+            candidate = model::candidate_of_batch(&path.0, &mw_sealed);
             // The transformed candidate is re-guarded HERE (its own U12
             // discharge site): a middleware value could smuggle a stored-form
             // violation into the born bytes between the door's pre-middleware
@@ -1825,7 +1824,7 @@ fn validate_set_member(
             ));
         }
     };
-    let mut after_doc = build_after_doc(&doc, &sealed, &file.path);
+    let mut after_doc = build_after_doc(&sealed, &file.path);
     let mut sealed = sealed;
     strip_fp_candidate(
         &doc,
@@ -2068,7 +2067,7 @@ fn validate_set_entries(
                         });
                     }
                 };
-                let candidate = model::candidate_of_batch(content_path, &before.raw, &sealed);
+                let candidate = model::candidate_of_batch(content_path, &sealed);
                 (Some(before), Some(sealed), candidate)
             }
             CommitSetEntry::Birth { content_path, body } => {
@@ -5583,11 +5582,11 @@ type Retained = Vec<(std::ops::Range<usize>, usize)>;
 /// Shared by the `@fp` strip ([`classify_fp`]) and U12's stored-form translation
 /// ([`classify_cross_root`]), which ask the same question of the same candidate.
 fn splice_index(doc: &model::Document, sealed: &model::ValidatedBatch) -> (Inserted, Retained) {
-    let mut inserted: Inserted = Vec::with_capacity(sealed.edits.len());
-    let mut retained: Retained = Vec::with_capacity(sealed.edits.len() + 1);
+    let mut inserted: Inserted = Vec::with_capacity(sealed.edits().len());
+    let mut retained: Retained = Vec::with_capacity(sealed.edits().len() + 1);
     let mut after_pos = 0usize;
     let mut pre_pos = 0usize;
-    for e in &sealed.edits {
+    for e in sealed.edits() {
         let gap = e.span.start.saturating_sub(pre_pos);
         if gap > 0 {
             retained.push((after_pos..after_pos + gap, pre_pos));
@@ -5754,7 +5753,7 @@ fn strip_fp_candidate(
             )));
         }
     };
-    *after_doc = build_after_doc(doc, sealed, path);
+    *after_doc = build_after_doc(sealed, path);
 
     // The candidate introduces no token. Live on every write path, dry and real
     // alike — a door that reaches these bytes without passing the strip refuses
@@ -5975,7 +5974,7 @@ fn translate_stored_candidate(
             )));
         }
     };
-    *after_doc = build_after_doc(doc, sealed, path);
+    *after_doc = build_after_doc(sealed, path);
 
     // The closing rung goes through the same door-facing guard every other door
     // calls, so "which doors are guarded" is answerable by counting one name.
@@ -6262,7 +6261,7 @@ pub fn overlay_candidate(
     };
     match model::validate_batch(doc, None, &batch, None) {
         model::SpliceVerdict::Validated(sealed) => {
-            Ok(model::candidate_of_batch(&path.0, &doc.raw, &sealed).into_document())
+            Ok(model::candidate_of_batch(&path.0, &sealed).into_document())
         }
         refused => Err(verdict_to_wire(&refused, &lowered.edits, doc, path)),
     }
@@ -6390,16 +6389,12 @@ fn model_edits_and_before_facts(
     Ok((model_edits, before_facts))
 }
 
-/// The post-batch document state, built once (§4.4 one-reparse law): apply the
-/// sealed span edits in memory → reparse → build, stamping the document path so
-/// §11.1 verdicts carry it. Both the armed AFTER facts and the verdicts read
-/// this doc, on both the dry and real paths.
-fn build_after_doc(
-    doc: &model::Document,
-    sealed: &model::ValidatedBatch,
-    path: &Path,
-) -> model::CandidateDocument {
-    model::candidate_of_batch(&path.0, &doc.raw, sealed)
+/// The post-batch document state (§4.4 one-reparse law): the document the
+/// sealed batch was validated into, with the document path stamped so §11.1
+/// verdicts carry it. Both the armed AFTER facts and the verdicts read this
+/// doc, on both the dry and real paths.
+fn build_after_doc(sealed: &model::ValidatedBatch, path: &Path) -> model::CandidateDocument {
+    model::candidate_of_batch(&path.0, sealed)
 }
 
 /// The armed AFTER facts, resolved against the shared post-batch state
@@ -6516,7 +6511,7 @@ fn born_armed_edit(
     let title = birth.title.as_str();
     let refuse = || birth_unrepresentable(edit, title);
     let pos = sealed
-        .edits
+        .edits()
         .iter()
         .position(|e| e.index == batch_index)
         .ok_or_else(refuse)?;
@@ -6524,7 +6519,8 @@ fn born_armed_edit(
     // The stated offset must point at a heading opener in the sealed text; a
     // sealed text rewritten out of shape refuses rather than misplacing the
     // birth.
-    if sealed.edits[pos].text.as_bytes().get(birth.heading_offset) != Some(&b'#') {
+    let text = &sealed.edits()[pos].text;
+    if text.as_bytes().get(birth.heading_offset) != Some(&b'#') {
         return Err(refuse());
     }
     let heading_start = landed + birth.heading_offset;
@@ -6555,13 +6551,13 @@ fn born_armed_edit(
 /// Two readers: a birth (which heading position to read the born node from) and
 /// a `remove` (the zero-width point the struck line vacated, § A.6.6).
 fn landed_offset(sealed: &model::ValidatedBatch, batch_index: usize) -> Option<usize> {
-    let pos = sealed.edits.iter().position(|e| e.index == batch_index)?;
-    let (added, removed) = sealed.edits[..pos]
+    let pos = sealed.edits().iter().position(|e| e.index == batch_index)?;
+    let (added, removed) = sealed.edits()[..pos]
         .iter()
         .fold((0usize, 0usize), |(a, r), e| {
             (a + e.text.len(), r + e.span.len())
         });
-    (sealed.edits[pos].span.start + added).checked_sub(removed)
+    (sealed.edits()[pos].span.start + added).checked_sub(removed)
 }
 
 /// The birth's own `target_identity` refusal: the batch commits nothing, and
@@ -7043,7 +7039,7 @@ pub fn commit_batch(
     // blind-splicing stale spans into moved bytes. The seam mints the candidate
     // for the bytes it is about to land, and `fs` refuses a candidate that is
     // not this batch's splice result.
-    let candidate = model::candidate_of_batch(&req.content_path, &before_content.raw, &sealed);
+    let candidate = model::candidate_of_batch(&req.content_path, &sealed);
     // The artifact guard at the commit seam: this is the public door, and a
     // caller reaching it directly has passed no translation at all.
     stored_form_guard_lazy(

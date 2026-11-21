@@ -1596,26 +1596,56 @@ pub enum CorruptCause {
     Reparented,
 }
 
-/// Batch that passed validation. Only `model` mints (private `_sealed`); `fs`
-/// accepts only this type — unvalidated batches cannot reach disk. Receipt
-/// rides inside (§6.1).
+/// Batch that passed validation. Only `model` mints: every field is private and
+/// [`validate_batch`] is the one constructor. `fs` accepts only this type —
+/// unvalidated batches cannot reach disk. Receipt rides inside (§6.1).
 ///
 /// ```compile_fail
-/// // `_sealed` is private, so this fails to compile outside `model`.
+/// // The fields are private, so this fails to compile outside `model`.
 /// let _ = model::ValidatedBatch { edits: Vec::new(), receipt: None };
 /// ```
-#[expect(
-    clippy::manual_non_exhaustive,
-    reason = "_sealed is a capability seal (only model mints), not future-proofing"
-)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct ValidatedBatch {
+    edits: Vec<ValidatedEdit>,
+    receipt: Option<ReceiptAppend>,
+    /// The post-batch document: `edits` applied to the validated pre-image,
+    /// parsed once by [`validate_batch`] for its reparse guards. Nothing
+    /// outside the mint writes `edits` or this, so the two always agree.
+    after: Arc<Document>,
+}
+
+impl ValidatedBatch {
     /// The content edits, sorted by span start (disjoint — validated).
-    pub edits: Vec<ValidatedEdit>,
+    #[must_use]
+    pub fn edits(&self) -> &[ValidatedEdit] {
+        &self.edits
+    }
+
     /// The receipt append riding inside the same sealed commit, if the request
     /// named a receipt (§6.1).
-    pub receipt: Option<ReceiptAppend>,
-    _sealed: (),
+    #[must_use]
+    pub fn receipt(&self) -> Option<&ReceiptAppend> {
+        self.receipt.as_ref()
+    }
+}
+
+/// Equality is over the write instructions. The post-batch document is a
+/// function of the pre-image and those edits, and `Document` has no equality.
+impl PartialEq for ValidatedBatch {
+    fn eq(&self, other: &Self) -> bool {
+        self.edits == other.edits && self.receipt == other.receipt
+    }
+}
+
+/// Prints the write instructions; the post-batch document is elided, so a
+/// `{:?}` of a verdict stays the size of the batch.
+impl std::fmt::Debug for ValidatedBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedBatch")
+            .field("edits", &self.edits)
+            .field("receipt", &self.receipt)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Write-plane candidate — bytes about to land. Inner `Document` is private;
@@ -1654,36 +1684,39 @@ impl CandidateDocument {
 }
 
 /// Mint the candidate for a whole-file write: parse `raw` — the exact bytes that
-/// will reach disk — and stamp the document's own path. `build` is I/O-free and
-/// leaves the path empty, but the armed gate scopes its rules by that value, so
-/// an unstamped candidate is invisible to every path-scoped convention.
+/// will reach disk — and stamp the document's own path.
 #[must_use]
 pub fn candidate_of_body(path: &str, raw: String) -> CandidateDocument {
+    let mut doc = parse_and_build(raw);
+    stamp_path(&mut doc, path);
+    CandidateDocument(doc)
+}
+
+/// Mint the candidate a sealed batch produces: the post-batch document
+/// [`validate_batch`] parsed for its reparse guards, with the document's own
+/// path stamped. The batch's one reparse (§4.4) is the candidate's parse, so
+/// the bytes every door-side judge reads are the bytes validation judged.
+#[must_use]
+pub fn candidate_of_batch(path: &str, sealed: &ValidatedBatch) -> CandidateDocument {
+    let mut doc = Document::clone(&sealed.after);
+    stamp_path(&mut doc, path);
+    CandidateDocument(doc)
+}
+
+/// Parse `raw` and build its document, taking the bytes without a copy.
+fn parse_and_build(raw: String) -> Document {
     let nodes = syntax::parse(&raw);
-    let mut doc = build(raw, nodes);
+    build(raw, nodes)
+}
+
+/// Stamp a candidate's own path. `build` is I/O-free and leaves the path empty,
+/// but the armed gate scopes its rules by that value, so an unstamped candidate
+/// is invisible to every path-scoped convention.
+fn stamp_path(doc: &mut Document, path: &str) {
     if let NodeKind::Document { path: p, .. } = &mut doc.root.kind {
         p.clear();
         p.push_str(path);
     }
-    CandidateDocument(doc)
-}
-
-/// Mint the candidate a sealed batch produces: dry-apply the validated span
-/// edits to `pre_image` (the bytes the spans index) and parse the result once
-/// (§4.4's one-reparse law). The single owner of apply-then-reparse.
-#[must_use]
-pub fn candidate_of_batch(
-    path: &str,
-    pre_image: &str,
-    sealed: &ValidatedBatch,
-) -> CandidateDocument {
-    let mut raw = pre_image.to_owned();
-    // The sealed edits are disjoint and sorted by span start, so splicing
-    // back-to-front keeps every remaining span in pre-image coordinates.
-    for edit in sealed.edits.iter().rev() {
-        raw.replace_range(edit.span.clone(), &edit.text);
-    }
-    candidate_of_body(path, raw)
 }
 
 /// Validate a batch splice against a live `Document` (contract §4.4/§5). The
@@ -1893,8 +1926,7 @@ pub fn validate_batch(
     // 4. One simulated reparse (§4.4), shared by both post-reparse guards — the
     // one-reparse law is why they take the built document rather than each
     // building their own.
-    let new_raw = apply_regions(raw, &planned);
-    let new_doc = build(new_raw.clone(), syntax::parse(&new_raw));
+    let new_doc = parse_and_build(apply_regions(raw, &planned));
 
     // 4a. A post-apply parse that loses containment refuses `would_corrupt`.
     if let Some((lost, cause)) = would_corrupt(doc, &planned, &new_doc) {
@@ -1931,7 +1963,7 @@ pub fn validate_batch(
     SpliceVerdict::Validated(ValidatedBatch {
         edits,
         receipt,
-        _sealed: (),
+        after: Arc::new(new_doc),
     })
 }
 
@@ -5549,6 +5581,54 @@ mod tests {
             format!("{}- tail\n\n## Q5\n\nborn\n", doc.raw),
             "request order at the shared byte: Q4's tail before Q5's birth"
         );
+    }
+
+    /// The candidate a sealed batch mints is the document validation parsed,
+    /// and it equals an independent splice-then-parse of the sealed edits:
+    /// same bytes, same tree, same revs, own path stamped. The batch carries
+    /// every ordering case the two splices could disagree on — an insert at a
+    /// replaced region's start byte, two inserts at one byte, an engine edit.
+    #[test]
+    fn candidate_of_batch_is_the_validated_reparse() {
+        let raw = "---\nstatus: todo\n---\n# c3\n\n## A\n\nbody\n\n## B\n\ntail\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+        let body = raw.find("body").expect("fixture has the engine target");
+        let mut b = batch(vec![
+            put_edit(Ref::FmKey("status".to_string()), PutAt::Upsert, "one"),
+            put_edit(Ref::FmKey("nope".to_string()), PutAt::Upsert, "two"),
+            put_edit(hpath(&["c3", "B"]), PutAt::End, "- last\n"),
+            put_edit(hpath(&["c3"]), PutAt::End, "\n## C\n\nborn\n"),
+        ]);
+        b.engine = Some(EngineEdit {
+            span: body..body + 4,
+            text: "BODY".to_string(),
+        });
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("the mixed batch must validate");
+        };
+
+        let spliced = apply_validated(&doc.raw, &vb);
+        assert_eq!(
+            spliced,
+            "---\nnope: two\nstatus: one\n---\n# c3\n\n## A\n\nBODY\n\n## B\n\ntail\n- last\n\n## C\n\nborn\n",
+            "the fixture exercises all three orderings"
+        );
+        let want = candidate_of_body("notes/c3.md", spliced.clone());
+        let got = candidate_of_batch("notes/c3.md", &vb);
+        assert_eq!(got.raw(), spliced, "bytes");
+        assert_eq!(
+            format!("{:?}", got.document().root),
+            format!("{:?}", want.document().root),
+            "tree, spans, revs and the stamped path"
+        );
+
+        // A second mint under another path reads the same sealed document:
+        // stamping the first candidate did not write through to the batch.
+        let other = candidate_of_batch("notes/other.md", &vb);
+        assert!(
+            matches!(&other.document().root.kind, NodeKind::Document { path, .. } if path == "notes/other.md")
+        );
+        assert_eq!(other.raw(), spliced);
     }
 
     /// GATE 4b (§4.4 `would_corrupt`): a separator-less `at:"end"` on a non-final

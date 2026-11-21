@@ -1619,7 +1619,7 @@ fn seal_candidate(
             });
         }
     };
-    let after_doc = crate::fp::candidate(page, doc, &sealed);
+    let after_doc = crate::fp::candidate(page, &sealed);
     Ok((batch, sealed, after_doc))
 }
 
