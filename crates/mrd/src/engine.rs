@@ -663,11 +663,9 @@ fn try_daemon_links(
 /// (`Client::ping`) on a SEPARATE connection: a second connect, a second connection thread in
 /// the daemon and a second round trip on every warm read, where one dial answers both questions.
 ///
-/// The pre-flight is NOT redundant, which is why it is reordered rather than deleted: its answer
-/// decides whether to AUTO-SPAWN, and dropping it outright would leave the first read after boot
-/// silently degrading in-process forever instead of starting the daemon. The cold path is
-/// unchanged — an absent or refusing socket still reaches `ensure_daemon`, which spawns and waits
-/// for readiness.
+/// The pre-flight runs after the connect, and only when it fails: an absent or refusing socket
+/// reaches `ensure_daemon`, which spawns the daemon and waits for readiness. Without it the first
+/// read after boot would degrade in-process instead of starting the daemon.
 ///
 /// The stream comes back under the wedge discipline ([`registry::wedge`]): a connect proves
 /// only that something is LISTENING, and an unbounded read on a daemon that accepts and never
