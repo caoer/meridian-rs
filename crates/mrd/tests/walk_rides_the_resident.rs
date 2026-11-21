@@ -8,6 +8,10 @@
 //! them at about 2 GiB each pushed the host into swap — which kept the daemon
 //! from ever finishing the warm they were all waiting on.
 //!
+//! `mrd read` rides the same held connection: its first read of a cold
+//! workspace waits out `corpus_warming` instead of exiting 1 (CI pipeline
+//! 3215, `u12_stored_form_e2e`).
+//!
 //! The same file pins the bound on the lane that is left, the workspace no
 //! daemon serves: one in-process build at a time per cache root
 //! (`docs/status.md` § The in-process build gate).
@@ -54,9 +58,9 @@ fn sandbox() -> Sandbox {
     }
 }
 
-/// What the fake daemon does with a `walk` frame.
+/// What the fake daemon does with the op under test, a `walk` or `read` frame.
 #[derive(Clone, Copy)]
-enum Walk {
+enum Answer {
     /// Answer `corpus_warming` to the first `refusals` asks, then the listing.
     WarmThenServe { refusals: usize },
     /// Close the connection without answering.
@@ -79,7 +83,7 @@ impl Sandbox {
 
     /// A canned-frame fake daemon at the derived socket path. Returns the
     /// count of `walk` frames it has read.
-    fn fake_daemon(&self, walk: Walk) -> Arc<AtomicUsize> {
+    fn fake_daemon(&self, answer: Answer) -> Arc<AtomicUsize> {
         let socket = self.socket();
         std::fs::create_dir_all(socket.parent().expect("socket dir")).expect("mkdir");
         let listener = UnixListener::bind(&socket).expect("bind fake daemon socket");
@@ -89,7 +93,7 @@ impl Sandbox {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { break };
                 let counter = Arc::clone(&counter);
-                std::thread::spawn(move || serve_connection(&stream, walk, &counter));
+                std::thread::spawn(move || serve_connection(&stream, answer, &counter));
             }
         });
         asked
@@ -117,7 +121,7 @@ impl Sandbox {
 }
 
 /// One fake-daemon connection: NDJSON in, canned NDJSON out.
-fn serve_connection(stream: &UnixStream, walk: Walk, asked: &AtomicUsize) {
+fn serve_connection(stream: &UnixStream, answer: Answer, asked: &AtomicUsize) {
     let mut writer = stream.try_clone().expect("clone fake stream");
     let reader = BufReader::new(stream.try_clone().expect("clone fake stream"));
     for line in reader.lines() {
@@ -133,19 +137,21 @@ fn serve_connection(stream: &UnixStream, walk: Walk, asked: &AtomicUsize) {
                 "caps": ["walk"],
                 "identity": {"build": OWN_BUILD},
                 "workspace": frame.get("workspace").cloned().unwrap_or(Value::Null)}}),
-            "walk" => {
+            op @ ("walk" | "read") => {
                 let nth = asked.fetch_add(1, Ordering::SeqCst);
-                match walk {
-                    Walk::WarmThenServe { refusals } if nth < refusals => {
+                match answer {
+                    Answer::WarmThenServe { refusals } if nth < refusals => {
                         json!({"ok":false,"error":{
                             "code":"corpus_warming","recovery":"retry",
                             "message":"the drawer is still warming"}})
                     }
-                    Walk::WarmThenServe { .. } => json!({"ok":true,"body":{
+                    Answer::WarmThenServe { .. } if op == "read" => json!({"ok":true,"body":{
+                        "rendered_text":"read b3:from-the-daemon\n"}}),
+                    Answer::WarmThenServe { .. } => json!({"ok":true,"body":{
                         "direction":"up","page":"a.md","entries":[],
                         "revs_read":[{"path":"a.md","doc_rev":"b3:from-the-daemon"}]}}),
-                    Walk::Vanish => return,
-                    Walk::Miss => json!({"ok":false,"error":{
+                    Answer::Vanish => return,
+                    Answer::Miss => json!({"ok":false,"error":{
                         "code":"file_not_found","recovery":"fix",
                         "path":"missing.md","message":"file_not_found: no file"}}),
                 }
@@ -177,7 +183,7 @@ fn stderr_of(out: &Output) -> String {
 fn a_warming_daemon_is_waited_on_and_serves_the_walk() {
     let sb = sandbox();
     let ws = sb.workspace();
-    let asked = sb.fake_daemon(Walk::WarmThenServe { refusals: 3 });
+    let asked = sb.fake_daemon(Answer::WarmThenServe { refusals: 3 });
 
     let out = sb.run(&ws, &["walk", "a.md"]);
 
@@ -199,13 +205,40 @@ fn a_warming_daemon_is_waited_on_and_serves_the_walk() {
     );
 }
 
+/// **The cold first read, pinned.** `corpus_warming` is the §3.2 cold gate's
+/// retry-class answer to a read that kicked a rebuild longer than the
+/// engine's bounded wait. `mrd read` used to print it and exit 1, so the
+/// first read of a fresh workspace on a loaded host failed (pipeline 3215);
+/// now it re-asks on the held connection and prints the daemon's answer.
+#[test]
+fn a_warming_daemon_is_waited_on_and_serves_the_read() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let asked = sb.fake_daemon(Answer::WarmThenServe { refusals: 3 });
+
+    let out = sb.run(&ws, &["read", "a.md"]);
+
+    assert!(out.status.success(), "read failed: {}", stderr_of(&out));
+    assert_eq!(stdout_of(&out), "read b3:from-the-daemon\n");
+    assert!(
+        !stderr_of(&out).contains(DEGRADE_VOICE),
+        "read built the corpus in-process beside a warming daemon: {}",
+        stderr_of(&out)
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        4,
+        "three refusals, then the answer"
+    );
+}
+
 /// A daemon that accepts the walk and closes without answering holds the
 /// corpus all the same: the walk refuses, exit 2, and builds nothing.
 #[test]
 fn a_daemon_that_drops_the_walk_refuses_and_builds_nothing() {
     let sb = sandbox();
     let ws = sb.workspace();
-    sb.fake_daemon(Walk::Vanish);
+    sb.fake_daemon(Answer::Vanish);
 
     let out = sb.run(&ws, &["walk", "a.md"]);
 
@@ -228,7 +261,7 @@ fn a_daemon_that_drops_the_walk_refuses_and_builds_nothing() {
 fn a_missing_root_is_the_daemons_answer_in_the_in_process_words() {
     let sb = sandbox();
     let ws = sb.workspace();
-    sb.fake_daemon(Walk::Miss);
+    sb.fake_daemon(Answer::Miss);
 
     let out = sb.run(&ws, &["walk", "missing.md"]);
 

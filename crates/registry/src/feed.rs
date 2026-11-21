@@ -465,7 +465,7 @@ impl WorkspaceFeed {
         // barrier could lose that race and leave that barrier's sentinel
         // unseen. Best-effort: on failure (read-only root) barriers answer
         // `Unproven` and the caller keeps the extent-refresh floor.
-        let _ = std::fs::create_dir_all(workspace.join(COOKIE_DIR));
+        let _ = cookie_dir_ready(&workspace.join(COOKIE_DIR));
         watcher.watch(workspace, RecursiveMode::Recursive)?;
         Ok(WorkspaceFeed {
             _watcher: watcher,
@@ -588,8 +588,8 @@ impl WorkspaceFeed {
         let serial = self.cookie_serial.fetch_add(1, Ordering::Relaxed) + 1;
         let dir = workspace.join(dir);
         let sentinel = dir.join(format!("{}-{serial}", self.cookie_token));
-        let write = std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&sentinel, serial.to_string()));
+        let write =
+            cookie_dir_ready(&dir).and_then(|()| std::fs::write(&sentinel, serial.to_string()));
         if write.is_err() {
             let _ = std::fs::remove_file(&sentinel);
             return CookieOutcome::Unproven;
@@ -1111,6 +1111,21 @@ fn sighting(name: &Path, prefix: &str, kind: EventKind) -> Option<u64> {
     name.to_str()?.strip_prefix(prefix)?.parse().ok()
 }
 
+/// Create the sentinels' directory `dir` and keep git out of it (§6.4): a
+/// `.gitignore` of `*`, written when absent. Without it `git add -A` lists a
+/// live sentinel, its barrier removes it, and git's stat of the listed entry
+/// fails the whole walk (`fatal: unable to stat`). The ignore file carries no
+/// token, so [`sighting`] reads an event on it as nothing; failing to write it
+/// costs git hygiene, never the barrier.
+fn cookie_dir_ready(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let ignore = dir.join(".gitignore");
+    if !ignore.exists() {
+        let _ = std::fs::write(ignore, "*\n");
+    }
+    Ok(())
+}
+
 /// A feed's sentinel-name token: the process id and a random per-feed nonce,
 /// so neither another engine on the workspace nor a crash leftover under a
 /// reused pid can name one of this feed's sentinels (merkle-spec §6.4).
@@ -1289,10 +1304,19 @@ mod tests {
             (0, 0, false),
             "the sighting fed the barrier, never the dirty set"
         );
+        let left: Vec<_> = std::fs::read_dir(root.join(COOKIE_DIR))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(
-            std::fs::read_dir(root.join(COOKIE_DIR)).unwrap().count(),
-            0,
-            "the barrier removed its sentinel"
+            left,
+            [".gitignore"],
+            "the barrier removed its sentinel; only the git ignore file stays"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(COOKIE_DIR).join(".gitignore")).unwrap(),
+            "*\n",
+            "git never lists a sentinel"
         );
     }
 

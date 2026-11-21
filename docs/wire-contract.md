@@ -3233,7 +3233,10 @@ stored, citing the doc revs read (§2.4). Workspace-bound, unlike § A.5
   of its own environment, so `mrd links` keeps a daemon answer unless a head
   the daemon left `unresolved` names a root the CLI's own table declares, or
   that table cannot be read; then the in-process lane answers from the CLI's
-  environment.
+  environment. `mrd read` follows the same ladder for the first three arms
+  and its other op refusals are its answer (exit 1, the engine's words), so
+  the first `mrd read` of a cold workspace waits out the §3.2 rebuild on the
+  held connection and serves, as a second ask would have.
 
 ```json
 {"id":12,"op":"walk","path":"a.md"}
