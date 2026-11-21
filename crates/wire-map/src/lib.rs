@@ -102,41 +102,31 @@ fn wire_view(kind: &model::NodeKind) -> Option<(wire::NodeKind, Option<wire::Inf
         M::InlineCode => (W::InlineCode, None, false),
         M::Comment => (W::Comment, None, false),
         M::Anchor { .. } => (W::Anchor, None, false),
-        M::Wikilink {
-            target,
-            heading,
-            block,
-            alias,
-        } => (
+        M::Wikilink { target, qualifiers } => (
             W::Wikilink,
             Some(Info::Wikilink {
                 target: target.clone(),
-                heading: heading.clone(),
-                block: block.clone(),
-                alias: alias.clone(),
+                heading: qualifiers.as_deref().and_then(|q| q.heading.clone()),
+                block: qualifiers.as_deref().and_then(|q| q.block.clone()),
+                alias: qualifiers.as_deref().and_then(|q| q.alias.clone()),
             }),
             false,
         ),
-        M::Embed {
-            target,
-            heading,
-            block,
-            alias,
-        } => (
+        M::Embed { target, qualifiers } => (
             W::Embed,
             Some(Info::Wikilink {
                 target: target.clone(),
-                heading: heading.clone(),
-                block: block.clone(),
-                alias: alias.clone(),
+                heading: qualifiers.as_deref().and_then(|q| q.heading.clone()),
+                block: qualifiers.as_deref().and_then(|q| q.block.clone()),
+                alias: qualifiers.as_deref().and_then(|q| q.alias.clone()),
             }),
             false,
         ),
-        M::Callout { r#type, fold } => (
+        M::Callout(info) => (
             W::Callout,
             Some(Info::Callout {
-                r#type: r#type.clone(),
-                fold: fold.clone(),
+                r#type: info.r#type.clone(),
+                fold: info.fold.clone(),
             }),
             false,
         ),
@@ -306,7 +296,7 @@ fn same_span_block(node: &model::Node, span: &std::ops::Range<usize>) -> Option<
     use model::NodeKind as M;
     if node.span == *span {
         match &node.kind {
-            M::TaskItem { .. } | M::Callout { .. } | M::CodeBlock { .. } | M::Table => {
+            M::TaskItem { .. } | M::Callout(_) | M::CodeBlock { .. } | M::Table => {
                 return Some(return_kind(&node.kind));
             }
             _ => {}
@@ -321,7 +311,7 @@ fn return_kind(kind: &model::NodeKind) -> String {
     use model::NodeKind as M;
     match kind {
         M::TaskItem { .. } => "task".into(),
-        M::Callout { .. } => "callout".into(),
+        M::Callout(_) => "callout".into(),
         M::CodeBlock { .. } => "fence".into(),
         M::Table => "table".into(),
         _ => "paragraph".into(),

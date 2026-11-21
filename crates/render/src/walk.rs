@@ -137,18 +137,11 @@ fn collect_decorations<'a>(
     out: &mut Vec<Rewrite<'a>>,
 ) {
     if let (
-        model::NodeKind::Wikilink {
-            target,
-            block: Some(block),
-            ..
-        }
-        | model::NodeKind::Embed {
-            target,
-            block: Some(block),
-            ..
-        },
+        model::NodeKind::Wikilink { target, qualifiers }
+        | model::NodeKind::Embed { target, qualifiers },
         true,
     ) = (&node.kind, node.span.start >= start && node.span.end <= end)
+        && let Some(block) = qualifiers.as_deref().and_then(|q| q.block.as_ref())
         && let Some(token) = decorations.get(&ClaimLink {
             target: target.clone(),
             block: block.clone(),
