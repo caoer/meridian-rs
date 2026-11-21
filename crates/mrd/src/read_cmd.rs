@@ -343,8 +343,16 @@ fn daemon_read(workspace: &Path, r: &Read) -> Option<DaemonRead> {
         return Some(DaemonRead::Skew(message));
     }
 
-    let response = match engine::call(&mut writer, &mut reader, client.socket_path(), &r.request())
-    {
+    // A `retry` refusal (`corpus_warming` while the §3.2 cold build runs) is
+    // re-asked on this connection, as `walk` and `links` do: the first read of
+    // a cold workspace serves once the rebuild lands instead of exiting 1.
+    let response = match engine::call_through_retries(
+        &mut writer,
+        &mut reader,
+        client.socket_path(),
+        workspace,
+        &r.request(),
+    ) {
         Ok(response) => response,
         Err(error) => return Some(lost(error)),
     };
