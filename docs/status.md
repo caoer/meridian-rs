@@ -1869,10 +1869,15 @@ read `cmd=` first). A warm daemon-served `links` emits neither on the
  and the field.
 - **Full-corpus passes still hold the memo lock.** The cookie-timeout,
  rename-in and overflow floors sweep the corpus under the workspace's memo
- lock, and `fs::update_corpus` runs once per waiting reader with no
- single-flight (487 of 2,158 profile samples on one read thread, on a
- 63k-document sessions root under ~60 agents). Done when no full-corpus pass
- holds the lock that readers wait on.
+ lock. `fs::update_corpus` is shared by the readers that miss at one fold:
+ they wait for the pass running at that fold and serve its generation
+ (`node-rev-merkle-spec.md` §6.8). A reader runs a pass of its own when none
+ is running at its fold, and when the pass it waited for published nothing
+ at that fold; readers at different folds each run their own. The pass's
+ share of a read thread under that sharing is unmeasured: run once per
+ waiting reader, it took 487 of 2,158 profile samples on one read thread, on
+ a 63k-document sessions root under ~60 agents. Done when no full-corpus
+ pass holds the lock that readers wait on.
 - **An abandoned request keeps costing work.** A caller that disconnects or
  passes its deadline does not cancel the op: the same load logged 489
  broken-pipe replies, with reads finishing 100–1,392 s after a 10 s caller had
