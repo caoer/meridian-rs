@@ -1953,7 +1953,8 @@ takeover) are not timed.
 
 - `no_feed` — no live feed: cold start, vouching impossible.
 - `cookie_unproven` — the §6.4 barrier timed out or hit I/O; the only
-  time-bounded cause, the only one rising with load.
+  time-bounded cause, the only one rising with load. On FSEvents it is every
+  barrier: that stream cannot vouch (`node-rev-merkle-spec.md` §6.4).
 - `cookie_refused` — the cookie would enter the hash domain.
 - `collapse` — the applied set collapsed doubt.
 - `untrusted` — the §6.2 close does not hold the memo trusted.
