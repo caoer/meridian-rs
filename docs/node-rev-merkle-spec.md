@@ -949,58 +949,58 @@ the 66,776 B fixed part):
 | `frontmatter` | 1,572,898 | 2.9 | 2.7 | 5.8 | 71.75 |
 | `deep-list` | 2,293,764 | 0.0 | 6.0 | 7.0 | 59.38 |
 | `rules` | 2,621,445 | 0.0 | 12.0 | 13.0 | 31.99 |
+| `code` | 220,101 | 9.8 | 18.3 | 20.7 | 19.87 |
 | `list` | 97,218 | 0.0 | 24.1 | 24.4 | 16.59 |
 | `inline-html` | 2,359,305 | 0.0 | 24.0 | 25.0 | 16.64 |
 | `autolinks` | 3,145,734 | 0.0 | 24.0 | 25.0 | 16.64 |
 | `bare-quotes` | 3,145,731 | 0.0 | 24.0 | 25.0 | 16.64 |
 | `html-blocks` | 3,670,023 | 0.0 | 24.0 | 25.0 | 16.64 |
 | `table` | 4,869,673 | 0.0 | 24.0 | 25.0 | 16.64 |
-| `code` | 220,101 | 14.6 | 18.3 | 25.4 | 16.19 |
-| `wikilinks` | 284,535 | 11.9 | 25.2 | 26.0 | 15.86 |
+| `wikilinks` | 284,535 | 10.2 | 25.2 | 26.0 | 15.86 |
 | `ref-defs` | 97,206 | 0.0 | 26.1 | 26.5 | 15.35 |
-| `callouts` | 236,487 | 13.4 | 32.5 | 33.2 | 12.43 |
+| `block-ids` | 145,254 | 14.7 | 20.6 | 28.8 | 14.24 |
+| `headings` | 129,994 | 20.9 | 28.0 | 32.8 | 12.52 |
+| `callouts` | 236,487 | 10.7 | 32.5 | 33.2 | 12.43 |
 | `footnotes` | 97,218 | 0.0 | 35.1 | 35.4 | 11.55 |
-| `block-ids` | 16,230 | 24.5 | 23.0 | 36.6 | 10.33 |
-| `tasks` | 129,978 | 24.2 | 39.2 | 41.8 | 9.84 |
-| `headings` | 129,994 | 29.0 | 28.0 | 44.9 | 9.18 |
-| `embeds` | 162,750 | 20.0 | 46.4 | 47.0 | 8.78 |
+| `tasks` | 129,994 | 16.1 | 39.2 | 39.7 | 10.36 |
+| `embeds` | 162,750 | 13.6 | 46.4 | 47.0 | 8.78 |
 | `nested-list` | 179,136 | 0.0 | 48.1 | 48.7 | 8.49 |
 | `deep-quotes` | 2,359,301 | 0.0 | 48.0 | 49.0 | 8.49 |
 | `hard-breaks` | 3,145,731 | 0.0 | 48.0 | 49.0 | 8.49 |
 | `one-char-paragraphs` | 3,145,731 | 0.0 | 48.0 | 49.0 | 8.49 |
 | `bare-list` | 4,194,306 | 0.0 | 48.0 | 49.0 | 8.49 |
-| `inline` | 244,680 | 12.9 | 58.8 | 59.5 | 6.97 |
-| `cell-table` | 2,358 | 0.3 | 88.0 | 61.2 | 5.00 |
-| `wide-tables-k64` | 2,334 | 0.7 | 89.2 | 62.1 | 4.93 |
+| `inline` | 244,680 | 8.6 | 58.8 | 59.5 | 6.97 |
+| `one-row-tables` | 2,359,305 | 28.4 | 56.0 | 59.6 | 6.97 |
+| `cell-table` | 2,358 | 0.2 | 88.0 | 61.2 | 5.00 |
+| `wide-tables-k64` | 2,334 | 0.5 | 89.2 | 62.1 | 4.93 |
+| `bare-fences` | 4,194,312 | 32.0 | 52.0 | 67.0 | 6.21 |
+| `long-heading-sections` | 4,194,306 | 44.3 | 42.5 | 68.7 | 6.06 |
 | `open-emphasis` | 3,145,731 | 0.0 | 69.3 | 70.3 | 5.91 |
-| `one-row-tables` | 2,359,305 | 42.7 | 56.0 | 73.9 | 5.63 |
 | `inline-links` | 3,145,734 | 0.0 | 74.7 | 75.6 | 5.50 |
-| `bare-fences` | 4,194,312 | 48.0 | 52.0 | 83.0 | 5.01 |
-| `long-heading-code-spans` | 4,194,308 | 26.0 | 83.5 | 84.5 | 4.92 |
-| `long-heading-links` | 6,291,457 | 33.4 | 84.6 | 85.6 | 4.86 |
-| `long-heading-sections` | 4,194,306 | 60.3 | 42.5 | 95.3 | 4.36 |
+| `bare-block-ids` | 3,145,734 | 42.8 | 50.2 | 83.8 | 4.96 |
+| `long-heading-code-spans` | 4,194,308 | 18.0 | 83.5 | 84.5 | 4.92 |
+| `long-heading-links` | 6,291,457 | 22.7 | 84.6 | 85.6 | 4.86 |
+| `bare-tasks` | 3,145,734 | 42.7 | 64.0 | 89.0 | 4.67 |
 | `strong-runs` | 2,621,445 | 0.0 | 96.0 | 97.0 | 4.29 |
 | `emphasis-runs` | 3,145,731 | 0.0 | 96.0 | 97.0 | 4.29 |
 | `ref-links` | 3,670,023 | 0.0 | 96.0 | 97.0 | 4.29 |
 | `wide-tables-k362` | 6,292,269 | 0.1 | 96.2 | 97.2 | 4.28 |
-| `bare-block-ids` | 3,145,734 | 64.2 | 50.2 | 105.1 | 3.96 |
-| `bare-tasks` | 3,145,734 | 64.0 | 64.0 | 110.3 | 3.77 |
-| `bare-embeds` | 3,145,734 | 64.2 | 168.2 | 169.1 | 2.46 |
-| `code-spans` | 4,194,308 | 96.0 | 176.0 | 177.0 | 2.35 |
-| `bare-links` | 2,621,445 | 77.0 | 182.6 | 183.6 | 2.27 |
-| `heading-code` | 3,145,740 | 199.2 | 141.8 | 271.3 | 1.53 |
-| `headings-then-code-span` | 2,359,305 | 179.6 | 110.2 | 276.5 | 1.50 |
-| `heading-code-over-headings` | 4,194,312 | 203.4 | 118.4 | 311.7 | 1.33 |
-| `heading-block-ids` | 2,621,450 | 239.0 | 120.6 | 325.2 | 1.28 |
-| `bare-headings` | 4,194,308 | 216.0 | 168.0 | 341.0 | 1.22 |
+| `bare-embeds` | 3,145,734 | 42.8 | 168.2 | 169.1 | 2.46 |
+| `code-spans` | 4,194,308 | 64.0 | 176.0 | 177.0 | 2.35 |
+| `bare-links` | 2,621,445 | 51.4 | 182.6 | 183.6 | 2.27 |
+| `heading-code` | 3,145,740 | 135.2 | 141.8 | 186.0 | 2.24 |
+| `headings-then-code-span` | 2,359,305 | 122.7 | 110.2 | 191.2 | 2.18 |
+| `heading-code-over-headings` | 4,194,312 | 139.4 | 118.4 | 215.7 | 1.93 |
+| `heading-block-ids` | 2,621,450 | 162.2 | 120.6 | 222.8 | 1.87 |
+| `bare-headings` | 4,194,308 | 152.0 | 168.0 | 245.0 | 1.70 |
 
-Bare `#` headings are the worst shape found: 341.0 bytes per raw byte at
-`2^21 + 2` lines, so the per-byte part, 416, stands 22% above it. Four shapes
-follow above 270, all of them headings: one carrying a block id (325.2), a
-code-span heading over a bare one (311.7), three bare headings then a code
-span (276.5) and code-span headings (271.3). Every other shape in the probe
+Bare `#` headings are the worst shape found: 245.0 bytes per raw byte at
+`2^21 + 2` lines, so the per-byte part, 416, stands 70% above it. Four shapes
+follow above 185, all of them headings: one carrying a block id (222.8), a
+code-span heading over a bare one (215.7), three bare headings then a code
+span (191.2) and code-span headings (186.0). Every other shape in the probe
 is at 184 or less; headings with other text, outside the probe, measure up to
-233 (`# a ^b`). Headings carrying a block id reach 2,621,450 B in the full sweep and
+160 (`# a ^b`). Headings carrying a block id reach 2,621,450 B in the full sweep and
 are not among the default sweep's 1 MiB loads: their model build time grows
 with the square of the page.
 
