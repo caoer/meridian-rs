@@ -659,18 +659,13 @@ fn try_daemon_links(
 /// daemon accepts the connection and none came up: the caller's in-process lane answers.
 ///
 /// **A successful connect IS the liveness proof**, so the warm path asks the question once
-/// instead of twice. It used to call [`ensure_daemon`] first, whose own liveness test
-/// (`Client::ping`) opens a SEPARATE connection — two dials where one answers, and the daemon's
-/// accept loop polls a non-blocking listener on a fixed quantum, so each dial waits out its own
-/// sleep. That doubled the fixed cost of every warm read: measured 40.2ms → 20.1ms, a 2.00x
-/// improvement, on the session receipt `09-11-mentor-8h-perfection-loop`
-/// `results/perf-finding-accept-poll-countdown-2026-08-09.md` (a session tree, not this repo).
+/// instead of twice. Calling [`ensure_daemon`] first would add its own liveness test
+/// (`Client::ping`) on a SEPARATE connection: a second connect, a second connection thread in
+/// the daemon and a second round trip on every warm read, where one dial answers both questions.
 ///
-/// The pre-flight is NOT redundant, which is why it is reordered rather than deleted: its answer
-/// decides whether to AUTO-SPAWN, and dropping it outright would leave the first read after boot
-/// silently degrading in-process forever instead of starting the daemon. The cold path is
-/// unchanged — an absent or refusing socket still reaches `ensure_daemon`, which spawns and waits
-/// for readiness.
+/// The pre-flight runs after the connect, and only when it fails: an absent or refusing socket
+/// reaches `ensure_daemon`, which spawns the daemon and waits for readiness. Without it the first
+/// read after boot would degrade in-process instead of starting the daemon.
 ///
 /// The stream comes back under the wedge discipline ([`registry::wedge`]): a connect proves
 /// only that something is LISTENING, and an unbounded read on a daemon that accepts and never
