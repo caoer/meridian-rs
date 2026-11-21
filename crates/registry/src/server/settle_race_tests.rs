@@ -223,6 +223,8 @@ fn park_on_sighting(
 fn a_guarded_splice_refuses_an_edit_that_finished_before_its_door() {
     const OUTSIDE: &str = "# Goals\n\nship by August\n\n# Outside\n\nan outside edit\n";
     let (_dir, root, registry) = setup();
+    // The barrier is what this steps: the door asks one on an ordered stream.
+    registry.stream_ordered.store(true, Ordering::Relaxed);
     let ring = registry.ring(&root.0);
     let (start, seq) = ring.prime(&root, &registry).unwrap();
     let cache = registry.domain_cache(&root.0);

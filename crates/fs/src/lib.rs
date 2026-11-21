@@ -1744,6 +1744,28 @@ impl DomainCache {
         Some(BackstopSnapshot { domain, rows })
     }
 
+    /// Whether this memo's record of `rel` is the file `on_disk` names
+    /// (merkle-spec §6.7, the named document): absent on both sides, or the
+    /// same [`StatKey`] on a record the §6.2 close trusts without a byte
+    /// read. `false` is a reason to re-read that one member, never a verdict
+    /// on its content. O(1): no walk, no stat, no watermark write.
+    #[must_use]
+    pub fn records_member(&self, rel: &Path, on_disk: Option<&StatKey>) -> bool {
+        match (self.leaves.get(rel), on_disk) {
+            (None, None) => true,
+            (Some(seen), Some(key)) => {
+                seen.key == *key
+                    && match (&self.calibration, seen.seen) {
+                        (Some(stable::Calibration::Measured { granule_ns }), Some(at)) => {
+                            !stable::racy(key, at, *granule_ns)
+                        }
+                        _ => false,
+                    }
+            }
+            _ => false,
+        }
+    }
+
     /// Own-write overlay, insert/update half (merkle-spec §6.1): the commit
     /// KNOWS the bytes it wrote — replace that leaf and re-fold the ancestor
     /// chain in the resident tree, synchronously. `root_after` then comes
@@ -7964,6 +7986,65 @@ mod stable_trust_tests {
         let served = cache.root(&root).expect("observe");
         let (_, disk) = super::domain_snapshot(&root).expect("snapshot");
         assert_eq!(served, disk, "a spoiled record must fail toward reading");
+    }
+
+    /// merkle-spec §6.7, the named document: a record stands only for the
+    /// same file on a record clear of its racy window, or for absence on
+    /// both sides.
+    #[test]
+    fn a_member_record_stands_only_for_the_trusted_same_file() {
+        const BYTES: &[u8] = b"# X\n";
+        let (_tmp, root) = workspace(&[("x.md", BYTES)]);
+        let mut cache = DomainCache::new();
+        cache.root(&root).expect("calibrate + baseline");
+        let x = Path::new("x.md");
+        let on_disk = StatKey::of_path(&root.0.join(x))
+            .expect("stat")
+            .expect("present");
+        let (_, _, _, mtime, _) = on_disk.raw_parts();
+        let digest = model::leaf_digest(BYTES);
+
+        implant(&mut cache, &root, "x.md", digest, Some(mtime));
+        assert!(
+            !cache.records_member(x, Some(&on_disk)),
+            "a record inside its racy window stood"
+        );
+        implant(&mut cache, &root, "x.md", digest, None);
+        assert!(
+            !cache.records_member(x, Some(&on_disk)),
+            "a spoiled record stood"
+        );
+        implant(
+            &mut cache,
+            &root,
+            "x.md",
+            digest,
+            Some((mtime.0 + 1_000_000, mtime.1)),
+        );
+        assert!(
+            cache.records_member(x, Some(&on_disk)),
+            "a trusted record of the same file did not stand"
+        );
+
+        std::fs::write(root.0.join(x), b"# X, rewritten\n").expect("rewrite");
+        let moved = StatKey::of_path(&root.0.join(x))
+            .expect("stat")
+            .expect("present");
+        assert!(
+            !cache.records_member(x, Some(&moved)),
+            "the record stood for another file"
+        );
+        assert!(
+            !cache.records_member(x, None),
+            "the record stood for a file that is gone"
+        );
+
+        let none = Path::new("none.md");
+        assert!(cache.records_member(none, None), "absent on both sides");
+        assert!(
+            !cache.records_member(none, Some(&on_disk)),
+            "a file the memo does not record stood"
+        );
     }
 
     /// Gate 2 (card stable-read-protocol): fixture-induced event loss lands

@@ -350,6 +350,10 @@ pub struct Registry {
     /// back. Same shape as `pause_in_feed_start`.
     #[cfg(test)]
     pub(crate) pause_in_restore: WorkspaceGate,
+    /// Test-only: what [`Self::stream_ordered`] answers. It starts at the
+    /// platform's [`feed::STREAM_ORDERED`].
+    #[cfg(test)]
+    pub(crate) stream_ordered: AtomicBool,
 }
 
 /// A one-shot test gate that parks one named workspace only.
@@ -703,7 +707,9 @@ pub(crate) const DOOR_LOCK_CONTENDED: &str = "door.refused.lock_contended";
 /// construction — into the same value as a feed that answered and refused.
 /// Those are opposite facts about a daemon (one is a lifecycle event, the
 /// other is load), so they are named apart here, and the cookie's own two
-/// refusals are named apart from each other as well.
+/// refusals are named apart from each other as well. A seventh cause stands
+/// outside the conjunction: the write door on a stream that does not prove
+/// order asks no vouch at all.
 ///
 /// Produced by [`vouch`] at the branch that decides, so the name a floor line
 /// carries is causally derived from the term that actually failed. There is no
@@ -726,6 +732,11 @@ pub(crate) enum FloorTrigger {
     Untrusted,
     /// The resident overlay could not fold a root.
     NoOverlay,
+    /// The feed is live but its stream does not prove order
+    /// ([`feed::STREAM_ORDERED`]), so no barrier was asked: a guard-grade
+    /// observation there is the floor's by construction. A PLATFORM fact,
+    /// constant for the life of the daemon — never load, never a fault.
+    StreamUnordered,
 }
 
 impl FloorTrigger {
@@ -757,6 +768,10 @@ impl FloorTrigger {
                 "currency.floor.no_overlay",
                 "currency.floor.no_overlay.refused",
             ),
+            Self::StreamUnordered => (
+                "currency.floor.stream_unordered",
+                "currency.floor.stream_unordered.refused",
+            ),
         }
     }
 
@@ -777,6 +792,10 @@ impl FloorTrigger {
             Self::Collapse => ("door.floor.collapse", "door.floor.collapse.refused"),
             Self::Untrusted => ("door.floor.untrusted", "door.floor.untrusted.refused"),
             Self::NoOverlay => ("door.floor.no_overlay", "door.floor.no_overlay.refused"),
+            Self::StreamUnordered => (
+                "door.floor.stream_unordered",
+                "door.floor.stream_unordered.refused",
+            ),
         }
     }
 
@@ -790,13 +809,14 @@ impl FloorTrigger {
     /// without listing it here reddens that law — it does not quietly shrink
     /// the population every other law in that module iterates.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::NoFeed,
         Self::CookieUnproven,
         Self::CookieRefused,
         Self::Collapse,
         Self::Untrusted,
         Self::NoOverlay,
+        Self::StreamUnordered,
     ];
 }
 
@@ -843,7 +863,7 @@ mod floor_grammar {
     //! **The population itself is guarded** by
     //! [`all_lists_every_variant_the_enum_declares`], so "checked over the
     //! enumerated set" is a mechanism rather than a convention: the four laws
-    //! below cannot silently start enforcing over six of seven causes.
+    //! below cannot silently start enforcing over seven of eight causes.
 
     use super::{DOOR_LOCK_CONTENDED, FloorTrigger};
     use std::collections::BTreeSet;
@@ -914,7 +934,7 @@ mod floor_grammar {
     /// would silently merge two causes back into one number, which is the
     /// defect the trigger split exists to fix.
     #[test]
-    fn all_twenty_four_names_are_distinct_and_carry_no_space() {
+    fn all_twenty_eight_names_are_distinct_and_carry_no_space() {
         let names: Vec<&'static str> = FloorTrigger::ALL
             .iter()
             .flat_map(|t| {
@@ -923,14 +943,14 @@ mod floor_grammar {
                 [cc, cr, dc, dr]
             })
             .collect();
-        // Two planes x two outcomes per trigger. The `24` is a hard literal on
+        // Two planes x two outcomes per trigger. The `28` is a hard literal on
         // purpose: computing it from `ALL` would make this assertion follow the
         // population it is supposed to watch, and a shrunken `ALL` would read
         // green. A legitimately grown population REDDENS here — re-derive the
         // number by hand rather than deriving it from `ALL`.
         assert_eq!(
             names.len(),
-            24,
+            28,
             "the emitted population is no longer the one this law was pinned to: {names:?}"
         );
         let unique: BTreeSet<&str> = names.iter().copied().collect();
@@ -973,14 +993,14 @@ mod floor_grammar {
 
     /// This file's own source. Every law above iterates [`FloorTrigger::ALL`],
     /// and `ALL` is a hand-written array — a literal wearing a derived costume.
-    /// A seventh variant added to `FloorTrigger` and never listed there is
+    /// An eighth variant added to `FloorTrigger` and never listed there is
     /// invisible to all four: `currency()` and `door()` are exhaustive `match`
     /// arms, so the compiler DOES force the new names to exist, and
-    /// `all_twenty_four_names_are_distinct_and_carry_no_space` stays green at
-    /// 24 — its population is built FROM `ALL`, which is still six, and the
-    /// `24` it checks against is a hard literal standing for that same six.
-    /// Both sides are pinned at six independently, so neither one notices the
-    /// seventh variant. The coverage shrinks and nothing says so.
+    /// `all_twenty_eight_names_are_distinct_and_carry_no_space` stays green at
+    /// 28 — its population is built FROM `ALL`, which is still seven, and the
+    /// `28` it checks against is a hard literal standing for that same seven.
+    /// Both sides are pinned at seven independently, so neither one notices the
+    /// eighth variant. The coverage shrinks and nothing says so.
     ///
     /// **The exhaustiveness cannot be a compile-time fact here, and the reason
     /// is worth stating**: a variant-exhaustive `match` forces an ARM, never an
@@ -1037,7 +1057,7 @@ mod floor_grammar {
 
     /// **`ALL` is every variant the enum declares, in declaration order.** This
     /// is the law that makes the module doc's claim true by mechanism: a
-    /// seventh cause cannot leave the four laws above enforcing over six.
+    /// eighth cause cannot leave the four laws above enforcing over seven.
     #[test]
     fn all_lists_every_variant_the_enum_declares() {
         let declared = declared_variants();
@@ -1070,8 +1090,8 @@ mod floor_grammar {
             listed, declared,
             "`FloorTrigger::ALL` and the `enum FloorTrigger` declaration disagree. Every law in \
              this module iterates `ALL`, so a variant missing from it is a cause whose emitted \
-             names nothing checks — and `all_twenty_four_names_are_distinct_and_carry_no_space` \
-             would stay green at 24 while the real population emitted 28"
+             names nothing checks — and `all_twenty_eight_names_are_distinct_and_carry_no_space` \
+             would stay green at 28 while the real population emitted 32"
         );
     }
 
@@ -1296,6 +1316,8 @@ impl Registry {
             pause_in_feed_start: Mutex::new(None),
             #[cfg(test)]
             pause_in_restore: Mutex::new(None),
+            #[cfg(test)]
+            stream_ordered: AtomicBool::new(feed::STREAM_ORDERED),
         }
     }
 
@@ -3022,6 +3044,44 @@ impl Registry {
             && memo.served_cached() == Some(at)
     }
 
+    /// The read plane's named-document check (merkle-spec §6.7): where the
+    /// stream does not prove order, a request that names a document stats
+    /// that path before its currency pass and, when the memo's record is not
+    /// that file, hands the path to the feed as a dirty hint. The pass's own
+    /// take-and-apply then re-reads the one member, so the answer never
+    /// predates a write to it that completed before the request began. A
+    /// hint only adds work and grants no trust.
+    ///
+    /// Nothing to do without a published memo and a live feed: the pass that
+    /// follows enters cold or takes the floor, and both read the disk.
+    pub(crate) fn sight_named(&self, workspace: &Path, rel: &Path) {
+        if self.stream_ordered() || !feed::member_candidate(rel) {
+            return;
+        }
+        let Some((cache, Some(feed))) = self.published_memo(workspace) else {
+            return;
+        };
+        let recorded = fs::StatKey::of_path(&workspace.join(rel))
+            .is_ok_and(|on_disk| fs::lock_memo(&cache).records_member(rel, on_disk.as_ref()));
+        if !recorded {
+            feed.note_dirty([rel]);
+        }
+    }
+
+    /// Whether a sighting on this registry's feeds proves ordered delivery
+    /// ([`feed::STREAM_ORDERED`]). A test sets the other answer, so the arm
+    /// one platform takes runs on every platform's test lane.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "the test build reads its own field")
+    )]
+    fn stream_ordered(&self) -> bool {
+        #[cfg(test)]
+        return self.stream_ordered.load(Ordering::Relaxed);
+        #[cfg(not(test))]
+        feed::STREAM_ORDERED
+    }
+
     /// The write door's §6.1 door-entry observation, made inside the door's
     /// flock on the DOOR'S OWN memo handle (card
     /// bug-trusted-overlay-unvouched): §6.4 cookie barrier first,
@@ -3088,8 +3148,14 @@ impl Registry {
         // Kept UNCOLLAPSED, as on the read plane: `None` is a cold start,
         // `Unproven` is a timeout under contention, and they are opposite
         // facts about the daemon.
+        //
+        // Where the stream does not prove order a sighting is a measured
+        // bound, and a door needs a proof: no barrier is asked, no sentinel
+        // is written, and the observation is the floor's.
+        let ordered = self.stream_ordered();
         let cookie = feed
             .as_ref()
+            .filter(|_| ordered)
             .map(|feed| feed.cookie_barrier(workspace, timeout));
         // The door's SECOND bounded wait (card
         // `engine-splice-timeout-hits-rotation-seals`). It gets its own full
@@ -3142,12 +3208,16 @@ impl Registry {
             applied,
             Some(feed::Applied::Reset | feed::Applied::Sweep(_) | feed::Applied::Rebaselined(_))
         );
-        let trigger = match vouch(cookie, collapse, &mut memo) {
-            Ok(root) => {
-                vouched_span.stop();
-                return Ok(root);
+        let trigger = if feed.is_some() && !ordered {
+            FloorTrigger::StreamUnordered
+        } else {
+            match vouch(cookie, collapse, &mut memo) {
+                Ok(root) => {
+                    vouched_span.stop();
+                    return Ok(root);
+                }
+                Err(trigger) => trigger,
             }
-            Err(trigger) => trigger,
         };
         // The FALLBACK, on the write plane. As on the read plane, a refused
         // pass is not a pass that ran — but it was entered, so it reports
@@ -7936,11 +8006,12 @@ mod engine_tests {
     }
 
     /// Quality gate: a warm splice after a feed-patched dirty set does not
-    /// stat-sweep untouched members.
+    /// stat-sweep untouched members. The door vouches on an ordered stream.
     #[test]
     fn a_warm_splice_after_a_feed_patch_does_not_stat_sweep() {
         let home = tempfile::tempdir().unwrap();
         let reg = registry_in(home.path());
+        reg.stream_ordered.store(true, Ordering::Relaxed);
         let plan = plan_page("August");
         let other = plan_page("still");
         let ws = write_ws(
@@ -8233,5 +8304,75 @@ mod engine_tests {
             observed.0, stale.0,
             "the stale Trusted overlay was not served"
         );
+    }
+
+    /// Let the stream deliver an edit to `rel`, then drop the pending set:
+    /// the memo never hears of it, as when a sighting ran ahead of the edit.
+    fn lose_an_edit(reg: &Registry, canonical: &Path, rel: &str) {
+        let feed = reg.live_feed(canonical).expect("a live feed");
+        rewrite(canonical, rel, "# Notes\n\nthe stream lost this\n");
+        assert_eq!(
+            feed.cookie_barrier(canonical, Duration::from_secs(10)),
+            feed::CookieOutcome::Seen
+        );
+        let _lost = feed.take();
+    }
+
+    /// merkle-spec §6.4, the stream that can vouch: where the stream does not
+    /// prove order the door asks no barrier — no sentinel is written — and
+    /// its observation is the floor's, so an edit the stream lost is in it.
+    #[test]
+    fn a_door_on_an_unordered_stream_floors_and_writes_no_sentinel() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("notes/plan.md", &plan_page("August"))]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let cache = reg.domain_cache(&canonical);
+        lose_an_edit(&reg, &canonical, "notes/plan.md");
+        let feed = reg.live_feed(&canonical).expect("a live feed");
+        let written = feed.cookie_written();
+
+        reg.stream_ordered.store(false, Ordering::Relaxed);
+        let observed = reg
+            .door_observation(&canonical, &cache, Duration::from_secs(10))
+            .unwrap();
+        let truth = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(observed.0, truth.0, "the door serves the disk truth");
+        assert_eq!(feed.cookie_written(), written, "the door asked a barrier");
+    }
+
+    /// merkle-spec §6.7, the named document: where the stream does not prove
+    /// order, a read's own document is checked against disk, and an edit the
+    /// stream lost reaches the served root through the vouch. On an ordered
+    /// stream the check does not run.
+    #[test]
+    fn a_read_on_an_unordered_stream_sights_the_document_it_names() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("notes/plan.md", &plan_page("August"))]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let refresh = || {
+            reg.currency_refresh(&canonical, Duration::from_secs(10))
+                .unwrap()
+        };
+        let (before, _) = refresh();
+        lose_an_edit(&reg, &canonical, "notes/plan.md");
+
+        reg.stream_ordered.store(true, Ordering::Relaxed);
+        reg.sight_named(&canonical, Path::new("notes/plan.md"));
+        assert_eq!(refresh().0, before, "an ordered stream needs no check");
+
+        reg.stream_ordered.store(false, Ordering::Relaxed);
+        reg.sight_named(&canonical, Path::new("notes/plan.md"));
+        let (after, vouched) = refresh();
+        assert!(vouched, "the hint applies through the vouch, not a floor");
+        let truth = ::fs::DomainCache::new()
+            .root(&::fs::WorkspaceRoot(canonical.clone()))
+            .unwrap();
+        assert_eq!(after, truth, "the named document is served as on disk");
     }
 }

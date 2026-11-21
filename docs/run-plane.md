@@ -1949,7 +1949,7 @@ is never emitted; it is the family prefix, and no holder's name is a prefix of
 another's. Holders not named above (`ArmSession`, the downgrade fence,
 takeover) are not timed.
 
-**`<cause>` is one of six** (`registry::FloorTrigger`):
+**`<cause>` is one of seven** (`registry::FloorTrigger`):
 
 - `no_feed` — no live feed: cold start, vouching impossible.
 - `cookie_unproven` — the §6.4 barrier timed out or hit I/O; the only
@@ -1958,6 +1958,10 @@ takeover) are not timed.
 - `collapse` — the applied set collapsed doubt.
 - `untrusted` — the §6.2 close does not hold the memo trusted.
 - `no_overlay` — the resident overlay folded no root.
+- `stream_unordered` — the feed is live on a stream that does not prove order
+  (FSEvents; `node-rev-merkle-spec.md` §6.4), so the door asked no barrier.
+  Write plane only, and there it is every observation: a platform constant,
+  never load.
 
 **A phase reports only where it completed.** One that never ran emits no line:
 nothing from `snapshot` down under `--list`, no `snapshot` for `--dry` on bash.

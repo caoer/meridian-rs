@@ -114,6 +114,15 @@ const RESCAN_RECORD_CAP: usize = 64;
 #[allow(clippy::duration_suboptimal_units)]
 const COOKIE_HOLDOFF: Duration = Duration::from_secs(60);
 
+/// Whether this platform's event stream hands events over in the order the
+/// kernel raised them (merkle-spec §6.4, the stream that can vouch). inotify
+/// does. `FSEvents` does not: `fseventsd` can deliver a sentinel's entry
+/// ahead of the entries for writes that completed before the sentinel
+/// existed, so a sighting there is a measured bound and not a proof. A
+/// guard-grade observation then takes the floor without asking the barrier,
+/// and a read checks the document it names against disk.
+pub(crate) const STREAM_ORDERED: bool = cfg!(not(target_os = "macos"));
+
 /// Why a rescan was marked — every rescan carries its cause into the log and
 /// the record; an anonymous rescan is unconstructible (merkle-spec §6.4,
 /// pre-merge ruling 3's suspicious-only trigger set).
@@ -912,7 +921,7 @@ impl FeedState {
 /// Deliberately config-free: the custom ignore list can change while the
 /// engine is cold, so filtering by it here could drop the one event that
 /// mattered; a custom-ignored member's spoil is merely a no-op re-read.
-fn member_candidate(rel: &Path) -> bool {
+pub(crate) fn member_candidate(rel: &Path) -> bool {
     let mut any_segment = false;
     for component in rel.components() {
         let Component::Normal(seg) = component else {
