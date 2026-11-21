@@ -1683,6 +1683,28 @@ second.
 > docs and leaf maps — pointer and key copies, no comparison, no parse. A
 > prior with no index (the §6.9 restore) builds it from the final docs.
 
+**Readers that miss at one fold share one pass.** Each reader takes its own
+currency fold. Of the readers of one workspace that took the same fold and
+found the resident generation at another, the first to arrive takes the
+rebuild (`Registry::warm_generation`) and the others wait for it, holding no
+lock. Each of them — the first once it holds the rebuild, a waiter once the
+pass it waited for has ended — serves the resident generation when its stamp
+is the fold that reader took: the generation a warm hit at that fold serves,
+with zero parses counted to the reader. Otherwise the first runs the pass.
+The waiters are released when the generation is published, before the
+host's census runs. A waiter waits for the one pass that was running when it
+arrived, never for a later pass at the same fold.
+
+A waiter that finds no generation at its fold (the pass failed, or another
+rebuild moved the resident generation first) takes a new currency fold. At a
+fold it has not waited at, it joins that fold's readers as above. At a fold
+it has waited at, it runs its own pass without waiting: a reader waits at
+one fold once per call, so the waiters of a failing pass then fail
+concurrently, each on its own error.
+Readers at different folds run their passes concurrently; publication is
+decided by comparing the resident stamp with the one each pass started from,
+so an older build never replaces a newer generation.
+
 The prior must describe every UTF-8-named leaf with either a document slot
 (hot or cold) or an unserved condition. A cold slot is not a hole and does
 not become a mover on each prewarm. Builders publish a leaf together with
