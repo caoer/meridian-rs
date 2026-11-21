@@ -385,10 +385,8 @@ fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
 }
 
 fn collect_link_blocks(node: &model::Node, out: &mut Vec<String>) {
-    if let model::NodeKind::Wikilink { block: Some(b), .. }
-    | model::NodeKind::Embed { block: Some(b), .. } = &node.kind
-    {
-        out.push(b.clone());
+    if let Some(b) = node.kind.link_qualifiers().1 {
+        out.push(b.to_owned());
     }
     for child in &node.children {
         collect_link_blocks(child, out);

@@ -382,34 +382,38 @@ fn an_ambient_dangling_link_stays_first_class_and_does_not_refuse() {
     );
 }
 
-// ── GATE 3 — one address, one answer, whichever path served it ───────────────
+// ── GATE 3 — one address, one answer, served warm by the daemon (C-1 retired) ──
 
-/// `mrd links` is normally served by the resident daemon, whose warm state is
-/// ONE ambient corpus: it holds no mounted corpora and cannot answer a
-/// cross-root address, so the CLI degrades to in-process whenever the page may
-/// carry one.
+/// `mrd links` is served warm by the resident daemon, which resolves declared
+/// cross-root links through `Registry::mounted_corpus` (`docs/laws.md` § C-1)
+/// instead of degrading to an ephemeral cold corpus rebuild.
 #[test]
-fn a_page_carrying_a_rooted_spelling_is_never_served_by_the_daemon() {
+fn a_page_carrying_a_rooted_spelling_is_served_by_the_daemon() {
     let sb = sandbox();
     sb.page("claim.md", "# Claim\n\n[[sessions:notes.md]]\n");
 
     // Warm the daemon first, on a page with no rooted spelling, so this test
-    // measures the GATE and not the absence of a daemon.
+    // verifies the resident daemon serves the rooted link directly.
     sb.page("plain.md", "# Plain\n\n[[local.md]]\n");
     let (plain_out, plain) = sb.links("plain.md");
     assert_eq!(
         plain["source"],
         "daemon",
-        "the control: an ordinary page IS served warm, so a degrade below is \
-         the gate firing and not a missing daemon: {}",
+        "the control: an ordinary page IS served warm: {}",
         whole_answer(&plain_out)
     );
 
     let (out, v) = sb.links("claim.md");
     assert_eq!(
         v["source"],
-        "ephemeral",
-        "a rooted spelling must degrade to in-process: {}",
+        "daemon",
+        "a declared rooted spelling must be served warm by the daemon (C-1 retired): {}",
+        whole_answer(&out)
+    );
+    assert_eq!(
+        v["links"]["files"]["claim.md"]["resolved_rooted"]["sessions"]["notes.md"],
+        1,
+        "the daemon must resolve the rooted link into its mounted corpus: {}",
         whole_answer(&out)
     );
 }

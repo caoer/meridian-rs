@@ -802,16 +802,9 @@ fn resolve_page(
 /// Every `[[target#^block]]` link in the tree, as (target, block) borrowed off
 /// the parsed nodes — the addresses a decoration can key on.
 fn collect_links<'a>(node: &'a model::Node, out: &mut Vec<(&'a String, &'a String)>) {
-    if let model::NodeKind::Wikilink {
-        target,
-        block: Some(block),
-        ..
-    }
-    | model::NodeKind::Embed {
-        target,
-        block: Some(block),
-        ..
-    } = &node.kind
+    if let model::NodeKind::Wikilink { target, qualifiers }
+    | model::NodeKind::Embed { target, qualifiers } = &node.kind
+        && let Some(block) = qualifiers.as_deref().and_then(|q| q.block.as_ref())
     {
         out.push((target, block));
     }
@@ -1582,13 +1575,55 @@ fn one_file_map(edges: &query::FileLinks, path: &Path) -> BTreeMap<String, query
     map
 }
 
-/// [`links`] against a root-keyed corpus and a mount table — the cross-root
-/// form.
+/// [`links`] against a root-keyed catalog and a mount table over a leased
+/// generation (`docs/laws.md` § C-1): the daemon's cross-root link door.
 ///
-/// The daemon does not call this: its warm state is one workspace corpus keyed
-/// by one canonical path (`registry::warm_or_build`) and holds no mounted
-/// corpora. The CLI refuses to let it answer a page that may carry a cross-root
-/// position and degrades instead — see `mrd::engine::answer_links`.
+/// Declared-root heads resolve into their mounted root's resident catalog
+/// without rebuilding from disk; table-external heads keep ambient `unresolved`
+/// verbatim.
+///
+/// # Errors
+/// As [`links`].
+#[allow(clippy::too_many_arguments)]
+pub fn links_in_rooted(
+    root: &fs::WorkspaceRoot,
+    index: &model::CorpusIndex,
+    catalog: &dyn model::catalog::DocumentCatalog,
+    unserved: &BTreeMap<String, String>,
+    corpus: &dyn model::catalog::NameCorpus,
+    mounts: &addr::MountSet,
+    path: Option<&Path>,
+    as_of_root: Root,
+    changes_seq: u64,
+    live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let member = |rel: &str| catalog.revision(rel).is_some();
+    let nonmember = links_nonmember(root, &member, unserved, path)?;
+    let map = match (&nonmember, path) {
+        (Some(doc), Some(p)) => one_file_map(
+            &query::file_links_declared(index, &p.0, doc, corpus, mounts),
+            p,
+        ),
+        _ => query::links_in_declared(index, catalog, corpus, mounts, path.map(|p| p.0.as_str()))
+            .map_err(member_fault)?,
+    };
+    let live = live_root()?;
+    let domain = fs::domain::Domain::load(root).unwrap_or_default();
+    let probe = fs::domain::LinkTargetProbe::new(root, &domain);
+    Ok(ResponseBody::Links {
+        as_of_root,
+        live_root: live,
+        changes_seq,
+        files: map
+            .into_iter()
+            .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))
+            .collect(),
+        excluded: excluded_members(root, &member, unserved, path),
+    })
+}
+
+/// [`links`] against a root-keyed corpus and a mount table — the eager
+/// in-process cross-root form.
 ///
 /// # Errors
 /// As [`links`].

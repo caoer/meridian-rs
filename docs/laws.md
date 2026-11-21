@@ -149,7 +149,7 @@ decision, not a defect. Neither is a TODO: each row is ruled to wait.
 | # | Row | Kind | Status |
 |---|---|---|---|
 | R1.6-a | The stored→agent re-join/re-parse in `wire-serve::positions` | residue | deferred — see below |
-| C-1 | The link plane resolves cross-vault refs in-process, not in the daemon | residue | a degrade — **successor named below** |
+| C-1 | The link plane resolves cross-vault refs in-process, not in the daemon | residue | **retired** — `Op::Links` serves mounted corpora via `Registry::mounted_corpus` (`crates/registry/tests/links_mount_reuse.rs`) |
 | H-1 | The `#` refusal on a heading whose raw text carries `#` | candidate | **a pointer** — see below |
 | S-1 | The stored-plane narrowing refusal | candidate | **owed** — see below |
 | D-1 | The joined `--section` coat splits on `/`, so a heading whose raw text carries `/` is not addressable by that one spelling | residue | **widening the coat is C2, and C2 stays reserved** — see below |
@@ -242,39 +242,32 @@ forms in machine surfaces."*
 - **Successor act:** give `Addr` a fallible parts constructor running the same
   checks `parse` runs, then delete the join.
 
-### C-1 — the link plane's in-process degrade, and its named successor
+### C-1 — the link plane's in-process degrade (retired)
 
 The daemon warms one workspace's corpus per canonical path, invalidated by
 its fingerprint (`crates/registry/src/registry.rs`, `warm_or_build`). The pin
-and link planes it serves over the wire — § A.10 `walk`, § A.11 `sql` — take a
-mounted root's corpus from that same map (`Registry::mounted_corpus`: the
-root is warmed as a workspace, once, and refreshed O(dirty)), so mounted-root
-corpora are resident under the same budget and reap as any served workspace.
-The `Op::Links` arm alone serves ambient state only
-(`crates/registry/src/server.rs`), and the link plane resolves a cross-vault
-link by **degrading that one op to in-process**, loading mounted corpora as
-the CLI pin planes do (`crates/mrd/src/walk_cmd.rs`, `load_mounts_for`).
+and link planes it serves over the wire — § A.10 `walk`, § A.11 `sql`, and
+now `Op::Links` (`crates/registry/src/links_op.rs`) — take a mounted root's
+corpus from that same map (`Registry::mounted_corpus`: the root is warmed as
+a workspace, once, and refreshed O(dirty)), so mounted-root corpora are
+resident under the same budget and reap as any served workspace.
 
-- **A documented contract.** For this op the daemon is knowingly less capable
-  than in-process; a page with a cross-vault link pays a cold corpus build,
-  as with the exit-code asymmetry in `address-grammar.md`.
-- **Narrow.** The degrade fires only when an unresolved head names a root the
-  mount table declares (`addr::head_names_declared_root` — bound or
-  declared-but-unreachable), never on any `:`-bearing head. An external URI
-  parses as a root (`https://…` → head `https`), and a wide lexical gate would
-  buy the whole corpus a cold rebuild to say that `https` is not a mounted
-  root: measured, 137 s on an 11.5k-file vault over 6 such `[[https://…]]`
-  links.
+- **Retired degrade.** `Op::Links` resolves links whose head names a declared
+  mount (`addr::head_names_declared_root` — bound or declared-but-unreachable)
+  directly in the daemon through `Registry::mounted_corpus`, so a cross-vault
+  link pays no cold in-process corpus rebuild and a second call over the same
+  mounted root pays zero full folds (`crates/registry/tests/links_mount_reuse.rs`).
+- **Narrow.** Rooted resolution fires only when a head names a root the mount
+  table declares (`addr::head_names_declared_root`), never on any `:`-bearing
+  head. An external URI parses as a root (`https://…` → head `https`), and a
+  wide lexical gate would buy the whole corpus a cold rebuild or false refusal
+  over `[[https://…]]` links.
 - **Table-external heads** — external scheme, undeclared root, or a name
   outside `[a-z0-9-]` — keep the daemon's ambient `unresolved`, verbatim,
   exit 0; the address plane still refuses those spellings on every door that
   consults it (`walk`, pins, a named read). A mount table that will not resolve
-  or bind keeps the old posture and degrades.
-
-> **Named successor:** the `Op::Links` arm takes its mounted corpora through
-> `Registry::mounted_corpus` exactly as `walk` and `sql` do, and this degrade
-> goes. Gate: `crates/registry/tests/walk_mount_reuse.rs` is the shape — a
-> second call over the same mounted root pays no full fold.
+  or bind keeps the ambient posture (and the CLI retains its fallback degrade
+  for a daemon whose config could not resolve or bind).
 
 ### H-1 — the `#` refusal
 

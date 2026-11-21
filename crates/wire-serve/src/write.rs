@@ -585,9 +585,14 @@ pub fn splice(
     // gate), so a middleware cannot smuggle bytes past an armed check;
     // cross-file transforms and births become sealed-set members; sends
     // become response intents the host realizes.
+    // Resolve the armed law ONCE under this write flock and share it between
+    // the middleware door and the check gate below (avoids reading
+    // `meridian/armed-rules.md` and every pinned rule page twice per write).
+    let armed_law = crate::armed_disk::resolve_at(root, &args.path.0);
     let mut sealed = sealed;
     let mw = run_door_middleware(
         root,
+        &armed_law,
         &args.path,
         args.actor.as_deref(),
         args.force,
@@ -676,8 +681,8 @@ pub fn splice(
     // before the dry short-circuit; never-armed is a no-op. `args.force`
     // escapes a binding-break / block refusal (rendered as a `forced:`-marked
     // verdict); the index-integrity floor never escapes.
-    let gate_pass = crate::gate::gate_write(
-        root,
+    let gate_pass = crate::gate::gate_write_with_law(
+        &armed_law,
         &doc,
         after_doc.document(),
         &batch.edits,
@@ -1201,6 +1206,7 @@ fn mw_upsert(key: String, value: String) -> Edit {
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_door_middleware(
     root: &fs::WorkspaceRoot,
+    armed_law: &policy::ArmedLaw,
     path: &Path,
     actor: Option<&str>,
     force: bool,
@@ -1214,7 +1220,7 @@ fn run_door_middleware(
     after_doc: &mut model::CandidateDocument,
     before_facts: &mut Vec<model::Target>,
 ) -> Result<MwEmitted, Box<ErrorBody>> {
-    let rows = middleware_rows(root, &path.0);
+    let rows = middleware_rows_of(armed_law, &path.0);
     let mut out = MwEmitted::default();
     if rows.is_empty() {
         return Ok(out);
@@ -1422,12 +1428,13 @@ fn run_door_middleware(
 /// As [`run_door_middleware`], plus the V1 cross-file refusal.
 fn run_birth_middleware(
     root: &fs::WorkspaceRoot,
+    armed_law: &policy::ArmedLaw,
     path: &Path,
     actor: Option<&str>,
     fields: &BTreeMap<String, String>,
     mut candidate: model::CandidateDocument,
 ) -> Result<(model::CandidateDocument, Vec<MwIntent>, SelfKeys), Box<ErrorBody>> {
-    let rows = middleware_rows(root, &path.0);
+    let rows = middleware_rows_of(armed_law, &path.0);
     let mut intents = Vec::new();
     let mut self_keys = SelfKeys::new();
     if rows.is_empty() {
@@ -2489,8 +2496,10 @@ pub fn create_with_cache(
     // transforms land IN the born bytes — one receipt, no unstamped birth —
     // and `send` intents ride the reply. Every guard below judges the FINAL
     // candidate, so a middleware cannot smuggle bytes past them.
+    let armed_law = crate::armed_disk::resolve_at(root, &args.path.0);
     let (after_doc, mw_intents, mw_self_keys) = run_birth_middleware(
         root,
+        &armed_law,
         &args.path,
         args.actor.as_deref(),
         &args.fields,
@@ -2533,8 +2542,8 @@ pub fn create_with_cache(
     // workspace. Guarded create carries no `--force`: there is no forced-birth
     // path, and the wire `create` op declares no `force` field.
     verdicts.extend(
-        crate::gate::gate_write(
-            root,
+        crate::gate::gate_write_with_law(
+            &armed_law,
             &crate::gate::absent_doc(&args.path),
             after_doc.document(),
             &[],

@@ -154,8 +154,9 @@ pub(crate) fn check_dialect() -> Dialect {
 
 /// The CHECK ceiling globals: the Starlark standard library plus ONLY `refuse`.
 /// This is the ENTIRE capability surface a CHECK sees — no write, no outward reach.
-pub(crate) fn check_globals() -> Globals {
-    GlobalsBuilder::standard().with(check_api).build()
+pub(crate) fn check_globals() -> &'static Globals {
+    static GLOBALS: std::sync::OnceLock<Globals> = std::sync::OnceLock::new();
+    GLOBALS.get_or_init(|| GlobalsBuilder::standard().with(check_api).build())
 }
 
 /// Parse-check a CHECK source without running it — the load gate. Applies the
@@ -272,7 +273,7 @@ fn eval_check(
             let mut depth_overflow = false;
             let mut fault: Option<String> = None;
             let mut missing = false;
-            match eval.eval_module(ast, &globals) {
+            match eval.eval_module(ast, globals) {
                 Ok(_) => match module.get("check_change") {
                     Some(hook) => {
                         if let Err(e) = eval.eval_function(hook, &[change_value], &[]) {

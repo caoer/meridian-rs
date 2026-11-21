@@ -18,7 +18,8 @@ const MAX_DEPTH: usize = 64;
 /// Encode one immutable document. Too large or deeply nested means abstain.
 #[must_use]
 pub fn encode(doc: &Document) -> Option<Vec<u8>> {
-    let mut w = Encoder(Vec::new());
+    let cap = doc.raw.len().saturating_mul(2).clamp(256, 256 * 1024);
+    let mut w = Encoder(Vec::with_capacity(cap));
     w.string(&doc.raw)?;
     w.node(&doc.root, 0)?;
     Some(w.0)
@@ -138,42 +139,32 @@ impl Encoder {
                 self.string(lang)?;
                 self.byte(u8::from(*unterminated))?;
             }
-            NodeKind::Callout { r#type, fold } => {
+            NodeKind::Callout(info) => {
                 self.byte(9)?;
-                self.string(r#type)?;
-                self.string(fold)?;
+                self.string(&info.r#type)?;
+                self.string(&info.fold)?;
             }
             NodeKind::Table => self.byte(10)?,
-            NodeKind::Wikilink {
-                target,
-                heading,
-                block,
-                alias,
-            } => {
+            NodeKind::Wikilink { target, qualifiers } => {
                 self.byte(11)?;
                 self.link(
                     target,
-                    heading.as_deref(),
-                    block.as_deref(),
-                    alias.as_deref(),
+                    qualifiers.as_deref().and_then(|q| q.heading.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.block.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.alias.as_deref()),
                 )?;
             }
             NodeKind::Link { target } => {
                 self.byte(12)?;
                 self.string(target)?;
             }
-            NodeKind::Embed {
-                target,
-                heading,
-                block,
-                alias,
-            } => {
+            NodeKind::Embed { target, qualifiers } => {
                 self.byte(13)?;
                 self.link(
                     target,
-                    heading.as_deref(),
-                    block.as_deref(),
-                    alias.as_deref(),
+                    qualifiers.as_deref().and_then(|q| q.heading.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.block.as_deref()),
+                    qualifiers.as_deref().and_then(|q| q.alias.as_deref()),
                 )?;
             }
             NodeKind::Anchor { name } => {
@@ -258,7 +249,9 @@ impl Decoder<'_> {
             },
             1 => {
                 let count = self.count()?;
-                let mut pairs = Vec::new();
+                // Cap pre-allocation by remaining bytes so a corrupt count
+                // cannot trigger an unbounded allocation before failing.
+                let mut pairs = Vec::with_capacity(count.min(self.0.len() / 16));
                 for _ in 0..count {
                     pairs.push((self.string()?, self.string()?));
                 }
@@ -285,25 +278,29 @@ impl Decoder<'_> {
                 lang: self.string()?,
                 unterminated: self.flag()?,
             },
-            9 => NodeKind::Callout {
+            9 => NodeKind::Callout(Box::new(model::CalloutInfo {
                 r#type: self.string()?,
                 fold: self.string()?,
-            },
+            })),
             10 => NodeKind::Table,
             11 => NodeKind::Wikilink {
                 target: self.string()?,
-                heading: self.optional()?,
-                block: self.optional()?,
-                alias: self.optional()?,
+                qualifiers: model::LinkQualifiers::from_parts(
+                    self.optional()?,
+                    self.optional()?,
+                    self.optional()?,
+                ),
             },
             12 => NodeKind::Link {
                 target: self.string()?,
             },
             13 => NodeKind::Embed {
                 target: self.string()?,
-                heading: self.optional()?,
-                block: self.optional()?,
-                alias: self.optional()?,
+                qualifiers: model::LinkQualifiers::from_parts(
+                    self.optional()?,
+                    self.optional()?,
+                    self.optional()?,
+                ),
             },
             14 => NodeKind::Anchor {
                 name: self.string()?,
@@ -333,7 +330,7 @@ impl Decoder<'_> {
             return None;
         }
         let count = self.count()?;
-        let mut children = Vec::new();
+        let mut children = Vec::with_capacity(count.min(self.0.len() / 24));
         for _ in 0..count {
             children.push(self.node(raw, depth + 1, &span)?);
         }

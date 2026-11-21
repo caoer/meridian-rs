@@ -1099,7 +1099,7 @@ type DirMemo = BTreeMap<PathBuf, DirSeen>;
 struct DirSeen {
     key: StatKey,
     seen: Option<stable::FsStamp>,
-    entries: Vec<DirEntryKind>,
+    entries: Arc<[DirEntryKind]>,
 }
 
 /// One remembered directory entry: its name and its `read_dir` file type — the
@@ -1167,9 +1167,12 @@ impl DomainCache {
                 entries,
             } = seen;
             bytes = entries.iter().fold(
-                bytes
-                    .saturating_add(path.capacity())
-                    .saturating_add(entries.capacity().saturating_mul(size_of::<DirEntryKind>())),
+                bytes.saturating_add(path.capacity()).saturating_add(
+                    entries
+                        .len()
+                        .saturating_mul(size_of::<DirEntryKind>())
+                        .saturating_add(2 * size_of::<usize>()),
+                ),
                 |bytes, entry| {
                     let DirEntryKind {
                         name,
@@ -1361,14 +1364,16 @@ impl DomainCache {
                 Err(key_matched) => movers.push(Mover { rel, key_matched }),
             }
         }
-        for (rel, entry) in self.read_moved(root, movers, law, trust, read_floor)? {
-            rows.insert(hash_name(&rel).to_vec(), entry.digest);
-            fresh.insert(rel, entry);
+        let moved = self.read_moved(root, movers, law, trust, read_floor)?;
+        for (rel, entry) in &moved {
+            rows.insert(hash_name(rel).to_vec(), entry.digest);
+            fresh.insert(rel.clone(), entry.clone());
         }
         // The resident tree follows the observed generation (merkle-spec
         // §6.1): removals first — a same-name kind swap across generations
-        // must never compose a transient §4.4 collision — then idempotent
-        // set for the survivors (an unmoved member re-hashes nothing). Every
+        // must never compose a transient §4.4 collision — then set ONLY for
+        // movers (trusted memo hits already stand in `self.tree` with the
+        // exact same digest, avoiding O(N) redundant tree lookups). Every
         // absorbed change stamps its chain in the same act (§6.3): one
         // clock read serves the pass — every stamped value is one past the
         // tip as of the pass, which stays strictly greater than any token
@@ -1386,12 +1391,20 @@ impl DomainCache {
                     advanced |= removed;
                 }
             }
-            for (rel, entry) in &fresh {
-                let set = tree.set_leaf(rel, entry.digest);
+            let bulk = leaves.is_empty() && moved.len() >= 64;
+            for (rel, entry) in &moved {
+                let set = if bulk {
+                    tree.set_leaf_deferred(rel, entry.digest)
+                } else {
+                    tree.set_leaf(rel, entry.digest)
+                };
                 if set && let Some(seq) = stamp_seq {
                     tree.stamp_chain(rel, seq);
                 }
                 advanced |= set;
+            }
+            if bulk {
+                tree.finalize_deferred();
             }
         }
         if advanced {
@@ -1546,6 +1559,7 @@ impl DomainCache {
     /// walk COMPLETES and hands them back for [`guard::StepGuard`] to judge
     /// (pre-existing recorded, in-window appearance refused), matching the
     /// strict walk's sorted-list discipline.
+    #[allow(clippy::too_many_lines)]
     fn walk_tree(
         prior: &DirMemo,
         root: &Path,
@@ -1559,6 +1573,9 @@ impl DomainCache {
             /// Scans in flight — with `todo`, the termination witness: the
             /// walk is done when the queue is empty AND no worker holds one.
             active: usize,
+            /// Workers currently parked on `idle` — avoids redundant syscalls
+            /// and thundering herds when no worker is sleeping.
+            waiters: usize,
             files: Vec<PathBuf>,
             offenders: Vec<String>,
             dirs: Vec<(PathBuf, DirSeen)>,
@@ -1590,6 +1607,7 @@ impl DomainCache {
         let shared = std::sync::Mutex::new(Shared {
             todo: subdirs.into(),
             active: 0,
+            waiters: 0,
             files: Vec::new(),
             offenders: Vec::new(),
             dirs: Vec::new(),
@@ -1602,8 +1620,16 @@ impl DomainCache {
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
+                    let mut local_files: Vec<PathBuf> = Vec::new();
+                    let mut local_offenders: Vec<String> = Vec::new();
+                    let mut local_dirs: Vec<(PathBuf, DirSeen)> = Vec::new();
+                    let mut local_listings = 0u64;
+                    let mut next_rel: Option<PathBuf> = None;
+
                     loop {
-                        let rel = {
+                        let rel = if let Some(rel) = next_rel.take() {
+                            rel
+                        } else {
                             let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
                             loop {
                                 if s.err.is_some() {
@@ -1614,31 +1640,59 @@ impl DomainCache {
                                     break rel;
                                 }
                                 if s.active == 0 {
-                                    return; // queue drained and nobody holds a scan
+                                    s.files.append(&mut local_files);
+                                    s.offenders.append(&mut local_offenders);
+                                    s.dirs.append(&mut local_dirs);
+                                    s.listings += local_listings;
+                                    return;
                                 }
+                                s.waiters += 1;
                                 s = idle.wait(s).unwrap_or_else(PoisonError::into_inner);
+                                s.waiters -= 1;
                             }
                         };
-                        let scanned = scan_dir(prior, root, &rel, trust).map(|scan| {
-                            let split = classify(&scan.entries, &rel, domain, law);
-                            (scan, split)
-                        });
-                        let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
-                        s.active -= 1;
-                        match scanned {
-                            Ok((scan, (mut new_files, new_subdirs, mut new_offenders))) => {
-                                s.listings += u64::from(scan.enumerated);
-                                s.files.append(&mut new_files);
-                                s.offenders.append(&mut new_offenders);
-                                s.todo.extend(new_subdirs);
+
+                        match scan_dir(prior, root, &rel, trust) {
+                            Ok(scan) => {
+                                let (mut new_files, mut new_subdirs, mut new_offenders) =
+                                    classify(&scan.entries, &rel, domain, law);
+                                local_listings += u64::from(scan.enumerated);
+                                local_files.append(&mut new_files);
+                                local_offenders.append(&mut new_offenders);
                                 if let Some(seen) = scan.into_seen() {
-                                    s.dirs.push((rel, seen));
+                                    local_dirs.push((rel, seen));
                                 }
-                                // Every push can wake every sleeper: workers
-                                // outnumber the queue's contents at the fringe.
-                                idle.notify_all();
+                                // Keep one child directory locally to avoid
+                                // round-tripping through the shared mutex on
+                                // deep directory chains; publish siblings to
+                                // the shared queue for other workers.
+                                next_rel = new_subdirs.pop();
+                                if next_rel.is_some() && new_subdirs.is_empty() {
+                                    continue;
+                                }
+                                let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                                let pushed = new_subdirs.len();
+                                s.todo.extend(new_subdirs);
+                                if next_rel.is_none() {
+                                    if let Some(stolen) = s.todo.pop_front() {
+                                        next_rel = Some(stolen);
+                                    } else {
+                                        s.active -= 1;
+                                    }
+                                }
+                                if s.active == 0 && s.todo.is_empty() {
+                                    idle.notify_all();
+                                } else if s.waiters > 0 && pushed > 0 {
+                                    if pushed == 1 {
+                                        idle.notify_one();
+                                    } else {
+                                        idle.notify_all();
+                                    }
+                                }
                             }
                             Err(e) => {
+                                let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                                s.active -= 1;
                                 s.err.get_or_insert(e);
                                 idle.notify_all();
                                 return;
@@ -2086,7 +2140,7 @@ struct DirScan {
     /// ([`stable::TrustCtx::record_seen`] — `None` under the untrusted
     /// floor, so a later pass re-enumerates).
     seen: Option<stable::FsStamp>,
-    entries: Vec<DirEntryKind>,
+    entries: Arc<[DirEntryKind]>,
     enumerated: bool,
 }
 
@@ -2145,7 +2199,7 @@ fn scan_dir(
                 name: entry.file_name(),
             });
         }
-        (entries, trust.record_seen(), true)
+        (Arc::from(entries), trust.record_seen(), true)
     };
     Ok(DirScan {
         key,
@@ -3240,35 +3294,58 @@ const PARALLEL_PARSE_FLOOR: usize = 64;
 /// in memory — there is no kernel open/read path to contend on. A worker
 /// panic resumes on the caller (the [`member_identities`] posture).
 fn parse_members(files: DomainFiles) -> Vec<(String, Result<model::Document, String>)> {
+    const BATCH: usize = 16;
     if files.len() < PARALLEL_PARSE_FLOOR {
         return files.into_iter().map(parse_member).collect();
     }
+    let total = files.len();
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
-    let chunk = files.len().div_ceil(workers);
-    let mut chunks: Vec<DomainFiles> = Vec::with_capacity(workers);
-    let mut rest = files;
-    while rest.len() > chunk {
-        let tail = rest.split_off(chunk);
-        chunks.push(rest);
-        rest = tail;
-    }
-    chunks.push(rest);
+    let queue = std::sync::Mutex::new(files.into_iter().enumerate());
+    let mut ordered: Vec<Option<(String, Result<model::Document, String>)>> =
+        (0..total).map(|_| None).collect();
     std::thread::scope(|scope| {
-        let handles: Vec<_> = chunks
-            .into_iter()
-            .map(|chunk| {
-                scope.spawn(move || chunk.into_iter().map(parse_member).collect::<Vec<_>>())
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    let mut batch = Vec::with_capacity(BATCH);
+                    loop {
+                        batch.clear();
+                        {
+                            let mut iter = queue.lock().unwrap_or_else(PoisonError::into_inner);
+                            for _ in 0..BATCH {
+                                match iter.next() {
+                                    Some(item) => batch.push(item),
+                                    None => break,
+                                }
+                            }
+                        }
+                        if batch.is_empty() {
+                            break;
+                        }
+                        for (idx, item) in batch.drain(..) {
+                            done.push((idx, parse_member(item)));
+                        }
+                    }
+                    done
+                })
             })
             .collect();
-        let mut rows = Vec::with_capacity(handles.len().saturating_mul(chunk));
         for handle in handles {
             match handle.join() {
-                Ok(chunk_rows) => rows.extend(chunk_rows),
+                Ok(chunk_rows) => {
+                    for (idx, row) in chunk_rows {
+                        ordered[idx] = Some(row);
+                    }
+                }
                 Err(panic) => std::panic::resume_unwind(panic),
             }
         }
-        rows
-    })
+    });
+    ordered
+        .into_iter()
+        .map(|slot| slot.expect("every input index parsed once"))
+        .collect()
 }
 
 /// One member's parse — the loop body [`build_corpus`] always had, factored
@@ -3403,10 +3480,16 @@ pub trait SlotMap: Clone {
     /// # Errors
     /// A map that cannot produce it without loading documents.
     fn index(&self) -> io::Result<model::CorpusIndex>;
+    /// Whether [`update_corpus_with`] may read and parse movers in parallel
+    /// before publishing. Streaming/bounded-residency slot maps keep this
+    /// `false` so peak memory stays bounded to one member at a time
+    /// (merkle-spec §6.8); eager document maps opt in.
+    const PARALLEL_PARSE: bool = false;
 }
 
 impl SlotMap for model::Docs {
     type Slot = Arc<model::Document>;
+    const PARALLEL_PARSE: bool = true;
     fn len(&self) -> usize {
         Self::len(self)
     }
@@ -3551,7 +3634,8 @@ pub fn update_corpus_with<S: SlotMap>(
     // The built set equals the planned one unless a mover's bytes moved
     // again (or vanished) between the leaf pass and this read.
     let mut diverged = false;
-    for (rel, want) in moves.iter().chain(&holes) {
+    let work: Vec<&LeafMove> = moves.iter().chain(&holes).collect();
+    let mut apply_outcome = |rel: &PathBuf, outcome: LoadedMover| -> io::Result<()> {
         let rel_str = rel.to_str();
         let was = rel_str
             .and_then(|rel| docs.remove(rel))
@@ -3560,48 +3644,23 @@ pub fn update_corpus_with<S: SlotMap>(
             unserved.remove(rel);
         }
         leaves.remove(rel);
-        let now = match want {
-            None => None,
-            Some(want) => match fs::read(root.0.join(rel)) {
-                Ok(bytes) => {
-                    let digest = model::leaf_digest(&bytes);
-                    diverged |= digest != *want;
-                    leaves.insert(rel.clone(), digest);
-                    Some(bytes)
-                }
-                // Vanished since the leaf pass: not part of what this pass
-                // builds, exactly as a fresh walk would report it.
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    diverged = true;
-                    None
-                }
-                Err(e) => {
-                    return Err(corpus_member_refusal(
-                        e.kind(),
-                        &display_name(hash_name(rel)),
-                        format!("cannot be read ({e})"),
-                    ));
-                }
-            },
-        };
+        diverged |= outcome.diverged;
+        if let Some(digest) = outcome.digest {
+            leaves.insert(rel.clone(), digest);
+        }
         // Non-UTF-8 NAME: integrity-covered, never servable — the leaf
         // alone is the whole member.
         let Some(rel_str) = rel_str else {
-            continue;
+            return Ok(());
         };
-        let doc = match now.map(String::from_utf8) {
-            None => None,
-            Some(Ok(text)) => {
+        let doc = match outcome.parsed {
+            MoverParsed::Absent => None,
+            MoverParsed::Doc(doc) => {
                 parsed += 1;
-                // Parse borrowing, then MOVE the text in (`parse_member`).
-                let nodes = syntax::parse(&text);
-                Some(model::build(text, nodes))
+                Some(doc)
             }
-            Some(Err(e)) => {
-                unserved.insert(
-                    rel_str.to_owned(),
-                    format!("is not UTF-8 ({})", e.utf8_error()),
-                );
+            MoverParsed::Unserved(condition) => {
+                unserved.insert(rel_str.to_owned(), condition);
                 None
             }
         };
@@ -3611,6 +3670,18 @@ pub fn update_corpus_with<S: SlotMap>(
         if let Some(doc) = doc {
             let slot = publish(rel_str, doc)?;
             docs.insert(rel_str.to_owned(), slot);
+        }
+        Ok(())
+    };
+    if S::PARALLEL_PARSE && work.len() >= PARALLEL_UPDATE_FLOOR {
+        let loaded = load_and_parse_movers(root, &work)?;
+        for ((rel, _want), outcome) in work.into_iter().zip(loaded) {
+            apply_outcome(rel, outcome)?;
+        }
+    } else {
+        for item in work {
+            let outcome = load_and_parse_one(root, item)?;
+            apply_outcome(&item.0, outcome)?;
         }
     }
     let index = if let Some(index) = index {
@@ -3641,6 +3712,120 @@ pub fn update_corpus_with<S: SlotMap>(
         parsed,
         indexed,
     })
+}
+
+/// Movers below this count read+parse serially in [`update_corpus_with`].
+const PARALLEL_UPDATE_FLOOR: usize = 16;
+
+enum MoverParsed {
+    Absent,
+    Doc(model::Document),
+    Unserved(String),
+}
+
+struct LoadedMover {
+    digest: Option<[u8; 32]>,
+    diverged: bool,
+    parsed: MoverParsed,
+}
+
+fn load_and_parse_one(root: &WorkspaceRoot, (rel, want): &LeafMove) -> io::Result<LoadedMover> {
+    let Some(want) = want else {
+        return Ok(LoadedMover {
+            digest: None,
+            diverged: false,
+            parsed: MoverParsed::Absent,
+        });
+    };
+    let bytes = match fs::read(root.0.join(rel)) {
+        Ok(bytes) => bytes,
+        // Vanished since the leaf pass: not part of what this pass
+        // builds, exactly as a fresh walk would report it.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(LoadedMover {
+                digest: None,
+                diverged: true,
+                parsed: MoverParsed::Absent,
+            });
+        }
+        Err(e) => {
+            return Err(corpus_member_refusal(
+                e.kind(),
+                &display_name(hash_name(rel)),
+                format!("cannot be read ({e})"),
+            ));
+        }
+    };
+    let digest = model::leaf_digest(&bytes);
+    let diverged = digest != *want;
+    if rel.to_str().is_none() {
+        return Ok(LoadedMover {
+            digest: Some(digest),
+            diverged,
+            parsed: MoverParsed::Absent,
+        });
+    }
+    let parsed = match String::from_utf8(bytes) {
+        Ok(text) => {
+            // Parse borrowing, then MOVE the text in (`parse_member`).
+            let nodes = syntax::parse(&text);
+            MoverParsed::Doc(model::build(text, nodes))
+        }
+        Err(e) => MoverParsed::Unserved(format!("is not UTF-8 ({})", e.utf8_error())),
+    };
+    Ok(LoadedMover {
+        digest: Some(digest),
+        diverged,
+        parsed,
+    })
+}
+
+fn load_and_parse_movers(root: &WorkspaceRoot, work: &[&LeafMove]) -> io::Result<Vec<LoadedMover>> {
+    if work.len() < PARALLEL_UPDATE_FLOOR {
+        return work
+            .iter()
+            .map(|item| load_and_parse_one(root, item))
+            .collect();
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(2, |n| n.get().clamp(2, 8))
+        .min(work.len());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<Option<io::Result<LoadedMover>>> = (0..work.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let start = next.fetch_add(4, Ordering::Relaxed);
+                        if start >= work.len() {
+                            break;
+                        }
+                        let end = (start + 4).min(work.len());
+                        for (idx, item) in work[start..end].iter().enumerate() {
+                            done.push((start + idx, load_and_parse_one(root, item)));
+                        }
+                    }
+                    done
+                })
+            })
+            .collect();
+        for handle in handles {
+            match handle.join() {
+                Ok(rows) => {
+                    for (idx, res) in rows {
+                        results[idx] = Some(res);
+                    }
+                }
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    });
+    results
+        .into_iter()
+        .map(|slot| slot.expect("every mover index processed once"))
+        .collect()
 }
 
 /// Move one member's rows in a prior build's name index from its prior
@@ -4531,7 +4716,8 @@ fn stage_set(
             "a set commit takes two or more content members; one file is apply_batch's path",
         ));
     }
-    for (i, m) in members.iter().enumerate() {
+    let mut seen_paths = std::collections::HashSet::with_capacity(members.len());
+    for m in members {
         if let SetPayload::Edit { batch, .. } = &m.payload
             && batch.receipt.is_some()
         {
@@ -4541,10 +4727,7 @@ fn stage_set(
                  set-level (one receipt entry names every file)",
             ));
         }
-        if members[..i]
-            .iter()
-            .any(|p| p.content_path == m.content_path)
-        {
+        if !seen_paths.insert(m.content_path) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -7397,6 +7580,8 @@ mod stable_trust_tests {
                 seen,
             },
         );
+        cache.tree.set_leaf(Path::new(rel), stale);
+        cache.served = None;
     }
 
     /// Codex gate 17, both directions. The hermetic row's key compare PASSES

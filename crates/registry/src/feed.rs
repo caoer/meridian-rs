@@ -189,6 +189,10 @@ pub(crate) struct WorkspaceFeed {
     /// other [`Arc`]. Held, never spoken to after construction.
     _watcher: notify::RecommendedWatcher,
     sync: Arc<FeedSync>,
+    /// Coordinates concurrent barriers on [`COOKIE_DIR`] via sound 2-wave
+    /// group-commit so `K` simultaneous readers write O(1) sentinels while
+    /// every waiter still receives a sentinel written strictly after it entered.
+    barriers: BarrierGate,
     /// Serials this feed's cookie writes have minted ([`Self::cookie_barrier`]).
     /// The next write carries `fetch_add + 1`; sightings max into
     /// [`FeedState::cookie_seen`].
@@ -199,6 +203,68 @@ pub(crate) struct WorkspaceFeed {
     /// Test seam: the serial of the last sentinel write that landed.
     #[cfg(test)]
     cookie_written: AtomicU64,
+}
+
+/// 2-wave group-commit gate for [`WorkspaceFeed::cookie_barrier`].
+#[derive(Default)]
+struct BarrierGate {
+    state: Mutex<BarrierCoord>,
+    cv: Condvar,
+}
+
+#[derive(Default)]
+struct BarrierCoord {
+    active: bool,
+    queued: Option<Arc<QueuedWave>>,
+}
+
+/// Wave state values stored in [`QueuedWave::state`]:
+/// - `0`: waiting for the active barrier to finish
+/// - `1`: a leader claimed this wave and is writing its sentinel
+/// - `2`: sentinel write failed or skipped (doubt/holdoff/unwind)
+/// - `serial + 2` (`>= 3`): sentinel `serial` was written to disk
+struct QueuedWave {
+    state: AtomicU64,
+}
+
+impl QueuedWave {
+    const PENDING: u64 = 0;
+    const WRITING: u64 = 1;
+    const FAILED: u64 = 2;
+    const SERIAL_OFFSET: u64 = 2;
+
+    fn new() -> Self {
+        Self {
+            state: AtomicU64::new(Self::PENDING),
+        }
+    }
+}
+
+/// RAII drop guard releasing [`BarrierCoord::active`] and waking queued waves
+/// even if a barrier leader unwinds.
+struct ActiveBarrierGuard<'a> {
+    gate: &'a BarrierGate,
+    wave: Option<&'a QueuedWave>,
+}
+
+impl Drop for ActiveBarrierGuard<'_> {
+    fn drop(&mut self) {
+        let mut coord = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(wave) = self.wave {
+            let _ = wave.state.compare_exchange(
+                QueuedWave::WRITING,
+                QueuedWave::FAILED,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            );
+        }
+        coord.active = false;
+        self.gate.cv.notify_all();
+    }
 }
 
 /// The feed's shared state plus the §6.4 cookie condvar: barrier waiters
@@ -470,6 +536,7 @@ impl WorkspaceFeed {
         Ok(WorkspaceFeed {
             _watcher: watcher,
             sync,
+            barriers: BarrierGate::default(),
             cookie_serial: AtomicU64::new(0),
             cookie_token: token,
             #[cfg(test)]
@@ -567,40 +634,184 @@ impl WorkspaceFeed {
         if member_candidate(dir) || hideable_prefix(dir) {
             return CookieOutcome::Refused;
         }
-        {
-            let s = self
+        if self.has_doubt_or_holdoff() {
+            return CookieOutcome::Unproven;
+        }
+        let deadline = Instant::now() + timeout;
+        // Standard `COOKIE_DIR` barriers coalesce via 2-wave group-commit; custom
+        // test directories run directly.
+        if dir != Path::new(COOKIE_DIR) {
+            return self.write_and_await(workspace, dir, deadline, doubt_on_timeout, None);
+        }
+
+        let mut coord = self
+            .barriers
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !coord.active {
+            coord.active = true;
+            drop(coord);
+            let _active = ActiveBarrierGuard {
+                gate: &self.barriers,
+                wave: None,
+            };
+            return self.write_and_await(workspace, dir, deadline, doubt_on_timeout, None);
+        }
+
+        // Another barrier is in flight; join the next wave whose sentinel will
+        // be written strictly AFTER we entered here.
+        let wave = Arc::clone(
+            coord
+                .queued
+                .get_or_insert_with(|| Arc::new(QueuedWave::new())),
+        );
+        let waiting = timing::op::phase("cookie.wait");
+        loop {
+            match wave.state.load(Ordering::Acquire) {
+                QueuedWave::FAILED => {
+                    drop(coord);
+                    waiting.stop();
+                    return CookieOutcome::Unproven;
+                }
+                state if state > QueuedWave::SERIAL_OFFSET => {
+                    let serial = state - QueuedWave::SERIAL_OFFSET;
+                    drop(coord);
+                    let outcome = self.await_sighting_until(serial, deadline, doubt_on_timeout);
+                    waiting.stop();
+                    return outcome;
+                }
+                QueuedWave::PENDING if !coord.active => {
+                    coord.active = true;
+                    wave.state.store(QueuedWave::WRITING, Ordering::Release);
+                    if coord
+                        .queued
+                        .as_ref()
+                        .is_some_and(|queued| Arc::ptr_eq(queued, &wave))
+                    {
+                        coord.queued = None;
+                    }
+                    drop(coord);
+                    waiting.stop();
+                    let _active = ActiveBarrierGuard {
+                        gate: &self.barriers,
+                        wave: Some(&wave),
+                    };
+                    if self.has_doubt_or_holdoff() {
+                        let _guard = self
+                            .barriers
+                            .state
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        wave.state.store(QueuedWave::FAILED, Ordering::Release);
+                        self.barriers.cv.notify_all();
+                        return CookieOutcome::Unproven;
+                    }
+                    return self.write_and_await(
+                        workspace,
+                        dir,
+                        deadline,
+                        doubt_on_timeout,
+                        Some(&wave),
+                    );
+                }
+                _ => {
+                    let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                        drop(coord);
+                        waiting.stop();
+                        self.note_timeout(doubt_on_timeout);
+                        return CookieOutcome::Unproven;
+                    };
+                    coord = self
+                        .barriers
+                        .cv
+                        .wait_timeout(coord, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+            }
+        }
+    }
+
+    /// True while a standing doubt or active cookie holdoff immediately rejects
+    /// barriers without writing a sentinel.
+    fn has_doubt_or_holdoff(&self) -> bool {
+        let s = self
+            .sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        s.doubt.is_some()
+            || s.cookie_timeout_at
+                .is_some_and(|at| at.elapsed() < s.cookie_holdoff)
+    }
+
+    /// Record a barrier timeout when `doubt_on_timeout` is armed.
+    fn note_timeout(&self, doubt_on_timeout: bool) {
+        if doubt_on_timeout {
+            let mut s = self
                 .sync
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if s.doubt.is_some() {
-                return CookieOutcome::Unproven;
-            }
-            // §6.7 holdoff: a recent timeout already taught the stream is
-            // stalled — answer immediately so the caller floors without
-            // re-paying the timeout; one probe per window re-tests.
-            if s.cookie_timeout_at
-                .is_some_and(|at| at.elapsed() < s.cookie_holdoff)
-            {
-                return CookieOutcome::Unproven;
-            }
+            s.collapse(RescanCause::CookieTimeout);
+            s.cookie_timeout_at = Some(Instant::now());
         }
+    }
+
+    /// Write one sentinel, publish its serial to any coalesced `wave` followers,
+    /// wait for sighting until `deadline`, and remove the sentinel.
+    fn write_and_await(
+        &self,
+        workspace: &Path,
+        dir: &Path,
+        deadline: Instant,
+        doubt_on_timeout: bool,
+        wave: Option<&QueuedWave>,
+    ) -> CookieOutcome {
         let serial = self.cookie_serial.fetch_add(1, Ordering::Relaxed) + 1;
         let dir = workspace.join(dir);
         let sentinel = dir.join(format!("{}-{serial}", self.cookie_token));
-        let write = std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&sentinel, serial.to_string()));
+        let payload = serial.to_string();
+        // Fast path: `COOKIE_DIR` already exists from watcher start; only call
+        // `create_dir_all` on `NotFound`.
+        let write = match std::fs::write(&sentinel, &payload) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&sentinel, &payload))
+            }
+            Err(e) => Err(e),
+        };
         if write.is_err() {
+            if let Some(wave) = wave {
+                let _guard = self
+                    .barriers
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                wave.state.store(QueuedWave::FAILED, Ordering::Release);
+                self.barriers.cv.notify_all();
+            }
             let _ = std::fs::remove_file(&sentinel);
             return CookieOutcome::Unproven;
         }
         #[cfg(test)]
         self.cookie_written.fetch_max(serial, Ordering::Relaxed);
+        if let Some(wave) = wave {
+            let _guard = self
+                .barriers
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            wave.state
+                .store(serial + QueuedWave::SERIAL_OFFSET, Ordering::Release);
+            self.barriers.cv.notify_all();
+        }
         // The slow-op ledger's `cookie.wait` (run-plane § The slow-op line):
         // the wait for the watcher to deliver the sentinel, the bounded one
         // a stalled stream spends in full.
         let waiting = timing::op::phase("cookie.wait");
-        let outcome = self.await_sighting(serial, timeout, doubt_on_timeout);
+        let outcome = self.await_sighting_until(serial, deadline, doubt_on_timeout);
         waiting.stop();
         // The sighting reads the path, never the bytes, so removing the
         // sentinel cannot spoil an event still queued for it; a failed
@@ -609,14 +820,13 @@ impl WorkspaceFeed {
         outcome
     }
 
-    /// Wait (bounded) until a sighting vouches `serial` ([`Self::barrier`]).
-    fn await_sighting(
+    /// Wait (bounded by `deadline`) until a sighting vouches `serial`.
+    fn await_sighting_until(
         &self,
         serial: u64,
-        timeout: Duration,
+        deadline: Instant,
         doubt_on_timeout: bool,
     ) -> CookieOutcome {
-        let deadline = Instant::now() + timeout;
         let mut s = self
             .sync
             .state
@@ -2376,5 +2586,87 @@ mod tests {
             rebaseline.as_secs() < 2,
             "two-file re-baseline stayed in the fixture envelope: {rebaseline:?}"
         );
+    }
+
+    /// Concurrent barriers coalesce into 2 waves (1 active + 1 queued) without
+    /// weakening §6.4 linearizability: a write that lands while wave 1 is
+    /// in flight is observed by wave 2's single shared sentinel.
+    #[test]
+    fn concurrent_barriers_coalesce_soundly_into_two_waves() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = workspace::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("a.md"), "# A\n").unwrap();
+        let feed = Arc::new(WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).unwrap());
+        let (sighted, resume) = feed.park_after_sightings();
+
+        // Wave 1: starts and parks the watcher after sighting serial 1.
+        let w1 = {
+            let feed = Arc::clone(&feed);
+            let root = root.clone();
+            std::thread::spawn(move || feed.cookie_barrier(&root, Duration::from_secs(10)))
+        };
+        assert_eq!(
+            sighted.recv_timeout(Duration::from_secs(10)).unwrap(),
+            1,
+            "wave 1 wrote sentinel 1"
+        );
+
+        // An external write lands AFTER wave 1 wrote sentinel 1.
+        std::fs::write(root.join("a.md"), "# A updated\n").unwrap();
+
+        // 6 concurrent callers arrive while wave 1 is still active: all must
+        // join wave 2 instead of each writing their own sentinel.
+        let mut wave2 = Vec::new();
+        for _ in 0..6 {
+            let feed = Arc::clone(&feed);
+            let root = root.clone();
+            wave2.push(std::thread::spawn(move || {
+                feed.cookie_barrier(&root, Duration::from_secs(10))
+            }));
+        }
+        // Wait until all 6 callers have queued on wave 2 (barriers.state has queued).
+        let wait_queued = Instant::now();
+        while wait_queued.elapsed() < Duration::from_secs(2) {
+            if feed
+                .barriers
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .queued
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Give the remaining threads a brief moment to attach to the queued wave.
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Release the watcher gate so wave 1 completes and wave 2 writes ONE sentinel.
+        drop(resume);
+        assert_eq!(w1.join().unwrap(), CookieOutcome::Seen);
+        for handle in wave2 {
+            assert_eq!(handle.join().unwrap(), CookieOutcome::Seen);
+        }
+
+        // At most 2–3 sentinels total (1 for wave 1 + 1 coalesced for wave 2;
+        // never 7 distinct sentinels) and the external write is in the dirty set.
+        let written = feed.cookie_written();
+        assert!(
+            written <= 3,
+            "expected concurrent barriers to coalesce (<=3 sentinels), wrote {written}"
+        );
+        match feed.take() {
+            Pending::Paths(dirty) => {
+                assert!(
+                    dirty.iter().any(|p| p == Path::new("a.md")),
+                    "wave 2's sentinel must vouch for the write that landed before wave 2 entered: {dirty:?}"
+                );
+            }
+            Pending::All(_) => {}
+            Pending::Clean => {
+                panic!("wave 2's sentinel must not miss the external write to a.md");
+            }
+        }
     }
 }

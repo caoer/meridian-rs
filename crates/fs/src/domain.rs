@@ -16,10 +16,10 @@
 //! ⊂ addressable). See [`Domain`] for the predicate and [`crate::hash_domain`] for
 //! the walk that consumes it.
 
-use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::WorkspaceRoot;
 
@@ -173,6 +173,10 @@ pub struct LinkTargetProbe<'a> {
     /// ratified tie-break (byte length, then lexicographic) so the pick is
     /// `first()` and determinism holds by construction.
     index: OnceCell<BTreeMap<String, Vec<String>>>,
+    /// Cached exact-spelling directory listings per parent directory so
+    /// [`Self::spelled_on_disk`] reads each parent directory at most once
+    /// instead of O(K^2) `read_dir` scans across flat directories.
+    dir_entries: RefCell<HashMap<PathBuf, Option<HashSet<String>>>>,
 }
 
 impl<'a> LinkTargetProbe<'a> {
@@ -184,6 +188,7 @@ impl<'a> LinkTargetProbe<'a> {
             root,
             domain,
             index: OnceCell::new(),
+            dir_entries: RefCell::new(HashMap::new()),
         }
     }
 
@@ -247,12 +252,16 @@ impl<'a> LinkTargetProbe<'a> {
             .root
             .0
             .join(candidate.parent().unwrap_or(Path::new("")));
-        let Ok(entries) = std::fs::read_dir(parent) else {
-            return false;
-        };
-        entries
-            .flatten()
-            .any(|e| e.file_name().to_str() == Some(name))
+        let mut cache = self.dir_entries.borrow_mut();
+        let entry = cache.entry(parent).or_insert_with_key(|dir| {
+            let entries = std::fs::read_dir(dir).ok()?;
+            let names: HashSet<String> = entries
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect();
+            Some(names)
+        });
+        entry.as_ref().is_some_and(|names| names.contains(name))
     }
 }
 
@@ -768,20 +777,26 @@ fn match_segs(pat: &[String], path: &[&str]) -> bool {
 
 /// Glob one segment: `*` matches any run within the segment, `?` one char.
 fn seg_glob(pat: &str, name: &str) -> bool {
-    let pat: Vec<char> = pat.chars().collect();
-    let name: Vec<char> = name.chars().collect();
+    if !pat.contains(['*', '?']) {
+        return pat == name;
+    }
+    if pat.is_ascii() && name.is_ascii() {
+        return seg_glob_bytes(pat.as_bytes(), name.as_bytes());
+    }
+    seg_glob_utf8(pat, name)
+}
+
+fn seg_glob_bytes(pat: &[u8], name: &[u8]) -> bool {
     let (mut pi, mut ni) = (0usize, 0usize);
-    // (pat index just after the last `*`, name index that `*` is anchored at).
     let mut star: Option<(usize, usize)> = None;
     while ni < name.len() {
-        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == name[ni]) {
+        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == name[ni]) {
             pi += 1;
             ni += 1;
-        } else if pi < pat.len() && pat[pi] == '*' {
+        } else if pi < pat.len() && pat[pi] == b'*' {
             star = Some((pi + 1, ni));
             pi += 1;
         } else if let Some((resume_pi, anchor_ni)) = star {
-            // Backtrack: let the `*` swallow one more name char.
             pi = resume_pi;
             ni = anchor_ni + 1;
             star = Some((resume_pi, anchor_ni + 1));
@@ -789,10 +804,39 @@ fn seg_glob(pat: &str, name: &str) -> bool {
             return false;
         }
     }
-    while pi < pat.len() && pat[pi] == '*' {
+    while pi < pat.len() && pat[pi] == b'*' {
         pi += 1;
     }
     pi == pat.len()
+}
+
+fn seg_glob_utf8(mut pat: &str, mut name: &str) -> bool {
+    let mut star: Option<(&str, &str)> = None;
+    while let Some(nc) = name.chars().next() {
+        if let Some(pc) = pat.chars().next() {
+            if pc == '?' || pc == nc {
+                pat = &pat[pc.len_utf8()..];
+                name = &name[nc.len_utf8()..];
+                continue;
+            }
+            if pc == '*' {
+                pat = &pat[1..];
+                star = Some((pat, name));
+                continue;
+            }
+        }
+        if let Some((resume_pat, anchor_name)) = star
+            && let Some(ac) = anchor_name.chars().next()
+        {
+            let next_anchor = &anchor_name[ac.len_utf8()..];
+            pat = resume_pat;
+            name = next_anchor;
+            star = Some((resume_pat, next_anchor));
+        } else {
+            return false;
+        }
+    }
+    pat.bytes().all(|b| b == b'*')
 }
 
 struct ParsedConfig {
