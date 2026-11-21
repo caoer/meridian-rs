@@ -29,6 +29,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError};
 
 pub mod base;
+#[cfg(target_os = "macos")]
+mod bulkstat;
 pub mod canvas;
 pub mod checkpoint;
 pub mod digestmemo;
@@ -1246,7 +1248,9 @@ impl DomainCache {
     /// member, or reading a member whose identity moved.
     pub fn root(&mut self, root: &WorkspaceRoot) -> io::Result<model::MerkleRoot> {
         let domain = domain::Domain::load(root)?;
-        self.observe(root, &domain, ObserveLaw::Plain)
+        // The root is the tree's fold; the observation's name-keyed rows are
+        // not built for it.
+        self.observe_in_place(root, &domain, ObserveLaw::Plain, PARALLEL_READ_FLOOR)
             .map_err(plain_refusal)?;
         Ok(self.served_fold(domain.version()))
     }
@@ -1324,6 +1328,22 @@ impl DomainCache {
         law: ObserveLaw,
         read_floor: usize,
     ) -> Result<ObservedDomain, ObserveRefusal> {
+        let offenders = self.observe_in_place(root, domain, law, read_floor)?;
+        Ok((self.rows(), offenders))
+    }
+
+    /// The observation itself: bring the leaf memo and the resident tree to
+    /// the generation on disk, and return the symlink offenders the walk
+    /// recorded. The cost follows what moved: a pass that finds every
+    /// member's record still trusted pays the walk, the stat sweep and one
+    /// ordered compare, and changes nothing.
+    fn observe_in_place(
+        &mut self,
+        root: &WorkspaceRoot,
+        domain: &domain::Domain,
+        law: ObserveLaw,
+        read_floor: usize,
+    ) -> Result<Vec<String>, ObserveRefusal> {
         // Losses counted before the pass are re-derived by the pass (a
         // completed observation IS the full sweep the rescan ladder floors
         // at); losses landing mid-pass stay unabsorbed. Counted at entry so
@@ -1345,90 +1365,89 @@ impl DomainCache {
         rels.sort();
         let identities = member_identities(&root.0, &rels, PARALLEL_STAT_FLOOR)?;
         self.member_stats += identities.len() as u64;
-        let mut fresh: BTreeMap<PathBuf, LeafSeen> = BTreeMap::new();
-        // Name-keyed rows (merkle-spec §4/§9 raw name bytes) — the shape every
-        // consumer folds or compares in, built once here so no observation
-        // pays a second per-member map conversion.
-        let mut rows: BTreeMap<Vec<u8>, [u8; 32]> = BTreeMap::new();
-        // Trusted rows serve from the memo now; movers are read below, in
-        // parallel across members (on a cold memo every member is one).
+        // One ordered merge of the observed members against the leaf memo.
+        // A member whose record the trust decision clears is left exactly as
+        // it stands, so a pass that finds nothing moved touches no map and no
+        // tree node. What the merge names is the difference alone: the movers
+        // to read, and the remembered members the walk no longer lists.
         let mut movers: Vec<Mover> = Vec::new();
-        for (rel, key) in identities {
-            match self.trusted_leaf(&rel, key, trust) {
-                Ok(entry) => {
-                    rows.insert(hash_name(&rel).to_vec(), entry.digest);
-                    fresh.insert(rel, entry);
+        let mut vanished: Vec<PathBuf> = Vec::new();
+        {
+            let mut remembered = self.leaves.iter().peekable();
+            for (rel, key) in identities {
+                while let Some((prior, _)) = remembered.peek() {
+                    if **prior == rel || prior.as_path() > rel.as_path() {
+                        break;
+                    }
+                    vanished.push((*prior).clone());
+                    remembered.next();
                 }
-                Err(key_matched) => movers.push(Mover { rel, key_matched }),
+                match remembered.peek() {
+                    Some((prior, seen)) if **prior == rel => {
+                        if !(seen.key == key && trust.trusts(&key, seen.seen)) {
+                            movers.push(Mover {
+                                rel,
+                                key_matched: seen.key == key,
+                            });
+                        }
+                        remembered.next();
+                    }
+                    _ => movers.push(Mover {
+                        rel,
+                        key_matched: false,
+                    }),
+                }
             }
+            vanished.extend(remembered.map(|(prior, _)| prior.clone()));
         }
-        for (rel, entry) in self.read_moved(root, movers, law, trust, read_floor)? {
-            rows.insert(hash_name(&rel).to_vec(), entry.digest);
-            fresh.insert(rel, entry);
-        }
+        // Movers are read in parallel across members (on a cold memo every
+        // member is one). A refusal leaves the leaf memo as it was.
+        let moved = self.read_moved(root, movers, law, trust, read_floor)?;
         // The resident tree follows the observed generation (merkle-spec
         // §6.1): removals first — a same-name kind swap across generations
-        // must never compose a transient §4.4 collision — then idempotent
-        // set for the survivors (an unmoved member re-hashes nothing). Every
-        // absorbed change stamps its chain in the same act (§6.3): one
+        // must never compose a transient §4.4 collision — then the movers.
+        // Every absorbed change stamps its chain in the same act (§6.3): one
         // clock read serves the pass — every stamped value is one past the
         // tip as of the pass, which stays strictly greater than any token
         // minted before the change was absorbed.
         let mut advanced = false;
-        {
-            let stamp_seq = self.stamps.as_ref().map(|s| (s.clock)() + 1);
-            let (leaves, tree) = (&self.leaves, &mut self.tree);
-            for rel in leaves.keys() {
-                if !fresh.contains_key(rel) {
-                    let removed = tree.remove_leaf(rel);
-                    if removed && let Some(seq) = stamp_seq {
-                        tree.stamp_chain(rel, seq);
-                    }
-                    advanced |= removed;
-                }
+        let stamp_seq = self.stamps.as_ref().map(|s| (s.clock)() + 1);
+        for rel in &vanished {
+            let removed = self.tree.remove_leaf(rel);
+            if removed && let Some(seq) = stamp_seq {
+                self.tree.stamp_chain(rel, seq);
             }
-            for (rel, entry) in &fresh {
-                let set = tree.set_leaf(rel, entry.digest);
-                if set && let Some(seq) = stamp_seq {
-                    tree.stamp_chain(rel, seq);
-                }
-                advanced |= set;
+            advanced |= removed;
+            self.leaves.remove(rel);
+        }
+        for (rel, entry) in moved {
+            let set = self.tree.set_leaf(&rel, entry.digest);
+            if set && let Some(seq) = stamp_seq {
+                self.tree.stamp_chain(&rel, seq);
             }
+            advanced |= set;
+            self.leaves.insert(rel, entry);
         }
         if advanced {
             self.served = None;
         }
         self.domain_seen = Some(domain.clone());
-        self.leaves = fresh;
         self.acked_losses = losses_at_start;
         // This pass re-verified every member's identity against disk, so
         // restored rows are no longer taking anything on a previous process's
         // word (§6.5).
         self.restored_unobserved = false;
-        Ok((rows, offenders))
+        Ok(offenders)
     }
 
-    /// One member's memoized leaf under the §6.2 trust decision: it serves
-    /// only when the key matches AND the watermark law clears the record — a
-    /// matching key inside the racy window re-reads, because the same-quantum
-    /// in-place write is exactly what the key compare cannot see (codex gate
-    /// 17: `StatKey` equality alone never passes). `Err(key_matched)` names a
-    /// mover, and whether its re-read is the watermark's own.
-    fn trusted_leaf(
-        &self,
-        rel: &Path,
-        key: StatKey,
-        trust: stable::TrustCtx,
-    ) -> Result<LeafSeen, bool> {
-        match self.leaves.get(rel) {
-            Some(prior) if prior.key == key && trust.trusts(&key, prior.seen) => Ok(LeafSeen {
-                key,
-                digest: prior.digest,
-                seen: prior.seen,
-            }),
-            Some(prior) => Err(prior.key == key),
-            None => Err(false),
-        }
+    /// The memo's leaves as name-keyed rows (merkle-spec §4/§9 raw name
+    /// bytes) — the shape every consumer of an observation folds or compares
+    /// in.
+    fn rows(&self) -> BTreeMap<Vec<u8>, [u8; 32]> {
+        self.leaves
+            .iter()
+            .map(|(rel, entry)| (hash_name(rel).to_vec(), entry.digest))
+            .collect()
     }
 
     /// Read and hash every mover ([`read_movers`]) and keep the pass's
@@ -1560,7 +1579,8 @@ impl DomainCache {
             /// Scans in flight — with `todo`, the termination witness: the
             /// walk is done when the queue is empty AND no worker holds one.
             active: usize,
-            files: Vec<PathBuf>,
+            /// Each scanned directory's member files, in name order.
+            files: Vec<(PathBuf, Vec<PathBuf>)>,
             offenders: Vec<String>,
             dirs: Vec<(PathBuf, DirSeen)>,
             listings: u64,
@@ -1627,9 +1647,11 @@ impl DomainCache {
                         let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
                         s.active -= 1;
                         match scanned {
-                            Ok((scan, (mut new_files, new_subdirs, mut new_offenders))) => {
+                            Ok((scan, (new_files, new_subdirs, mut new_offenders))) => {
                                 s.listings += u64::from(scan.enumerated);
-                                s.files.append(&mut new_files);
+                                if !new_files.is_empty() {
+                                    s.files.push((rel.clone(), new_files));
+                                }
                                 s.offenders.append(&mut new_offenders);
                                 s.todo.extend(new_subdirs);
                                 if let Some(seen) = scan.into_seen() {
@@ -1654,7 +1676,13 @@ impl DomainCache {
         if let Some(err) = s.err {
             return Err(err);
         }
-        files.append(&mut s.files);
+        // Directories in path order, each one's files in name order: close to
+        // the path order the caller sorts into, whatever order the workers
+        // finished in.
+        s.files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, mut dir_files) in s.files {
+            files.append(&mut dir_files);
+        }
         offenders.append(&mut s.offenders);
         fresh_dirs.extend(s.dirs);
         listings += s.listings;
@@ -2146,6 +2174,9 @@ fn scan_dir(
                 name: entry.file_name(),
             });
         }
+        // Name order, so the walk hands members out already in path order
+        // within their directory and the pass's sort has little left to do.
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
         (Arc::from(entries), trust.record_seen(), true)
     };
     Ok(DirScan {
@@ -2483,6 +2514,85 @@ pub(crate) fn open_nofollow(root: &Path, rel: &Path) -> io::Result<File> {
 /// measured on this hardware class).
 const PARALLEL_STAT_FLOOR: usize = 4096;
 
+/// The widest the stat sweep fans out. On macOS the identities come from
+/// `getattrlistbulk` ([`bulkstat`]), which stops gaining at four threads:
+/// on an M1 Max a sweep of 222k members takes 244 ms on one, 96 ms on four
+/// and 109 ms on eight.
+const STAT_WORKERS: usize = if cfg!(target_os = "macos") { 4 } else { 8 };
+
+/// Where one stat worker's member identities come from: `lstat` by path, and
+/// on macOS first the member's whole directory in one bulk call
+/// ([`bulkstat::dir_file_keys`]).
+///
+/// The worker walks its members in path order, so a directory's files arrive
+/// together, parted only by the subtrees of its own subdirectories. The
+/// listings of the directories above the current member are kept on a stack
+/// and dropped once the walk leaves them, so each directory is asked once per
+/// worker. A member its directory's listing does not answer — gone since the
+/// walk, no longer a regular file, the directory unreadable — is statted by
+/// path, which words the refusal exactly as before.
+struct IdentitySource<'a> {
+    root: &'a Path,
+    #[cfg(target_os = "macos")]
+    dirs: Vec<DirKeys>,
+}
+
+/// One directory on an [`IdentitySource`]'s stack: its workspace-relative
+/// path bytes and its regular files' keys by name, `None` when the bulk
+/// listing failed.
+#[cfg(target_os = "macos")]
+type DirKeys = (Vec<u8>, Option<std::collections::HashMap<Vec<u8>, StatKey>>);
+
+impl<'a> IdentitySource<'a> {
+    fn new(root: &'a Path) -> Self {
+        IdentitySource {
+            root,
+            #[cfg(target_os = "macos")]
+            dirs: Vec::new(),
+        }
+    }
+
+    /// The identity of the member at `rel`, `None` when nothing is there.
+    fn key(&mut self, rel: &Path) -> io::Result<Option<StatKey>> {
+        #[cfg(target_os = "macos")]
+        if let Some(key) = self.bulk_key(rel) {
+            return Ok(Some(key));
+        }
+        StatKey::of_path(&self.root.join(rel))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn bulk_key(&mut self, rel: &Path) -> Option<StatKey> {
+        let bytes = rel.as_os_str().as_bytes();
+        let (dir, name) = match bytes.iter().rposition(|b| *b == b'/') {
+            Some(cut) => (&bytes[..cut], &bytes[cut + 1..]),
+            None => (&bytes[..0], bytes),
+        };
+        let above = |top: &[u8]| {
+            top.is_empty()
+                || dir == top
+                || (dir.len() > top.len() && dir.starts_with(top) && dir[top.len()] == b'/')
+        };
+        while self.dirs.last().is_some_and(|(top, _)| !above(top)) {
+            self.dirs.pop();
+        }
+        if self
+            .dirs
+            .last()
+            .is_none_or(|(top, _)| top.as_slice() != dir)
+        {
+            let abs = if dir.is_empty() {
+                self.root.to_path_buf()
+            } else {
+                self.root.join(std::ffi::OsStr::from_bytes(dir))
+            };
+            self.dirs
+                .push((dir.to_vec(), bulkstat::dir_file_keys(&abs).ok()));
+        }
+        self.dirs.last()?.1.as_ref()?.get(name).copied()
+    }
+}
+
 /// Every member's [`StatKey`] in `rels` order — the currency pass's stat
 /// sweep, parallel in ORDER-PRESERVING contiguous chunks at or above `floor`
 /// (ported from arm-A `c0d0c8ba`, re-derived on this memo's fold).
@@ -2500,33 +2610,42 @@ fn member_identities(
     rels: &[PathBuf],
     floor: usize,
 ) -> io::Result<Vec<(PathBuf, StatKey)>> {
-    let identity_of = |rel: &PathBuf| -> io::Result<(PathBuf, StatKey)> {
-        let key = StatKey::of_path(&root.join(rel))
-            // A stat that FAILS names its member for the same reason the
-            // vanished arm below does: the sweep runs over the whole domain,
-            // so an unnamed errno here indicts every file at once.
-            .map_err(|e| corpus_listing_refusal(&e, rel, "cannot be identified"))?
-            .ok_or_else(|| {
-                // Walked a moment ago and gone now: a corpus-scoped refusal
-                // names its member, like every other one here.
-                corpus_member_refusal(
-                    io::ErrorKind::NotFound,
-                    &display_name(hash_name(rel)),
-                    "vanished between the domain walk and its stat".to_owned(),
-                )
-            })?;
-        Ok((rel.clone(), key))
+    let identities_of = |chunk: &[PathBuf]| -> io::Result<Vec<(PathBuf, StatKey)>> {
+        let mut source = IdentitySource::new(root);
+        chunk
+            .iter()
+            .map(|rel| {
+                let key = source
+                    .key(rel)
+                    // A stat that FAILS names its member for the same reason the
+                    // vanished arm below does: the sweep runs over the whole domain,
+                    // so an unnamed errno here indicts every file at once.
+                    .map_err(|e| corpus_listing_refusal(&e, rel, "cannot be identified"))?
+                    .ok_or_else(|| {
+                        // Walked a moment ago and gone now: a corpus-scoped refusal
+                        // names its member, like every other one here.
+                        corpus_member_refusal(
+                            io::ErrorKind::NotFound,
+                            &display_name(hash_name(rel)),
+                            "vanished between the domain walk and its stat".to_owned(),
+                        )
+                    })?;
+                Ok((rel.clone(), key))
+            })
+            .collect()
     };
     if rels.is_empty() || rels.len() < floor {
-        return rels.iter().map(identity_of).collect();
+        return identities_of(rels);
     }
-    let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 8));
+    let workers =
+        std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, STAT_WORKERS));
     let chunk = rels.len().div_ceil(workers);
     let mut rows: Vec<io::Result<Vec<(PathBuf, StatKey)>>> = Vec::new();
     std::thread::scope(|scope| {
+        let identities_of = &identities_of;
         let handles: Vec<_> = rels
             .chunks(chunk)
-            .map(|c| scope.spawn(move || c.iter().map(&identity_of).collect()))
+            .map(|c| scope.spawn(move || identities_of(c)))
             .collect();
         for handle in handles {
             match handle.join() {
@@ -7166,6 +7285,48 @@ mod domain_cache_parallel_tests {
         assert_eq!(serial, parallel, "rows must be bit-identical, in order");
     }
 
+    /// Every identity the sweep reports is the member's own `lstat` key, on
+    /// a tree whose path order parts a directory's files with the subtrees
+    /// of its subdirectories: `a/1.md`, `a/b/…`, `a/c.md`, `a/d/…`, `a/e.md`.
+    /// On macOS the keys come from one bulk listing per directory, kept while
+    /// the sweep is below it, so a listing handed to the wrong member or
+    /// dropped early shows here.
+    #[test]
+    fn swept_identities_are_each_members_own_lstat_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_path = tmp.path();
+        for (i, rel) in [
+            "top.md",
+            "a/1.md",
+            "a/b/x.md",
+            "a/b/deep/y.md",
+            "a/c.md",
+            "a/d/z.md",
+            "a/e.md",
+            "f/only.md",
+            "zz.md",
+        ]
+        .iter()
+        .enumerate()
+        {
+            write(root_path, rel, &"x".repeat(i + 1));
+        }
+        let root = WorkspaceRoot(fs::canonicalize(root_path).unwrap());
+        let domain = super::domain::Domain::load(&root).unwrap();
+        let rels = super::hash_domain(&root, &domain).unwrap();
+        assert_eq!(rels.len(), 9);
+
+        for floor in [usize::MAX, 0] {
+            for (rel, key) in super::member_identities(&root.0, &rels, floor).unwrap() {
+                assert_eq!(
+                    Some(key),
+                    super::StatKey::of_path(&root.0.join(&rel)).unwrap(),
+                    "{rel:?} at floor {floor}"
+                );
+            }
+        }
+    }
+
     /// With TWO members vanished, the refusal names the sorted-FIRST one on
     /// both the serial and the chunked path: the merge walks chunks in spawn
     /// order, so the member named never depends on which worker finished
@@ -7699,7 +7860,8 @@ mod stable_trust_tests {
     }
 
     /// Implant the hermetic row: the file's CURRENT on-disk identity paired
-    /// with a stale digest, recorded under `seen`.
+    /// with a stale digest, recorded under `seen`. The resident tree folds
+    /// the same digest, as it does for every row the memo records.
     fn implant(
         cache: &mut DomainCache,
         root: &WorkspaceRoot,
@@ -7710,6 +7872,9 @@ mod stable_trust_tests {
         let key = StatKey::of_path(&root.0.join(rel))
             .expect("stat")
             .expect("fixture present");
+        if cache.tree.set_leaf(Path::new(rel), stale) {
+            cache.served = None;
+        }
         cache.leaves.insert(
             PathBuf::from(rel),
             LeafSeen {

@@ -1652,6 +1652,30 @@ refusal shapes — is untouched. `Reused` keeps its zero-parse proof; a rebuild 
 still `fs::update_corpus` against the memo's leaf set. Run-plane bracket
 observations (guard grade, locked-window law) keep their live floors.
 
+**What a floor pass costs.** A pass is the domain walk (one `stat` per
+directory, the listing from memory where the directory is unmoved), one
+identity per member, and one ordered compare of those identities against the
+leaf memo. A member whose record the §6.2 close still trusts is left as it
+stands: no memo entry is rewritten and no tree node is visited. Only the
+difference is acted on: a mover is read and set, a remembered member the walk
+no longer lists is removed. So a pass that finds nothing moved costs the sweep
+and the compare, and every further cost follows what moved. The name-keyed
+rows a guard bracket compares are built from the memo only for the callers
+that take them; the root is the tree's fold and needs none.
+
+Member identities are the `lstat` key (device, inode, size, mtime, ctime). On
+macOS a worker takes a directory's members together, in one
+`getattrlistbulk` conversation per directory, and the keys are field for
+field the ones `lstat` reports; a member the listing does not answer (gone
+since the walk, no longer a regular file, the directory unreadable) is
+statted by path, so every refusal reads as it did. One `lstat` per member
+resolves the whole path each time and the calls contend in the kernel.
+Measured on an M1 Max, 221,873 members in 2,222 directories, one sweep of
+identities alone: `lstat` 461 ms on one thread and 157 ms on eight;
+`getattrlistbulk` 244 ms on one thread, 96 ms on four, 109 ms on eight, which
+is why that sweep fans out to four. A whole quiet pass there
+(`DomainCache::root`, `crates/fs/examples/domain_cost.rs`): about 140 ms.
+
 ### 6.8 The absorb path — deriving the answer at the cost of the change
 
 **Motive, measured.** On 37.8k members over 15 s at 2 foreign writes/s:
