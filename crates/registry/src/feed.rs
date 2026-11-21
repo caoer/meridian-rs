@@ -1315,9 +1315,15 @@ mod tests {
             feed.cookie_barrier(&root, Duration::from_secs(10)),
             CookieOutcome::Unproven
         );
-        assert!(began.elapsed() < Duration::from_secs(1), "the barrier waited");
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "the barrier waited"
+        );
         assert_eq!(feed.cookie_written(), 0, "a sentinel was written");
-        assert!(feed.rescan_record().is_empty(), "the barrier opened a doubt");
+        assert!(
+            feed.rescan_record().is_empty(),
+            "the barrier opened a doubt"
+        );
     }
 
     /// The barrier's proof arm, live kernel stream: the sentinel write comes
