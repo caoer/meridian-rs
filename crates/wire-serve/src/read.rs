@@ -1396,7 +1396,7 @@ fn composed_sections(
     // is the § A.3 proof half: the section's own `fp1.…` token, computed with
     // the same anchor removals the pin door's live recompute uses, so the
     // token a read serves is the token a pin compare accepts.
-    let removals = syntax::anchor_removals(&doc.raw);
+    let removals = model::fingerprint::removals(doc);
     let sections: Vec<wire::ReadSectionOut> = rows
         .iter()
         .map(|row| {

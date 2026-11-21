@@ -3868,7 +3868,7 @@ fn mint_fingerprint(
     target: &Path,
     selector: &str,
 ) -> Result<String, Box<ErrorBody>> {
-    let removals = syntax::anchor_removals(&doc.raw);
+    let removals = model::fingerprint::removals(doc);
     model::fingerprint::fingerprint_span(doc, span, &removals)
         .map(model::fingerprint::Fingerprint::into_string)
         .map_err(|model::fingerprint::EmptySpan| {

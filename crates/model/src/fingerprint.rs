@@ -91,12 +91,37 @@ pub struct EmptySpan;
 /// # Errors
 /// [`EmptySpan`] when the node's normalized span is empty — see that type.
 pub fn fingerprint(doc: &Document, node: &Node) -> Result<Fingerprint, EmptySpan> {
-    fingerprint_with_removals(doc, node, &syntax::anchor_removals(&doc.raw))
+    fingerprint_with_removals(doc, node, &removals(doc))
+}
+
+/// The document's anchor-removal ranges (spec §4.1/§4.3: file coordinates,
+/// identified on the whole file) — the one derivation every mint and every
+/// verify reads, so the token a read serves is the token a pin compare
+/// accepts.
+///
+/// [`syntax::anchor_removals`] is the grammar and supplies the ranges; the
+/// tree only answers whether there are any. A document whose tree holds no
+/// anchor node has no removals and its bytes are not parsed again. That rests
+/// on `doc.root` being the build of `doc.raw`, which holds for every document
+/// [`crate::build`] or the parse cache produces: the build maps each anchor
+/// token to one [`crate::NodeKind::Anchor`] node and drops none.
+#[must_use]
+pub fn removals(doc: &Document) -> Vec<ByteSpan> {
+    if has_anchor(&doc.root) {
+        syntax::anchor_removals(&doc.raw)
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether the tree under `node` holds an anchor node.
+fn has_anchor(node: &Node) -> bool {
+    matches!(node.kind, crate::NodeKind::Anchor { .. }) || node.children.iter().any(has_anchor)
 }
 
 /// [`fingerprint`] with the document's removal ranges precomputed
-/// ([`syntax::anchor_removals`] — file coordinates, whole-file
-/// identification per spec §4.1/§4.3).
+/// ([`removals`] — file coordinates, whole-file identification per spec
+/// §4.1/§4.3).
 ///
 /// # Errors
 /// [`EmptySpan`] — see [`fingerprint_span`].
@@ -247,7 +272,7 @@ pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> Con
     }
     // R31: the recompute is fallible, so `Green` is reachable only for a span
     // with canonical bytes; an empty one never reaches the compare.
-    let Ok(actual) = fingerprint_span(doc, span, &syntax::anchor_removals(&doc.raw)) else {
+    let Ok(actual) = fingerprint_span(doc, span, &removals(doc)) else {
         return ContentVerdict::EmptySpan;
     };
     if actual.0 == pinned {
@@ -411,6 +436,30 @@ mod tests {
             fingerprint(&d, &d.root).expect("X0 has content").0,
             "fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152"
         );
+    }
+
+    /// [`removals`] equals the grammar's own answer wherever an anchor token
+    /// can sit — block tail, own line, frontmatter, nested in a list or a
+    /// callout — and is empty for a caret that is no anchor and for a
+    /// caret-free document.
+    #[test]
+    fn removals_match_the_grammar_wherever_an_anchor_sits() {
+        for (raw, has_removals) in [
+            ("# A\nintro ^goal\n", true),
+            ("# A\nintro\n\n^own-line\n", true),
+            ("---\ntitle: t ^fm\n---\n# A\nbody\n", true),
+            ("# A\n- item\n  - nested ^deep\n", true),
+            ("# A\n> [!note] head\n> body ^callout\n", true),
+            ("# A\nx^2 and a footnote[^1]\n\n[^1]: note\n", false),
+            ("# A\n```\ncode ^fenced\n```\n", false),
+            ("# A\nplain\n", false),
+            ("", false),
+        ] {
+            let d = doc(raw);
+            let want = syntax::anchor_removals(raw);
+            assert_eq!(removals(&d), want, "{raw:?}");
+            assert_eq!(!want.is_empty(), has_removals, "fixture row {raw:?}");
+        }
     }
 
     /// Promotion neutrality (spec §1/§5): the fingerprint holds at document and
