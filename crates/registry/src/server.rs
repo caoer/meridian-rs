@@ -39,6 +39,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -66,8 +67,10 @@ use crate::{
     DEFAULT_PUSH_WRITE_TIMEOUT, DEFAULT_REAP_INTERVAL, DEFAULT_SUB_IDLE_WRITE_TIMEOUT, now_secs,
 };
 
-/// How long the accept loop parks between non-blocking `accept` polls. Short
-/// enough that shutdown is prompt, long enough not to spin a core.
+/// The longest an idle accept loop parks before it re-reads the shutdown flag
+/// and the succession gate. A pending dial ends the park at once
+/// ([`park_on_listener`]), so this bounds stop and handover-exit latency, not
+/// accept latency.
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
 
 /// An op slower than this is named on the daemon log with its `duration_us`.
@@ -1374,7 +1377,7 @@ enum Pass<G> {
 }
 
 /// Spawn the accept loop: non-blocking `accept`, one detached thread per
-/// connection, polling the shutdown flag between idle polls.
+/// connection, the shutdown flag read at every idle park.
 fn spawn_accept(listener: UnixListener, ctx: Arc<ConnCtx>) -> JoinHandle<()> {
     thread::spawn(move || {
         let enter = || {
@@ -1387,7 +1390,7 @@ fn spawn_accept(listener: UnixListener, ctx: Arc<ConnCtx>) -> JoinHandle<()> {
         let dispatch = |stream: UnixStream, reading: Reading| {
             spawn_conn(&ctx, stream, Session::default(), reading)
         };
-        accept_loop(&listener, &ctx.shutdown, enter, dispatch);
+        accept_loop(&listener, &ctx.shutdown, ACCEPT_POLL, enter, dispatch);
     })
 }
 
@@ -1429,28 +1432,42 @@ fn resume_conn(ctx: &Arc<ConnCtx>, parked: Parked) {
 /// spawn, and that panic would unwind this loop while the daemon still holds
 /// the listener and the singleton flock, so the spawn is fallible
 /// (`thread::Builder`) and its error is a `continue`.
+///
+/// **Idle park:** on `WouldBlock` the loop parks in `poll(2)` on the listener
+/// for at most `idle`, so a dial is accepted when it arrives. Two passes in a
+/// row never both skip the park: a park that ended on a readable listener
+/// whose `accept` then finds nothing is followed by a plain `idle` sleep, so a
+/// listener that reads readable while `accept` returns `EAGAIN` costs one extra
+/// pass per `idle`, never a spinning core. The `Wait` and error arms sleep
+/// `idle` outright: a connection can be pending there while the loop declines
+/// to take it, and a poll would return at once.
 fn accept_loop<G>(
     listener: &UnixListener,
     shutdown: &AtomicBool,
+    idle: Duration,
     enter: impl Fn() -> Pass<G>,
     dispatch: impl Fn(UnixStream, G) -> io::Result<()>,
 ) {
+    // The last park ended early on a readable listener.
+    let mut woke = false;
     loop {
         // The gate comes before the accept: a connection is taken only by a
         // daemon that will read it (`Succession::enter`).
         let gate = match enter() {
             Pass::Go(gate) => gate,
             Pass::Wait => {
+                woke = false;
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
-                thread::sleep(ACCEPT_POLL);
+                thread::sleep(idle);
                 continue;
             }
             Pass::Stop => return,
         };
         match listener.accept() {
             Ok((stream, _)) => {
+                woke = false;
                 // The accepted stream inherits the listener's non-blocking
                 // flag on BSD/macOS; per-connection I/O must block on reads,
                 // so reset it explicitly.
@@ -1469,18 +1486,50 @@ fn accept_loop<G>(
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
-                thread::sleep(ACCEPT_POLL);
+                woke = if woke {
+                    thread::sleep(idle);
+                    false
+                } else {
+                    park_on_listener(listener, idle)
+                };
             }
             Err(e) => {
+                woke = false;
                 drop(gate);
                 if shutdown.load(Ordering::SeqCst) {
                     return;
                 }
                 timing::say!("registry: accept error ({e})");
-                thread::sleep(ACCEPT_POLL);
+                thread::sleep(idle);
             }
         }
     }
+}
+
+/// Park until `listener` has a pending connection or `timeout` elapses.
+/// `true` = the park ended early on a readable listener.
+///
+/// A `poll` that fails (other than `EINTR`) or reports an error condition on
+/// the fd sleeps out `timeout` instead, so a broken poll never turns the
+/// caller's loop into a spin. The timeout rounds up to whole milliseconds and
+/// is at least one.
+fn park_on_listener(listener: &UnixListener, timeout: Duration) -> bool {
+    let mut pfd = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_ms = i32::try_from(timeout.as_micros().div_ceil(1000).max(1)).unwrap_or(i32::MAX);
+    // SAFETY: `pfd` is one valid, initialised `pollfd` on the stack, `nfds` is
+    // 1, and the listener outlives the call, so its fd stays open throughout.
+    let ready = unsafe { libc::poll(&raw mut pfd, 1, timeout_ms) };
+    let broken = (ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted)
+        || (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0;
+    if broken {
+        thread::sleep(timeout);
+        return false;
+    }
+    ready > 0 && (pfd.revents & libc::POLLIN) != 0
 }
 
 /// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
@@ -3118,11 +3167,12 @@ mod settle_race_tests;
 /// down with it.
 #[cfg(test)]
 mod accept_containment_tests {
-    use super::{Pass, accept_loop};
+    use super::{ACCEPT_POLL, Pass, accept_loop};
     use std::io;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -3144,6 +3194,7 @@ mod accept_containment_tests {
             accept_loop(
                 &listener,
                 &loop_shutdown,
+                ACCEPT_POLL,
                 || Pass::Go(()),
                 |_stream: UnixStream, ()| {
                     loop_seen.fetch_add(1, Ordering::SeqCst);
@@ -3172,6 +3223,151 @@ mod accept_containment_tests {
         accept
             .join()
             .expect("the accept loop survived every dispatch failure");
+    }
+
+    /// An idle loop over `listener`, counting its passes; `stop` ends it at
+    /// the next pass. Each accepted stream is sent on the returned channel.
+    fn counting_loop(
+        listener: UnixListener,
+        idle: Duration,
+        passes: Arc<AtomicUsize>,
+        stop: Arc<AtomicBool>,
+    ) -> (thread::JoinHandle<()>, mpsc::Receiver<UnixStream>) {
+        let (tx, rx) = mpsc::channel();
+        let accept = thread::spawn(move || {
+            let shutdown = AtomicBool::new(false);
+            accept_loop(
+                &listener,
+                &shutdown,
+                idle,
+                || {
+                    passes.fetch_add(1, Ordering::SeqCst);
+                    if stop.load(Ordering::SeqCst) {
+                        Pass::Stop
+                    } else {
+                        Pass::Go(())
+                    }
+                },
+                |stream: UnixStream, ()| {
+                    let _ = tx.send(stream);
+                    Ok(())
+                },
+            );
+        });
+        (accept, rx)
+    }
+
+    fn bound(dir: &tempfile::TempDir) -> (UnixListener, std::path::PathBuf) {
+        let socket = dir.path().join("accept.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        (listener, socket)
+    }
+
+    /// A dial to a parked loop is accepted when it arrives, not when the park
+    /// times out: with a 10 s park, a loop that sleeps instead of polling the
+    /// listener takes about 10 s to accept and fails the 5 s bound.
+    #[test]
+    fn a_dial_ends_the_idle_park() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (listener, socket) = bound(&tmp);
+        let passes = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (accept, accepted) = counting_loop(
+            listener,
+            Duration::from_secs(10),
+            passes.clone(),
+            stop.clone(),
+        );
+
+        // Let the first pass find the backlog empty and park.
+        while passes.load(Ordering::SeqCst) == 0 {
+            thread::sleep(Duration::from_millis(5));
+        }
+        thread::sleep(Duration::from_millis(200));
+
+        let _dial = UnixStream::connect(&socket).unwrap();
+        let t0 = Instant::now();
+        accepted
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the dial ends the park and is accepted within 5 s of a 10 s park");
+        eprintln!("accepted {:?} after the dial", t0.elapsed());
+
+        // A second dial wakes the loop again; its next pass sees `stop`.
+        stop.store(true, Ordering::SeqCst);
+        let _wake = UnixStream::connect(&socket).unwrap();
+        accept.join().expect("the loop stops at its next pass");
+    }
+
+    /// An idle loop parks between passes: over 500 ms with a 50 ms park it
+    /// makes about ten. A park that returns at once makes thousands.
+    #[test]
+    fn an_idle_loop_parks_instead_of_spinning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (listener, socket) = bound(&tmp);
+        let passes = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (accept, _accepted) = counting_loop(
+            listener,
+            Duration::from_millis(50),
+            passes.clone(),
+            stop.clone(),
+        );
+
+        thread::sleep(Duration::from_millis(500));
+        let n = passes.load(Ordering::SeqCst);
+        stop.store(true, Ordering::SeqCst);
+        let _wake = UnixStream::connect(&socket).unwrap();
+        accept.join().unwrap();
+        assert!(
+            (1..=30).contains(&n),
+            "an idle loop made {n} passes in 500 ms with a 50 ms park"
+        );
+    }
+
+    /// A listener that polls readable while `accept` returns `EAGAIN` —
+    /// Linux after `shutdown(SHUT_RD)` on the listening socket — costs one
+    /// extra pass per park, never a spinning core.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_readable_listener_with_nothing_to_accept_does_not_spin() {
+        use std::os::fd::AsRawFd;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (listener, _socket) = bound(&tmp);
+        // SAFETY: a valid, open listening fd; `shutdown` takes no pointers.
+        assert_eq!(
+            unsafe { libc::shutdown(listener.as_raw_fd(), libc::SHUT_RD) },
+            0
+        );
+        // The premise: the listener reads readable and has nothing to accept.
+        let t0 = Instant::now();
+        assert!(
+            super::park_on_listener(&listener, Duration::from_secs(10)),
+            "the shut listener polls readable"
+        );
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+
+        let passes = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (accept, _accepted) = counting_loop(
+            listener,
+            Duration::from_millis(50),
+            passes.clone(),
+            stop.clone(),
+        );
+        thread::sleep(Duration::from_millis(500));
+        let n = passes.load(Ordering::SeqCst);
+        stop.store(true, Ordering::SeqCst);
+        accept.join().unwrap();
+        assert!(
+            (1..=60).contains(&n),
+            "a readable listener with nothing to accept made {n} passes in 500 ms with a 50 ms park"
+        );
     }
 }
 
