@@ -18,7 +18,10 @@ const MAX_DEPTH: usize = 64;
 /// Encode one immutable document. Too large or deeply nested means abstain.
 #[must_use]
 pub fn encode(doc: &Document) -> Option<Vec<u8>> {
-    let mut w = Encoder(Vec::new());
+    // A capacity hint: the encoding holds the raw text and then the tree, so
+    // reserve twice the raw length, clamped to 256 B..=256 KiB.
+    let cap = doc.raw.len().saturating_mul(2).clamp(256, 256 * 1024);
+    let mut w = Encoder(Vec::with_capacity(cap));
     w.string(&doc.raw)?;
     w.node(&doc.root, 0)?;
     Some(w.0)
@@ -258,7 +261,10 @@ impl Decoder<'_> {
             },
             1 => {
                 let count = self.count()?;
-                let mut pairs = Vec::new();
+                // A pair encodes to at least 16 bytes (two length prefixes):
+                // the reservation is `count` for every decodable record and
+                // never more pairs than the record bytes left can hold.
+                let mut pairs = Vec::with_capacity(count.min(self.0.len() / 16));
                 for _ in 0..count {
                     pairs.push((self.string()?, self.string()?));
                 }
@@ -333,7 +339,10 @@ impl Decoder<'_> {
             return None;
         }
         let count = self.count()?;
-        let mut children = Vec::new();
+        // A node encodes to at least 49 bytes (kind, span, 16-hex rev, child
+        // count): the reservation is `count` for every decodable record and
+        // never more nodes than the record bytes left can hold.
+        let mut children = Vec::with_capacity(count.min(self.0.len() / 49));
         for _ in 0..count {
             children.push(self.node(raw, depth + 1, &span)?);
         }

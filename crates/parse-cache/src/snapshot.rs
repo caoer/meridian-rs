@@ -143,16 +143,31 @@ fn emit(
     payload: &[u8],
 ) -> io::Result<()> {
     let sum = checksum(tag, digest, payload);
+    emit_with_sum(out, stream, tag, digest, &sum, payload)
+}
+
+/// Write one record with its checksum `sum` (`checksum(tag, digest, payload)`)
+/// and fold its frame into the footer's stream hash. [`emit`] computes `sum`;
+/// [`rewrite`]'s carry passes the sum [`records`] verified for the same tag,
+/// digest and payload, so a carried payload is hashed once.
+fn emit_with_sum(
+    out: &mut impl Write,
+    stream: &mut blake3::Hasher,
+    tag: u8,
+    digest: &[u8; 32],
+    sum: &[u8; 32],
+    payload: &[u8],
+) -> io::Result<()> {
     let len = (payload.len() as u64).to_le_bytes();
     out.write_all(&[tag])?;
     out.write_all(digest)?;
     out.write_all(&len)?;
-    out.write_all(&sum)?;
+    out.write_all(sum)?;
     out.write_all(payload)?;
     stream.update(&[tag]);
     stream.update(digest);
     stream.update(&len);
-    stream.update(&sum);
+    stream.update(sum);
     Ok(())
 }
 
@@ -217,9 +232,9 @@ pub fn rewrite(
             &mut prior,
             &prior_header,
             &wanted,
-            |tag, digest, payload| {
+            |tag, digest, sum, payload| {
                 if tag == 0 && documents.remove(digest).is_some() {
-                    emit(&mut out, &mut stream, 0, digest, &payload)?;
+                    emit_with_sum(&mut out, &mut stream, 0, digest, sum, &payload)?;
                     written.carried += 1;
                 }
                 Ok(true)
@@ -273,10 +288,10 @@ fn read_header(input: &mut impl Read, workspace: &Path) -> io::Result<(String, V
 }
 
 /// Walk the records after a verified `header`, handing `visit` each one whose
-/// digest `wanted` holds and whose checksum verifies: its tag, digest and
-/// payload. `visit` answers whether the record was sound. Returns whether the
-/// stream ended at a valid footer with every record sound; a damaged record is
-/// skipped, a broken frame ends the walk.
+/// digest `wanted` holds and whose checksum verifies: its tag, digest,
+/// verified checksum and payload. `visit` answers whether the record was
+/// sound. Returns whether the stream ended at a valid footer with every record
+/// sound; a damaged record is skipped, a broken frame ends the walk.
 ///
 /// # Errors
 /// Only what `visit` returns.
@@ -284,7 +299,7 @@ fn records(
     input: &mut impl Read,
     header: &[u8],
     wanted: &BTreeSet<[u8; 32]>,
-    mut visit: impl FnMut(u8, &[u8; 32], Vec<u8>) -> io::Result<bool>,
+    mut visit: impl FnMut(u8, &[u8; 32], &[u8; 32], Vec<u8>) -> io::Result<bool>,
 ) -> io::Result<bool> {
     let mut stream = blake3::Hasher::new();
     stream.update(header);
@@ -333,7 +348,7 @@ fn records(
             continue;
         }
         if retain {
-            sound &= visit(tag[0], &digest, payload)?;
+            sound &= visit(tag[0], &digest, &sum, payload)?;
         }
     }
 }
@@ -371,7 +386,7 @@ pub fn scan(
 ) -> io::Result<Scanned> {
     let (fingerprint, header) = read_header(&mut input, workspace)?;
     let mut adopted = BTreeSet::new();
-    let complete = records(&mut input, &header, wanted, |tag, digest, payload| {
+    let complete = records(&mut input, &header, wanted, |tag, digest, _sum, payload| {
         let object = match tag {
             0 => crate::decode(&payload, digest).map(Object::Doc),
             1 => String::from_utf8(payload)

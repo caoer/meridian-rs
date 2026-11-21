@@ -186,6 +186,55 @@ fn all_truncations_and_length_corruption_are_bounded_and_safe() {
     assert!(restored.docs.is_empty());
 }
 
+/// A rewrite that carries every document record writes the same bytes as one
+/// that encodes them all: a carried record keeps the checksum its prior
+/// verified, which is the checksum an encoded record is written with.
+#[test]
+fn a_rewrite_that_carries_every_record_is_byte_identical_to_one_that_encodes_them() {
+    let (docs, unserved, leaves) = fixture();
+    let mut encoded = Vec::new();
+    let written = parse_cache::snapshot::rewrite(
+        &mut encoded,
+        Path::new("/workspace"),
+        "b3c:test",
+        &unserved,
+        &leaves,
+        None::<&[u8]>,
+        |path, _| docs.get(path).and_then(|doc| parse_cache::encode(doc)),
+    )
+    .unwrap();
+    assert_eq!(
+        written,
+        parse_cache::snapshot::Rewritten {
+            carried: 0,
+            encoded: 2
+        }
+    );
+
+    let mut carried = Vec::new();
+    let written = parse_cache::snapshot::rewrite(
+        &mut carried,
+        Path::new("/workspace"),
+        "b3c:test",
+        &unserved,
+        &leaves,
+        Some(encoded.as_slice()),
+        |path, _| -> Option<Vec<u8>> { panic!("{path} has a record to carry") },
+    )
+    .unwrap();
+    assert_eq!(
+        written,
+        parse_cache::snapshot::Rewritten {
+            carried: 2,
+            encoded: 0
+        }
+    );
+    assert!(
+        carried == encoded,
+        "a carried snapshot differs from the encoded one it was carried from"
+    );
+}
+
 /// A rewrite over the snapshot it replaces copies the document record its
 /// leaf set still names, asks for the one member no record covers, drops the
 /// member that left, and restores completely (merkle-spec §6.9, saving under
