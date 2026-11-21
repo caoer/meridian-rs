@@ -114,6 +114,16 @@ const RESCAN_RECORD_CAP: usize = 64;
 #[allow(clippy::duration_suboptimal_units)]
 const COOKIE_HOLDOFF: Duration = Duration::from_secs(60);
 
+/// Whether this platform's event stream can vouch (merkle-spec §6.4, the
+/// stream that can vouch). A sighting proves ordered delivery only where the
+/// stream hands events over in the order the kernel raised them. inotify
+/// does. `FSEvents` does not: `fseventsd` can deliver a sentinel's entry
+/// ahead of the entries for writes that completed before the sentinel
+/// existed, so a sighting there proves nothing about the dirty set. Where
+/// this is `false` every barrier answers [`CookieOutcome::Unproven`] at once
+/// and its caller takes the extent-refresh floor.
+pub(crate) const STREAM_VOUCHES: bool = cfg!(not(target_os = "macos"));
+
 /// Why a rescan was marked — every rescan carries its cause into the log and
 /// the record; an anonymous rescan is unconstructible (merkle-spec §6.4,
 /// pre-merge ruling 3's suspicious-only trigger set).
@@ -369,7 +379,8 @@ pub(crate) enum CookieOutcome {
     /// the write is delivered, so the dirty set is complete as of it — the
     /// O(1) currency proof (watchman's shape).
     Seen,
-    /// Timeout or I/O failure: no proof either way. The caller falls to the
+    /// Timeout, I/O failure, or a stream that cannot vouch
+    /// ([`STREAM_VOUCHES`]): no proof either way. The caller falls to the
     /// extent-refresh floor — and a cookie timeout is a NAMED reason for
     /// doubt (§6.4 suspicious-only ladder), never silent trust.
     Unproven,
@@ -523,6 +534,9 @@ impl WorkspaceFeed {
     /// `timeout` (the write-path cookie budget is unchanged). The
     /// sentinel's own directory is still pre-created so the cookie itself
     /// never sits in the gap.
+    ///
+    /// All of that holds where [`STREAM_VOUCHES`]. Elsewhere the barrier
+    /// answers [`CookieOutcome::Unproven`] without writing a sentinel.
     pub(crate) fn cookie_barrier(&self, workspace: &Path, timeout: Duration) -> CookieOutcome {
         self.cookie_barrier_at(workspace, Path::new(COOKIE_DIR), timeout)
     }
@@ -566,6 +580,10 @@ impl WorkspaceFeed {
     ) -> CookieOutcome {
         if member_candidate(dir) || hideable_prefix(dir) {
             return CookieOutcome::Refused;
+        }
+        // No sentinel is written where its sighting would prove nothing.
+        if !STREAM_VOUCHES {
+            return CookieOutcome::Unproven;
         }
         {
             let s = self
