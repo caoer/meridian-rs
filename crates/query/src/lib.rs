@@ -589,13 +589,9 @@ fn collect_backlink_edits(
             (NodeKind::Section { .. }, Some(hp)) => Some(&**hp),
             _ => section_hpath,
         };
-        if let NodeKind::Wikilink {
-            target, heading, ..
-        }
-        | NodeKind::Embed {
-            target, heading, ..
-        } = &node.kind
-            && heading.as_deref() == Some(ctx.old_text)
+        if let NodeKind::Wikilink { target, qualifiers } | NodeKind::Embed { target, qualifiers } =
+            &node.kind
+            && qualifiers.as_deref().and_then(|q| q.heading.as_deref()) == Some(ctx.old_text)
             && resolves_to(ctx.index, ctx.src_path, target, ctx.from_path)
             && let Some(hpath) = here
         {
