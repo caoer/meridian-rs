@@ -8,6 +8,7 @@
 //! block a write; CHECKs do.
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use effects::{
     ArgValue, CapabilitySet, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits,
@@ -773,12 +774,18 @@ fn extract_how_block(frontmatter: &str) -> Option<&str> {
 /// out of scope by construction — the boundary this enforces is the set of GLOBAL
 /// names a predicate may reach for, which is exactly where the capability line lives.
 fn check_ceiling(source: &str, caps: &[EffectKind]) -> Result<(), LoadError> {
-    let mut allowed: HashSet<String> = GlobalsBuilder::standard()
-        .build()
-        .names()
-        .map(|n| n.as_str().to_owned())
-        .collect();
-    allowed.extend(REACTION_VOCAB.iter().map(|name| (*name).to_owned()));
+    // The names every predicate may reach whatever its caps: the standard
+    // library and the reaction vocabulary. Collected once per process — this
+    // runs on every armed-law load, which every write performs.
+    static UNGATED: LazyLock<HashSet<String>> = LazyLock::new(|| {
+        GlobalsBuilder::standard()
+            .build()
+            .names()
+            .map(|n| n.as_str().to_owned())
+            .chain(REACTION_VOCAB.iter().map(|name| (*name).to_owned()))
+            .collect()
+    });
+    let mut allowed = UNGATED.clone();
     for cap in caps {
         allowed.insert(cap.constructor().to_owned());
     }

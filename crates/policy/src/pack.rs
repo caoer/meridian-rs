@@ -4,6 +4,7 @@
 //! `syntax`/`model` type crosses the load-gate fence.
 
 use std::cell::RefCell;
+use std::sync::OnceLock;
 
 use model::{Document, Hpath, Node, NodeKind, NodeRev};
 use starlark::environment::{Globals, GlobalsBuilder, Module};
@@ -476,7 +477,7 @@ pub(crate) fn eval_over_facts(
     let mut total_steps: u64 = 0;
     let mut peak_mem: u64 = 0;
     for predicate in predicates {
-        let run = run_predicate(&globals, predicate, facts, budget)?;
+        let run = run_predicate(globals, predicate, facts, budget)?;
         total_steps = total_steps.saturating_add(run.used_steps);
         peak_mem = peak_mem.max(run.used_mem);
         if total_steps > budget.steps || peak_mem > budget.mem {
@@ -513,7 +514,7 @@ pub(crate) fn eval_document(
     let mut total_steps: u64 = 0;
     let mut peak_mem: u64 = 0;
     for predicate in predicates {
-        match run_predicate(&globals, predicate, facts, budget) {
+        match run_predicate(globals, predicate, facts, budget) {
             Ok(run) => {
                 total_steps = total_steps.saturating_add(run.used_steps);
                 peak_mem = peak_mem.max(run.used_mem);
@@ -576,10 +577,14 @@ struct PredicateRun {
     used_mem: u64,
 }
 
-/// Build the `rulepack-api@1` globals: the Starlark standard library plus the
+/// The `rulepack-api@1` globals: the Starlark standard library plus the
 /// injected `violation()` builtin.
-fn rulepack_globals() -> Globals {
-    GlobalsBuilder::standard().with(rulepack_api).build()
+///
+/// Built once per process and shared by every evaluation thread, so a builtin
+/// registered here keeps no state of its own; per-run state rides `eval.extra`.
+fn rulepack_globals() -> &'static Globals {
+    static GLOBALS: OnceLock<Globals> = OnceLock::new();
+    GLOBALS.get_or_init(|| GlobalsBuilder::standard().with(rulepack_api).build())
 }
 
 /// Peak heap-arena bytes as `u64` (saturating) — the memory meter reads. Peak

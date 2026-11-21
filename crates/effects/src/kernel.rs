@@ -14,6 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use starlark::collections::SmallMap;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, Module};
@@ -80,8 +81,12 @@ where
 
 /// Closed rule-language globals: Starlark stdlib + effect-descriptor
 /// constructors. Entire capability surface; no ambient I/O, no stream builtins.
-pub(crate) fn effect_globals() -> Globals {
-    GlobalsBuilder::standard().with(effect_api).build()
+///
+/// Built once per process and shared by every evaluation thread, so a builtin
+/// registered here keeps no state of its own; per-run state rides `eval.extra`.
+pub(crate) fn effect_globals() -> &'static Globals {
+    static GLOBALS: OnceLock<Globals> = OnceLock::new();
+    GLOBALS.get_or_init(|| GlobalsBuilder::standard().with(effect_api).build())
 }
 
 /// Rule dialect: standard grammar with `load` disabled — parse error if used
@@ -1360,12 +1365,18 @@ pub fn json_of_value(value: Value<'_>) -> anyhow::Result<serde_json::Value> {
 /// is a phase gate at the accessors, never a difference in which names exist,
 /// because starlark-rust resolves globals at module-compile time and a frozen
 /// def cannot be rebound.
+///
+/// One instance per process, under the rule [`effect_globals`] states: every
+/// frozen module a load produces references this one globals heap.
 #[must_use]
-pub fn hook_globals() -> Globals {
-    GlobalsBuilder::standard()
-        .with(effect_api)
-        .with(hook_api)
-        .build()
+pub fn hook_globals() -> &'static Globals {
+    static GLOBALS: OnceLock<Globals> = OnceLock::new();
+    GLOBALS.get_or_init(|| {
+        GlobalsBuilder::standard()
+            .with(effect_api)
+            .with(hook_api)
+            .build()
+    })
 }
 
 /// The banned suppression spelling `_ = read(…)`, located syntactically on the
@@ -1407,15 +1418,24 @@ fn banned_suppression(ast: &AstModule) -> Option<u32> {
 /// Effects mode (script-effects ruling, 2026-08-13): the admitted effect
 /// builtins join the surface EXACTLY when named — a pure submission never
 /// holds `run` at all, which is what "provably pure by default" means.
-pub(crate) fn script_globals(effects: &[String]) -> Globals {
-    let mut builder = GlobalsBuilder::standard().with(script_api);
-    if effects.iter().any(|e| e == "run") {
-        builder = builder.with(script_run_api);
-    }
-    if effects.iter().any(|e| e == "token_count") {
-        builder = builder.with(script_token_count_api);
-    }
-    builder.build()
+///
+/// One instance per admitted-effect combination, each built on first use under
+/// the rule [`effect_globals`] states. The slot index and the builder read the
+/// same two flags, so a surface holds exactly the builtins its slot names.
+pub(crate) fn script_globals(effects: &[String]) -> &'static Globals {
+    static SURFACES: [OnceLock<Globals>; 4] = [const { OnceLock::new() }; 4];
+    let run = effects.iter().any(|e| e == "run");
+    let token_count = effects.iter().any(|e| e == "token_count");
+    SURFACES[usize::from(run) | (usize::from(token_count) << 1)].get_or_init(|| {
+        let mut builder = GlobalsBuilder::standard().with(script_api);
+        if run {
+            builder = builder.with(script_run_api);
+        }
+        if token_count {
+            builder = builder.with(script_token_count_api);
+        }
+        builder.build()
+    })
 }
 
 /// The script entry's per-attempt state: the one effectful seam (`host`), the
@@ -2339,7 +2359,7 @@ fn eval_and_freeze(
                     break;
                 }
                 match AstModule::parse(id, source.to_owned(), &script_dialect()) {
-                    Ok(ast) => outcome = eval.eval_module(ast, &globals).map(|_| ()),
+                    Ok(ast) => outcome = eval.eval_module(ast, globals).map(|_| ()),
                     Err(e) => {
                         return (
                             RuleRun::failed(EvalError::Parse {
@@ -2850,7 +2870,7 @@ pub(crate) fn run_script(
         on_eval_stack(|| {
             let entry = ScriptEntry::new(ctx, limits, host);
             let globals = script_globals(&ctx.effects);
-            let run = metered_eval(&globals, &rule, &EvalEntry::Script(&entry), limits.eval);
+            let run = metered_eval(globals, &rule, &EvalEntry::Script(&entry), limits.eval);
             let bindings = entry.bindings.borrow().clone();
             let armed = entry.armed.borrow().clone();
             let arm_refusal = entry.arm_refusal.borrow().clone();
@@ -3231,8 +3251,9 @@ fn dispatch_entry<'v>(
 /// capability waiting for a consumer. The stdlib carries no file/net/os/clock
 /// surface (module § Purity), so this is the smallest surface that can still
 /// compute a value.
-fn value_globals() -> Globals {
-    GlobalsBuilder::standard().build()
+fn value_globals() -> &'static Globals {
+    static GLOBALS: OnceLock<Globals> = OnceLock::new();
+    GLOBALS.get_or_init(|| GlobalsBuilder::standard().build())
 }
 
 /// Run one value block metered: evaluate the module under [`rule_dialect`],
@@ -3293,7 +3314,7 @@ pub(crate) fn run_value_entry(
             };
 
             let mut depth_overflow = false;
-            let outcome = match eval.eval_module(ast, &globals) {
+            let outcome = match eval.eval_module(ast, globals) {
                 Err(e) => {
                     depth_overflow = is_depth_overflow(&e);
                     Err(fault(block, &e))
@@ -3520,7 +3541,7 @@ mod tests {
                 .map_err(|e| format!("parse: {e}"))?;
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(store);
-            let outcome = eval.eval_module(ast, &hook_globals());
+            let outcome = eval.eval_module(ast, hook_globals());
             drop(eval);
             outcome.map_err(|e| format!("{e}"))?;
             module.freeze().map_err(|e| format!("freeze: {e:?}"))
@@ -3709,7 +3730,7 @@ def run(event):
                     .expect("the probe parses");
                 let mut eval = Evaluator::new(&module);
                 eval.extra = Some(&store);
-                let outcome = eval.eval_module(ast, &effect_globals());
+                let outcome = eval.eval_module(ast, effect_globals());
                 let classified = outcome
                     .err()
                     .map(|e| (classify_starlark_fault(&e), starlark_fault_line(&e)));
@@ -3760,7 +3781,7 @@ def run(event):
             .expect("parses");
             let mut eval = Evaluator::new(&module);
             eval.extra = Some(&store);
-            let outcome = eval.eval_module(ast, &effect_globals());
+            let outcome = eval.eval_module(ast, effect_globals());
             let is_ok = outcome.is_ok();
             drop(eval);
             is_ok
@@ -4389,8 +4410,8 @@ def run(event):
     /// construction.
     #[test]
     fn every_entry_has_its_own_global_surface() {
-        let hooked = plane_surface(&effect_globals());
-        let script = plane_surface(&script_globals(&[]));
+        let hooked = plane_surface(effect_globals());
+        let script = plane_surface(script_globals(&[]));
         println!("POPULATION hooked-plane surface = {hooked:?}");
         println!("POPULATION script-plane surface = {script:?}");
 
@@ -4418,7 +4439,7 @@ def run(event):
         // than a literal list so a new effect kind cannot join the globals
         // without this test noticing — the structural half of "an effect
         // builtin without the gate cannot exist".
-        let hook = plane_surface(&hook_globals());
+        let hook = plane_surface(hook_globals());
         println!("POPULATION hook-plane surface = {hook:?}");
         let expected_hook: HashSet<String> = expected_hooked
             .iter()
@@ -4438,7 +4459,7 @@ def run(event):
 
         // Effects mode: the admitted builtin joins EXACTLY when named — the
         // sanctioned exec surface (#17 overturned on the flagged path only).
-        let live = plane_surface(&script_globals(&["run".to_owned()]));
+        let live = plane_surface(script_globals(&["run".to_owned()]));
         let expected_live: HashSet<String> = ["read", "me", "put", "run"]
             .into_iter()
             .map(ToOwned::to_owned)
@@ -4447,7 +4468,7 @@ def run(event):
             live, expected_live,
             "effects:[\"run\"] adds exactly the admitted builtin"
         );
-        let measured = plane_surface(&script_globals(&["token_count".to_owned()]));
+        let measured = plane_surface(script_globals(&["token_count".to_owned()]));
         let expected_measured: HashSet<String> = ["read", "me", "put", "token_count"]
             .into_iter()
             .map(ToOwned::to_owned)
@@ -4456,7 +4477,7 @@ def run(event):
             measured, expected_measured,
             "effects:[\"token_count\"] adds exactly the admitted builtin — never run"
         );
-        let both = plane_surface(&script_globals(&[
+        let both = plane_surface(script_globals(&[
             "run".to_owned(),
             "token_count".to_owned(),
         ]));
