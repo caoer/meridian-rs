@@ -2012,11 +2012,12 @@ grep -o 'phase=currency\.floor\.[a-z_]*' "$L" | sort | uniq -c   # by cause
 `domain_snapshot*` lights it up, so **a `phase=snapshot` line does not imply a
 run.** Callers that fold and report it under their own `cmd=`: `mrd sql`,
 `mrd check`, `mrd walk`, `mrd repair`, `mrd retire`, `mrd links`, the daemon's
-resident rebuild, its watch loop. It also repeats per mount corpus (`load_mounts_for` →
-`build_docs_at`, calling `fs::domain_snapshot`): once for the workspace corpus,
-once per mounted root addressed — lock-addressed on
-`walk`/`check`/`status`/`walk_op`, link-addressed on
-`links`/`sql`/`sql_op`/`links_op`.
+resident rebuild, its watch loop. On the in-process lanes it also repeats per
+mount corpus (`load_mounts_for` → `mount_corpus::build_in_process`, calling
+`fs::domain_snapshot`): once for the workspace corpus, once per mounted root
+addressed — lock-addressed on `walk`/`check`/`status`, link-addressed on
+`links`/`sql`. A daemon op (`walk_op`, `sql_op`, `links_op`) folds a mounted
+root once, when its resident engine is first built.
 
 **But do not price a run by that count — some full-corpus folds emit no phase
 at all.** The write doors observe through `fs::DomainCache`
