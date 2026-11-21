@@ -531,7 +531,13 @@ engine-side.
   own sentinel when it returns; a crash or a failed removal leaves a sentinel
   behind, one per barrier then in flight, and no feed reads it again. The
   feed creates `.meridian/cookies/` before it arms the watch, so no sentinel
-  lands in a directory the watch has not yet armed. A non-member-candidate
+  lands in a directory the watch has not yet armed. The feed and every barrier
+  keep a `.gitignore` of `*` in that directory, written when absent and never
+  rewritten, so a git walk of the workspace (`git add -A`, `git status`) never
+  lists a sentinel: git stats each untracked entry it lists, and a sentinel
+  its barrier removed between git's directory read and that stat fails the
+  walk with `fatal: unable to stat`. The ignore file carries no token, so an
+  event on it is no sighting. A non-member-candidate
   path that can hide members and is not enumerated (the new-directory row of
   the rescan ladder below) is a missed-event: `Seen` is then illegal, and the
   barrier answers unproven at once, without spending the cookie timeout. An
