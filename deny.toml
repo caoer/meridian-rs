@@ -49,13 +49,15 @@ exceptions = [
 # CI clones it fresh per run, so the fetch must be LAN-cheap and must not
 # depend on GitHub rate limits. No credentials needed.
 db-urls = ["https://git.0xdao.app/caoer115/advisory-db"]
-# Unmaintained-only advisories, all transitive via policy → starlark 0.14.2
-# (the pinned reference interpreter). Revisit at any starlark bump.
+# Unmaintained-only advisories on transitive crates. The first four enter via
+# policy → starlark 0.14.2 (the pinned reference interpreter): revisit at any
+# starlark bump. chrono enters via duckdb → arrow: revisit at any duckdb bump.
 ignore = [
     { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill unmaintained; via starlark → pagable → postcard → heapless" },
     { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained; via starlark proc-macros" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained; via starlark_map" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; via starlark proc-macros" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; via duckdb → arrow (arrow-arith, arrow-array, arrow-cast)" },
 ]
 
 [bans]
