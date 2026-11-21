@@ -524,6 +524,23 @@ The shape mirrors the app's `resolvedLinks`/`unresolvedLinks`: per-edge counts, 
 
 **`path` present is a door; `path` absent is an enumeration (§12.1).** Named, the op serves the page even when the hash domain excludes it, edges resolved against the corpus; only a path with no file under the root is `file_not_found`. Absent, the op speaks for the whole corpus and carries **`excluded`**: the workspace-relative markdown under the root that the domain does not hold, absent from `files` (§12.1 enumerator clause); the key is omitted when empty.
 
+**Cross-root edges.** A linkpath whose head names a root the mount table declares — bound, or declared and unreachable (`addr::head_names_declared_root`) — is answered by the address plane (`CorpusIndex::resolve_ref`) against that root's corpus. Its answer rides two keys beside `resolved` and `unresolved`, each omitted when empty, on both dialects:
+
+```json
+ "files":{"claim.md":{
+   "resolved":{},
+   "unresolved":{"https://example.com":1},
+   "resolved_rooted":{"sessions":{"notes.md":1}},
+   "refused":{"sessions:absent.md":{"color":"red","reason":"file-not-found",
+     "message":"…","count":1}}}}
+```
+
+1. **`resolved_rooted`** keys the root, then the path inside it, with the per-edge count: two levels, never a joined `root:path` key, which would collide with an ambient path that carries a colon.
+2. **`refused`** keys the linkpath as written and carries the address plane's verdict whole — `color`, `reason`, `detail` when the word does not say it all, the teaching `message`, `count` — in the walk plane's vocabulary (§ A.10): red `file-not-found` scoped to the root that missed, grey `path-unseeable` for a declared root that cannot be read, red `bad-ref` for a declared head with a malformed remainder (`sessions:a:b`). A refused edge is a believed mount relationship that does not hold; an `unresolved` edge is an ordinary authoring state.
+3. **A table-external head stays `unresolved`**, keyed verbatim, never refused: an external scheme (`[[https://…]]` parses with head `https`), an undeclared root, a name outside `[a-z0-9-]`. The link map mirrors the app, where such a link is a dangling one; the address plane refuses those spellings on the doors that take an address (`walk`, pins, a named read). A mount table that does not resolve or bind declares nothing, so every rooted head is `unresolved`.
+4. **One edge rule, one serve.** The rule is `query::resolve_edge` and the serve is `wire_serve::read::links`; the daemon and the in-process lane of `mrd links` both call it, so the body does not depend on which lane answered.
+5. **The daemon resolves against its resident engines.** It reads the mount table from its own environment on every call and takes a corpus for exactly the roots the queried page's links name — the whole corpus's, when `path` is absent — through `Registry::mounted_corpus` (§ A.10): built once, refreshed O(dirty), so a second call over the same root folds nothing (`crates/registry/tests/links_mount_reuse.rs`). A named root with no resident engine goes through the §3.2 cold gate as a workspace does: its rebuild runs in the background and the op refuses `corpus_warming` (retry) until it lands.
+
 ### §4.7 fingerprint and diff — the integrity rung
 
 `fingerprint` mints the workspace's content hash; `diff` replays the Deltas between two such hashes.
@@ -3183,9 +3200,11 @@ stored, citing the doc revs read (§2.4). Workspace-bound, unlike § A.5
   engine for that root (`Registry::mounted_corpus` — the same
   `warm_or_build` every served workspace warms through: built once, refreshed
   O(dirty), under the same residency and reap), never a per-call build from
-  disk. A root cold in this daemon is built inline on the first call that
-  names it. The § A.11 `sql` projection resolves cross-root links through the
-  same engines.
+  disk. A root cold in this daemon is built inline on the first `walk` or
+  `sql` call that names it. The § A.11 `sql` projection and the §4.6 `links`
+  op resolve cross-root links through the same engines; `links` sends a cold
+  root through the §3.2 cold gate and refuses `corpus_warming` while it
+  builds.
 - **The CLI rides this door.** `mrd walk` dials the resident daemon as
   `read` and `links` do, auto-spawning it, and renders the wire rows through
   the same `color_*` projections, so stdout is byte-identical across lanes.
@@ -3209,8 +3228,12 @@ stored, citing the doc revs read (§2.4). Workspace-bound, unlike § A.5
   address a 208k-member root measured 138.8 s and 3.86 GiB resident (build
   `58b702c8`), and a warming or slow daemon is exactly when every caller would
   pay it at once. `mrd links` follows the same ladder for the first three
-  arms; its other op refusals still fall to the in-process answer, which
-  holds the mount table the daemon's `links` does not.
+  arms; its other op refusals fall to the in-process lane, whose refusal seam
+  speaks them. The daemon answers §4.6 cross-root edges from the mount table
+  of its own environment, so `mrd links` keeps a daemon answer unless a head
+  the daemon left `unresolved` names a root the CLI's own table declares, or
+  that table cannot be read; then the in-process lane answers from the CLI's
+  environment.
 
 ```json
 {"id":12,"op":"walk","path":"a.md"}

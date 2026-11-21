@@ -4,11 +4,12 @@
 //! caller's, projection is `wire-map`'s, edges are `query`'s. Named catalog
 //! access holds a fallible body lease through [`with_document`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use wire::{ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root, SecRef, Span};
 
 use crate::bad_request;
+use crate::mount_corpus::MountCorpora;
 
 mod catalog;
 pub use catalog::with_document;
@@ -1187,7 +1188,7 @@ fn unaddressable_fix(host: &str, display: &str) -> String {
 /// `O(n log n)`: the count ceiling is applied to the DISTINCT set, so this
 /// runs before anything bounds the input length.
 fn dedupe_selectors(sels: &[wire::ReadSel]) -> (Vec<wire::ReadSel>, usize) {
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut out: Vec<wire::ReadSel> = Vec::with_capacity(sels.len());
     for sel in sels {
         // Selectors are strings and ints; serialization is infallible.
@@ -1499,12 +1500,21 @@ fn links_nonmember(
 /// (§10.1: no lag bounds are promised). `live_root` is a closure so it is
 /// sampled only on the success path. Call [`require_root_check`] before this.
 ///
+/// The one serve behind the daemon's `links` op and the in-process lane of
+/// `mrd links` (§4.6, Cross-root edges). `mounts` is asked once, with the mount
+/// roots the answer's link targets name — the named page's, member or not, or
+/// the whole corpus's when `path` is absent — and hands back the mount table
+/// with a corpus for those roots: [`crate::mount_corpus::load_mounts_for`] in
+/// process, the daemon's resident engines through
+/// [`crate::mount_corpus::load_mounts_for_from`]. The needed set and the edges
+/// come from one read of a named non-member, so the two cannot disagree.
+///
 /// # Errors
 /// `path` names an unserved member (per-file `invalid_utf8`, §52) or no file
-/// under the workspace root (`file_not_found`), or the caller's `live_root`
-/// sample fails. A real file OUTSIDE the hash domain is served, never refused
-/// (§12.1: the door family binds every door the caller names a path at).
-/// A member the catalog knows and cannot serve is `io_error` naming it
+/// under the workspace root (`file_not_found`), or the caller's `mounts` or
+/// `live_root` refuses. A real file OUTSIDE the hash domain is served, never
+/// refused (§12.1: the door family binds every door the caller names a path
+/// at). A member the catalog knows and cannot serve is `io_error` naming it
 /// (merkle-spec §6.8): the map never drops a member whose body is cold.
 #[allow(clippy::too_many_arguments)]
 pub fn links(
@@ -1513,29 +1523,39 @@ pub fn links(
     catalog: &dyn model::catalog::DocumentCatalog,
     unserved: &BTreeMap<String, String>,
     path: Option<&Path>,
+    mounts: impl FnOnce(&BTreeSet<addr::MountName>) -> Result<MountCorpora, Box<ErrorBody>>,
     as_of_root: Root,
     changes_seq: u64,
     live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let member = |rel: &str| catalog.revision(rel).is_some();
     let nonmember = links_nonmember(root, &member, unserved, path)?;
-    // `query::links`, never `links_rooted` with a default table: an empty
-    // `MountSet` would turn "I did not consult a mount table" into "this
-    // machine binds nothing". Rooted spellings come back `unresolved` here,
-    // and the CLI degrades rather than serve that answer
-    // (see `mrd::engine::answer_links`).
+    let needed = match (&nonmember, path) {
+        (Some(doc), _) => model::catalog::link_roots(doc),
+        (None, Some(p)) => model::catalog::scan(catalog, &p.0, model::catalog::link_roots)
+            .map_err(member_fault)?
+            .unwrap_or_default(),
+        // Descriptor metadata: no body is hydrated to name the roots.
+        (None, None) => catalog.link_roots(),
+    };
+    // `needed` narrows the corpora, never the table: a declared head whose
+    // root does not parse (`sessions:a:b`) names no corpus and is still the
+    // address plane's to refuse.
+    let mounts = mounts(&needed)?;
+    let corpus = mounts.rooted_catalog(catalog);
     let map = match (&nonmember, path) {
         (Some(doc), Some(p)) => one_file_map(
-            &query::file_links(
-                index,
-                &p.0,
-                doc,
-                &model::catalog::RootedCatalog::ambient(catalog),
-                None,
-            ),
+            &query::file_links(index, &p.0, doc, &corpus, Some(mounts.set())),
             p,
         ),
-        _ => query::links_in(index, catalog, path.map(|p| p.0.as_str())).map_err(member_fault)?,
+        _ => query::links_in(
+            index,
+            catalog,
+            &corpus,
+            mounts.set(),
+            path.map(|p| p.0.as_str()),
+        )
+        .map_err(member_fault)?,
     };
     let live = live_root()?;
     let domain = fs::domain::Domain::load(root).unwrap_or_default();
@@ -1582,53 +1602,6 @@ fn one_file_map(edges: &query::FileLinks, path: &Path) -> BTreeMap<String, query
     map
 }
 
-/// [`links`] against a root-keyed corpus and a mount table — the cross-root
-/// form.
-///
-/// The daemon does not call this: its warm state is one workspace corpus keyed
-/// by one canonical path (`registry::warm_or_build`) and holds no mounted
-/// corpora. The CLI refuses to let it answer a page that may carry a cross-root
-/// position and degrades instead — see `mrd::engine::answer_links`.
-///
-/// # Errors
-/// As [`links`].
-#[allow(clippy::too_many_arguments)]
-pub fn links_rooted(
-    root: &fs::WorkspaceRoot,
-    index: &model::CorpusIndex,
-    docs: &model::Docs,
-    unserved: &BTreeMap<String, String>,
-    corpus: &model::RootedCorpus<'_>,
-    mounts: &addr::MountSet,
-    path: Option<&Path>,
-    as_of_root: Root,
-    changes_seq: u64,
-    live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
-) -> Result<ResponseBody, Box<ErrorBody>> {
-    let member = |rel: &str| docs.contains_key(rel);
-    let nonmember = links_nonmember(root, &member, unserved, path)?;
-    let map = match (&nonmember, path) {
-        (Some(doc), Some(p)) => one_file_map(
-            &query::file_links(index, &p.0, doc, corpus, Some(mounts)),
-            p,
-        ),
-        _ => query::links_rooted(index, docs, corpus, mounts, path.map(|p| p.0.as_str())),
-    };
-    let live = live_root()?;
-    let domain = fs::domain::Domain::load(root).unwrap_or_default();
-    let probe = fs::domain::LinkTargetProbe::new(root, &domain);
-    Ok(ResponseBody::Links {
-        as_of_root,
-        live_root: live,
-        changes_seq,
-        files: map
-            .into_iter()
-            .map(|(p, e)| (p, into_wire_with_reasons(&probe, e)))
-            .collect(),
-        excluded: excluded_members(root, &member, unserved, path),
-    })
-}
-
 /// This file's unresolved edges that name a real out-of-domain file, keyed as
 /// `unresolved` keys them (§4.6, session decision 0034).
 ///
@@ -1653,11 +1626,8 @@ fn unresolved_reasons(
         .collect()
 }
 
-/// One file's edges, as the wire carries them. Shared by both arms so the
-/// answer's shape never depends on which of them served it.
-/// [`into_wire`] with the §4.6 exclusion reasons attached — the ONE mint both
-/// link doors use, so the ambient and the rooted answer can never disagree
-/// about why one edge is unresolved.
+/// One file's edges, as the wire carries them: [`into_wire`] with the §4.6
+/// exclusion reasons attached.
 fn into_wire_with_reasons(
     probe: &fs::domain::LinkTargetProbe<'_>,
     edges: query::FileLinks,
@@ -1731,7 +1701,7 @@ fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEd
             path: path.clone(),
             selector: selector.clone(),
         }),
-        // Not refusals: `query::links_rooted` routes them to `unresolved` and
+        // Not refusals: `query::file_links` routes them to `unresolved` and
         // `resolved` respectively.
         model::RefResolution::Ambient(_)
         | model::RefResolution::Rooted { .. }

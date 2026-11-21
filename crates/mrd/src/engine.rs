@@ -514,7 +514,9 @@ const PING_POLL: Duration = Duration::from_millis(25);
 
 /// Answer `links` for `workspace` (optional workspace-relative `path`): dial the resident
 /// daemon — auto-spawning it — and degrade to the in-process ephemeral engine when no daemon
-/// serves the workspace.
+/// serves the workspace, or when the daemon's mount table is not this process's
+/// ([`daemon_answer_needs_the_address_plane`]). Both lanes answer through one serve
+/// (`wire_serve::read::links`), so the body and the exit code do not depend on the lane.
 ///
 /// `format` reaches both lanes so each refusal seam can publish the `--json` face's
 /// `{workspace, error}` envelope: the degrade's ([`in_process_links`]), and the daemon lane's
@@ -544,27 +546,27 @@ pub(crate) fn answer_links(
     })
 }
 
-/// Does this answer depend on a question the daemon cannot ask? The daemon's warm state is one
-/// workspace corpus with no mount authority, so it reports every rooted spelling `unresolved` —
-/// wrong for a bound target, a silent non-refusal for a declared-but-unreachable one. The
-/// in-process path holds the mount table, so it answers both correctly. Gates on the answer,
-/// not a pre-flight scan.
+/// Did the daemon answer from a mount table that is not this process's? The daemon resolves a
+/// rooted head against the table of ITS environment (`docs/wire-contract.md` §4.6, Cross-root
+/// edges), and a client `MERIDIAN_CONFIG` never reaches it. A head it left `unresolved` that
+/// this process's table declares is that skew — a daemon whose table lacks the root, or would
+/// not resolve or bind — and the in-process lane then answers from this environment. Gates on
+/// the answer, not a pre-flight scan.
 ///
 /// Gated on the table's OWN names ([`addr::head_names_declared_root`]), never the bare lexical
 /// `:` — an external URI trips the lexical test too (`[[https://…]]` has `https:` in its head),
-/// and one such wikilink then threw away the whole warm answer for a full ephemeral rebuild
-/// that only says "https is not a mounted root" (measured 137 s on an 11.5k-file vault over
-/// 6 URL-shaped wikilinks). A head the table does not declare stays `unresolved` exactly as
-/// the daemon reported it — the ambient answer for a spelling no address here can reach.
+/// and a head no table declares is `unresolved` on both lanes, so a rebuild could only repeat
+/// the daemon's answer (one such rebuild measured 137 s on an 11.5k-file vault over 6
+/// URL-shaped wikilinks).
 fn daemon_answer_needs_the_address_plane(body: &Value) -> bool {
     needs_address_plane(body, declared_mount_set)
 }
 
 /// [`daemon_answer_needs_the_address_plane`] with the table load injectable. The table is
 /// loaded once, and only when at least one unresolved head carries a `:` (the common body has
-/// none, and pays nothing); `None` — the config would not resolve or the table would not
-/// bind — keeps the OLD posture and degrades, so a broken config never silently widens what
-/// the daemon may answer.
+/// none, and pays nothing); `None` — this process's config would not resolve or its table
+/// would not bind — degrades, so the answer under a broken config is the one this
+/// environment gives.
 fn needs_address_plane(body: &Value, table: impl FnOnce() -> Option<addr::MountSet>) -> bool {
     let mut rooted = unresolved_keys(body)
         .filter(|link| addr::head_carries_root_separator(link))
@@ -606,10 +608,10 @@ fn declared_mount_set() -> Option<addr::MountSet> {
 ///
 /// `Ok(None)` = the in-process lane answers: no daemon serves this workspace (none accepts
 /// the connection, or `hello` refuses the workspace), or the daemon answered an op refusal
-/// that is not `retry` — the in-process answer holds the mount table the daemon's `links`
-/// does not, and its refusal seam is the authoritative one. `Err` = a daemon accepted the
-/// connection and is the answer, and the answer is a refusal: build skew (0025 socket law),
-/// an exchange that did not complete, or a `retry` refusal that outlived the cap.
+/// that is not `retry` — the in-process lane's refusal seam is the authoritative one.
+/// `Err` = a daemon accepted the connection and is the answer, and the answer is a refusal:
+/// build skew (0025 socket law), an exchange that did not complete, or a `retry` refusal that
+/// outlived the cap.
 fn try_daemon_links(
     workspace: &Path,
     path: Option<&str>,
@@ -1203,26 +1205,19 @@ fn in_process_links(
     // `live_root` samples after the read; for a single in-process snapshot the
     // world does not move, so it equals `as_of` (a legal §10.1 frame).
     let live = as_of.clone();
-    // The mount table comes from the same loader the pin plane uses (`walk_cmd::load_mounts_for`),
-    // so a cross-root address resolves through the same `resolve_ref` on both planes. Corpora
-    // narrow to the roots this answer's link targets name; the table itself is never narrowed.
-    // A full-table eager load cost ~27 s CPU on a workspace naming zero roots.
     let reading = timing::phase("links.read");
-    let mounts =
-        crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, path));
-    // Carried with the corpus for the same reason `walk` carries it: a face that
-    // cannot name its filter cannot tell excluded from missing (§12.1).
-    let domain = fs::domain::Domain::load(&root)
-        .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
-    let corpus = mounts.rooted(&docs, &domain, &root);
-    let body = wire_serve::read::links_rooted(
+    let catalog = model::catalog::EagerCatalog::new(&docs);
+    let body = wire_serve::read::links(
         &root,
         &index,
-        &docs,
+        &catalog,
         &unserved,
-        &corpus,
-        mounts.set(),
         wpath.as_ref(),
+        // The mount table comes from the same loader the pin plane uses, so a cross-root
+        // address resolves through the same `resolve_ref` on both planes. Corpora narrow to
+        // the roots this answer's link targets name; the table itself is never narrowed. A
+        // full-table eager load cost ~27 s CPU on a workspace naming zero roots.
+        |needed| Ok(crate::walk_cmd::load_mounts_for(needed)),
         as_of,
         0,
         || Ok(live),

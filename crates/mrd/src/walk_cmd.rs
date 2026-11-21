@@ -309,8 +309,10 @@ pub(crate) fn load_mounts() -> Mounts {
 /// [`load_mounts`], building a corpus only for the roots in `needed` — a corpus build costs the
 /// root's size, and nothing about the workspace bounds it. Which roots are needed is the
 /// caller's question: `status`/`walk`/`check` read them off lock items
-/// ([`lock_addressed_roots`]); `links` and ephemeral `sql` off wikilink/embed targets
-/// ([`link_addressed_roots`]). `needed` narrows the corpora, never the [`addr::MountSet`].
+/// ([`lock_addressed_roots`]); ephemeral `sql` off wikilink/embed targets
+/// ([`link_addressed_roots`]); `links` hands it the set its serve reads off the answer's own
+/// link targets (`wire_serve::read::links`). `needed` narrows the corpora, never the
+/// [`addr::MountSet`].
 pub(crate) fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> Mounts {
     // An empty `needed` builds no corpus, so it queues behind none.
     if !needed.is_empty() {

@@ -29,7 +29,7 @@ use addr::MountSet;
 use model::{
     ByteSpan, CorpusIndex, Document, Edit, EditKind, HpathSeg, Node, NodeKind, Ref, RefResolution,
     RootedCorpus, SpliceRequest,
-    catalog::{DocumentCatalog, MemberFault, NameCorpus, RootedCatalog},
+    catalog::{DocumentCatalog, MemberFault, NameCorpus},
 };
 
 /// One inbound reference: which file, where, linking how.
@@ -101,57 +101,26 @@ pub fn links(
     docs: &model::Docs,
     path: Option<&str>,
 ) -> BTreeMap<String, FileLinks> {
-    links_with(index, docs, &RootedCorpus::ambient(docs), None, path)
-}
-
-/// [`links`] against a root-keyed corpus and a mount table — the form that
-/// asks the address owner ([`CorpusIndex::resolve_ref`]).
-///
-/// The ambient shorthand above is the same function with no mount authority,
-/// so there is one precedence here rather than two that agree until one is
-/// edited.
-#[must_use]
-pub fn links_rooted(
-    index: &CorpusIndex,
-    docs: &model::Docs,
-    corpus: &RootedCorpus<'_>,
-    mounts: &MountSet,
-    path: Option<&str>,
-) -> BTreeMap<String, FileLinks> {
-    links_with(index, docs, corpus, Some(mounts), path)
-}
-
-/// The one implementation behind [`links`] and [`links_rooted`], distinguished
-/// by whether the caller holds mount authority.
-///
-/// `None` is not an empty table: an empty table means this machine binds
-/// nothing, so a rooted address refuses grey `unmounted`; `None` means the
-/// caller (the resident daemon) never consulted a table at all, so a rooted
-/// spelling is reported `unresolved`, first-class, no refusal (see
-/// `mrd::engine::answer_links`).
-fn links_with(
-    index: &CorpusIndex,
-    docs: &model::Docs,
-    corpus: &RootedCorpus<'_>,
-    mounts: Option<&MountSet>,
-    path: Option<&str>,
-) -> BTreeMap<String, FileLinks> {
+    let corpus = RootedCorpus::ambient(docs);
     docs.iter()
         .filter(|(source, _)| path.is_none_or(|p| p == source.as_str()))
         .map(|(source, doc)| {
             (
                 source.clone(),
-                file_links(index, source, doc, corpus, mounts),
+                file_links(index, source, doc, &corpus, None),
             )
         })
         .collect()
 }
 
-/// [`links`] over a generation whose bodies may be cold (merkle-spec §6.8):
-/// membership comes from the catalog's metadata and each source is scan-pinned
-/// for its own edges alone, so the whole-corpus map holds one body at a time
-/// and a named `path` pins that member only. `index` is the caller's, as in
-/// [`links`]; like it, this consults no mount table.
+/// [`links`] over a generation whose bodies may be cold (merkle-spec §6.8),
+/// against a root-keyed `corpus` and the mount table `mounts`: membership
+/// comes from the catalog's metadata and each source is scan-pinned for its
+/// own edges alone, so the whole-corpus map holds one body at a time and a
+/// named `path` pins that member only. `index` is the caller's, as in
+/// [`links`]. A head `mounts` declares is the address owner's to answer
+/// ([`resolve_edge`]); an empty table declares nothing, and the map is then
+/// the ambient one.
 ///
 /// # Errors
 /// A member the catalog knows cannot be served. It is never left out of the
@@ -159,12 +128,13 @@ fn links_with(
 pub fn links_in(
     index: &CorpusIndex,
     catalog: &dyn DocumentCatalog,
+    corpus: &dyn NameCorpus,
+    mounts: &MountSet,
     path: Option<&str>,
 ) -> Result<BTreeMap<String, FileLinks>, MemberFault> {
-    let corpus = RootedCatalog::ambient(catalog);
     let edges = |source: &str| {
         model::catalog::scan(catalog, source, |doc| {
-            file_links(index, source, doc, &corpus, None)
+            file_links(index, source, doc, corpus, Some(mounts))
         })
     };
     let mut out = BTreeMap::new();
@@ -182,9 +152,10 @@ pub fn links_in(
     Ok(out)
 }
 
-/// One document's outgoing edges, resolved against `index`/`corpus`.
+/// One document's outgoing edges, resolved against `index`/`corpus` under the
+/// mount table `mounts` ([`resolve_edge`]).
 ///
-/// Split out of [`links_with`] because `source` need not be a corpus MEMBER:
+/// Its own function because `source` need not be a corpus MEMBER:
 /// a path outside the hash domain is addressable by explicit path (§12.1), so
 /// the door that is asked about one page loads it and resolves its edges
 /// against the corpus it is not in. Membership decides what the enumeration
@@ -317,9 +288,8 @@ pub fn backlinks_rooted(
     backlinks_with(index, docs, corpus, Some(mounts), target)
 }
 
-/// The one implementation behind [`backlinks`] and [`backlinks_rooted`] — see
-/// [`links_with`] for what `None` mount authority means and why it is not an
-/// empty table.
+/// The one implementation behind [`backlinks`] and [`backlinks_rooted`]; a
+/// caller with no mount table passes `None` ([`resolve_edge`]).
 fn backlinks_with(
     index: &CorpusIndex,
     docs: &model::Docs,
@@ -347,24 +317,26 @@ fn backlinks_with(
         .collect()
 }
 
-/// Edge resolution, split on one lexical question —
-/// [`addr::head_carries_root_separator`]: could the address plane have
-/// something to say about this spelling?
+/// Edge resolution, split on one question — [`addr::head_names_declared_root`]:
+/// does this spelling's head name a root the mount table declares?
 ///
+/// - Yes ⇒ the address owner, [`CorpusIndex::resolve_ref`], which peels the
+///   root, looks it up in the mount table, and runs the three rules against
+///   that root's own corpus. A declared head with a malformed remainder
+///   (`sessions:a:b`) is its refusal to speak.
 /// - No ⇒ the ambient plane, `resolve_linkpath` (§4.6 `getFirstLinkpathDest`
 ///   parity, stage 1 only). Deliberately not the pin plane's three rules:
 ///   routing ambient spellings through [`CorpusIndex::resolve_ref`] would
-///   silently widen the contract this crate's header pins.
-/// - Yes ⇒ the address owner, [`CorpusIndex::resolve_ref`], which peels the
-///   root, looks it up in the mount table, and runs the three rules against
-///   that root's own corpus.
+///   silently widen the contract this crate's header pins. A table-external
+///   head — an external scheme (`https://…`), an undeclared root, a name
+///   outside the mount charset — lands here too: `resolve_linkpath`'s
+///   head-colon guard stops a basename fallback answering the ambient root's
+///   file for it, so it is reported `unresolved`, never refused.
 ///
-/// The same predicate gates all three sites (`resolve_linkpath`'s guard, this
-/// split, the CLI's in-process degrade — which then narrows further by the
-/// mount table's own names, `addr::head_names_declared_root`); two predicates
-/// that merely agree drift the moment either is edited. The guard is what
-/// stops a basename fallback answering the ambient root's file for a rooted
-/// address.
+/// `mounts: None` is a caller that holds no table, and answers as an empty
+/// table does: nothing is declared, every edge is ambient. One rule for every
+/// caller, so the daemon's edge map and an in-process one cannot differ on a
+/// spelling (`docs/wire-contract.md` §4.6, Cross-root edges).
 ///
 /// An empty linkpath is the source itself (stage-1 parity, a self-reference).
 fn resolve_edge(
@@ -377,33 +349,22 @@ fn resolve_edge(
     if linkpath.is_empty() {
         return RefResolution::Ambient(source.to_string());
     }
-    // No mount authority ⇒ no standing to classify a rooted spelling: it falls
-    // through to the ambient plane, whose head-colon guard refuses it, and is
-    // reported `unresolved`.
-    let Some(mounts) = mounts else {
-        return match index.resolve_linkpath(linkpath, source) {
-            Some(dest) => RefResolution::Ambient(dest),
-            None => RefResolution::NotFound {
-                root: None,
-                path: linkpath.to_owned(),
-                selector: None,
-            },
-        };
-    };
-    if !addr::head_carries_root_separator(linkpath) {
-        return match index.resolve_linkpath(linkpath, source) {
-            Some(dest) => RefResolution::Ambient(dest),
-            // The §4.6 edge map keys a dangling edge by the linkpath as
-            // written, and a wikilink's fragment is carried beside its target
-            // rather than inside it — so there is no selector to report here.
-            None => RefResolution::NotFound {
-                root: None,
-                path: linkpath.to_owned(),
-                selector: None,
-            },
-        };
+    if let Some(mounts) = mounts
+        && addr::head_names_declared_root(linkpath, mounts)
+    {
+        return index.resolve_ref(linkpath, source, corpus, mounts);
     }
-    index.resolve_ref(linkpath, source, corpus, mounts)
+    match index.resolve_linkpath(linkpath, source) {
+        Some(dest) => RefResolution::Ambient(dest),
+        // The §4.6 edge map keys a dangling edge by the linkpath as written,
+        // and a wikilink's fragment is carried beside its target rather than
+        // inside it — so there is no selector to report here.
+        None => RefResolution::NotFound {
+            root: None,
+            path: linkpath.to_owned(),
+            selector: None,
+        },
+    }
 }
 
 /// Every wikilink/embed in the document, span order. `NodeKind::Link`
@@ -729,6 +690,47 @@ mod tests {
         assert_eq!(map["a.md"].resolved, counts(&[("b.md", 3)]));
         assert_eq!(map["a.md"].unresolved, counts(&[]));
         assert_eq!(map["b.md"], FileLinks::default());
+    }
+
+    /// The edge rule (`resolve_edge`): the address owner answers a head the
+    /// table declares, refusals included; every other `:`-bearing head stays
+    /// `unresolved`, and no table at all answers as an empty one.
+    #[test]
+    fn only_a_declared_head_reaches_the_address_owner() {
+        let (index, docs) = corpus(&[(
+            "claim.md",
+            "# C\n\n[[sessions:a:b]] [[https://example.com]] [[other:x.md]] [[Sessions:x.md]]\n",
+        )]);
+        let doc = &docs["claim.md"];
+        let ambient = RootedCorpus::ambient(&docs);
+        let sessions = addr::MountName::parse("sessions").unwrap();
+        let table = MountSet::new([]).with_unreachable(sessions, "/nowhere", "not readable");
+
+        let entry = file_links(&index, "claim.md", doc, &ambient, Some(&table));
+        assert_eq!(
+            entry.refused.keys().collect::<Vec<_>>(),
+            ["sessions:a:b"],
+            "a declared head with a malformed remainder is the owner's refusal"
+        );
+        assert!(matches!(
+            entry.refused["sessions:a:b"].resolution,
+            RefResolution::Malformed(_)
+        ));
+        assert_eq!(
+            entry.unresolved,
+            counts(&[
+                ("Sessions:x.md", 1),
+                ("https://example.com", 1),
+                ("other:x.md", 1)
+            ]),
+            "table-external heads are dangling links, never refusals"
+        );
+
+        let no_table = file_links(&index, "claim.md", doc, &ambient, None);
+        let empty = file_links(&index, "claim.md", doc, &ambient, Some(&MountSet::new([])));
+        assert_eq!(no_table, empty, "no table declares what an empty one does");
+        assert!(no_table.refused.is_empty());
+        assert_eq!(no_table.unresolved.len(), 4);
     }
 
     /// Empty linkpath (`[[#H]]`) is the source itself — a resolved self-edge

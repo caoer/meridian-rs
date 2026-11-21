@@ -2174,8 +2174,8 @@ pub struct FileLinks {
 pub struct RefusedEdge {
     /// `grey` or `red` — the tone.
     pub color: String,
-    /// The reason word behind the tone (`unmounted`, `path-unseeable`,
-    /// `file-not-found`, `bad-ref`).
+    /// The reason word behind the tone (`path-unseeable`, `file-not-found`,
+    /// `bad-ref`).
     pub reason: String,
     /// What the reason word does not say by itself — absent when it says it
     /// all.

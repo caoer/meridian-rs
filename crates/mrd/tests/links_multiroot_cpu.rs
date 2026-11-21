@@ -4,8 +4,8 @@
 //! links path alone (unmeasured). Measured on the multi-root table with a workspace
 //! that names **zero** roots, the residual burned ~27 s CPU — the same O(declared
 //! roots) shape W2/W5 fixed — while the already-narrowed siblings sat at ~0.17 s on
-//! the identical input. The needed set is not a lock-item scan: it is
-//! `walk_cmd::link_addressed_roots` over ambient wikilink/embed targets. The table
+//! the identical input. The needed set is not a lock-item scan: it is the roots the
+//! answer's own wikilink/embed targets name (`wire_serve::read::links`). The table
 //! itself is never narrowed.
 //!
 //! # The measure is CPU, not wall
@@ -34,7 +34,7 @@ fn links_cpu_under_budget_with_a_populated_mount_table() {
     fixture::assert_table_is_populated(&sb, &ws, &names);
 
     // Ambient-only edges — the common case the narrowing must make cheap. No root
-    // spelling, so `link_addressed_roots` is empty and no root corpus may be built.
+    // spelling, so the needed set is empty and no root corpus may be built.
     std::fs::write(
         ws.join("local.md"),
         "# Local\n\n## Body\n\nthe page the claim draws from.\n",

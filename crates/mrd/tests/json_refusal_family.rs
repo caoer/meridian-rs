@@ -438,7 +438,7 @@ fn retire_report_serves_the_envelope_on_its_corpus_leg() {
 
 /// `links` — THE THIRD SEAM, and the one the fix beside this suite never reached.
 ///
-/// `engine.rs`'s `in_process_links` hands `wire_serve::read::links_rooted`'s `ErrorBody` straight
+/// `engine.rs`'s `in_process_links` hands `wire_serve::read::links`'s `ErrorBody` straight
 /// to `Fail::tool(render_wire_error(&e))`: the human sentence is fine and stdout is EMPTY, which
 /// is the whole defect — a parsing agent cannot tell it from success with no output.
 ///
@@ -476,7 +476,7 @@ fn links_serves_the_envelope_when_the_corpus_read_refuses() {
          FRAME and not a mute verb: {ok_frame}"
     );
 
-    // The subject: a path the corpus does not hold. `links_rooted` refuses through
+    // The subject: a path the corpus does not hold. `links` refuses through
     // `links_nonmember` → `load_doc`, so this is an ordinary `file_not_found` on the seam —
     // a VALUE inside an invocation whose SHAPE is already legal, which is what makes it the
     // engine's refusal and not the CLI's.

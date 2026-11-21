@@ -290,9 +290,10 @@ pub const PATH_UNSEEABLE_REASON_WORD: &str = "path-unseeable";
 /// spelling does not parse, and its address-plane answer is a REFUSAL — still
 /// an answer. A parse-success predicate would drop every refusal silently.
 ///
-/// Lives in this leaf because the resolver's C-3 guard and the link plane's
-/// degrade must be the same test, not two that agree today. The degrade's
-/// SECOND, table-narrowed question is [`head_names_declared_root`] below.
+/// Lives in this leaf because the resolver's C-3 guard and the callers that
+/// ask it (the frontmatter referrer scan, the CLI's `links` lane gate) must be
+/// the same test, not two that agree today. The link plane's table-narrowed
+/// question is [`head_names_declared_root`] below.
 #[must_use]
 pub fn head_carries_root_separator(spelling: &str) -> bool {
     let trimmed = spelling.trim();
@@ -305,13 +306,13 @@ pub fn head_carries_root_separator(spelling: &str) -> bool {
 }
 
 /// Does this spelling's head name a root `set` DECLARES — the link plane's
-/// NARROWED degrade question: "would the address plane's answer differ from
-/// `unresolved` on a table THIS machine holds?".
+/// edge rule (`query::resolve_edge`, `docs/wire-contract.md` §4.6): "is this
+/// edge the address plane's to answer on the table THIS machine holds?".
 ///
 /// [`head_carries_root_separator`] answers the wider lexical question, and an
-/// external URI trips it (`https://…` has `https:` in its head) — one
-/// `[[https://…]]` wikilink then costs a whole-corpus ephemeral rebuild for a
-/// spelling no mount table binds. This predicate takes the text before the
+/// external URI trips it (`https://…` has `https:` in its head) — a spelling
+/// no mount table binds, which the edge map reports as a dangling link. This
+/// predicate takes the text before the
 /// head's FIRST `:` and asks [`MountSet::is_declared`]: declared-but-malformed
 /// remainders (`sessions:`, `sessions:a:b`) still answer `true` — the refusal
 /// is the address plane's to speak — while an undeclared or uncharsetted name

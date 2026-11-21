@@ -107,9 +107,24 @@ impl Sandbox {
             .expect("spawn mrd")
     }
 
+    /// [`run`](Self::run) with no daemon to reach: none is up, and the spawn
+    /// names a binary that does not exist, so the in-process lane answers.
+    fn run_degraded(&self, args: &[&str]) -> Output {
+        common::mrd_command(&self.home, &self.cache_home)
+            .args(args)
+            .current_dir(&self.ws)
+            .env("MERIDIAN_CONFIG", &self.config)
+            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+            .env_remove("MERIDIAN_WORKSPACE")
+            .output()
+            .expect("spawn mrd")
+    }
+
     /// Write the claim page carrying `body`'s links.
     fn page(&self, name: &str, body: &str) {
-        std::fs::write(self.ws.join(name), body).expect("page");
+        let path = self.ws.join(name);
+        std::fs::create_dir_all(path.parent().expect("a page has a directory")).expect("mkdir");
+        std::fs::write(path, body).expect("page");
     }
 
     /// Unmount `sessions` by rewriting the table with no mount entry.
@@ -262,14 +277,12 @@ fn a_cross_vault_link_resolves_into_the_target_root() {
 /// the two answers must DIFFER, and each must be separately correct. Identical
 /// bytes across the arms is the instrument being blind to the mount table.
 ///
-/// The unbound arm's correct answer changed with the [[links-probe-hoist]]
-/// narrowing: the degrade gate asks `addr::head_names_declared_root`, and a
-/// table that no longer declares `sessions` has no standing to refuse the
-/// spelling — the daemon's ambient `unresolved` stands, verbatim, at exit 0.
-/// The old grey(`unmounted`) refusal cost a whole-corpus ephemeral rebuild for
-/// every table-external head — `[[https://…]]` included — which is the exact
-/// cost the narrowing removes. Declared-root refusals live on: the bound arm
-/// here, and [`an_absent_cross_vault_target_refuses_with_its_own_reason_word`].
+/// The unbound arm: the edge rule asks `addr::head_names_declared_root`, and a
+/// table that does not declare `sessions` has no standing to refuse the
+/// spelling — it is a dangling link, `unresolved` verbatim, at exit 0, as
+/// every table-external head is (`[[https://…]]` included). Declared-root
+/// refusals: the bound arm here, and
+/// [`an_absent_cross_vault_target_refuses_with_its_own_reason_word`].
 #[test]
 fn the_link_plane_distinguishes_a_bound_root_from_an_unbound_one() {
     let sb = sandbox();
@@ -382,46 +395,122 @@ fn an_ambient_dangling_link_stays_first_class_and_does_not_refuse() {
     );
 }
 
-// ── GATE 3 — one address, one answer, whichever path served it ───────────────
+// ── GATE 3 — one address, one answer, served warm by the daemon ──────────────
 
-/// `mrd links` is normally served by the resident daemon, whose warm state is
-/// ONE ambient corpus: it holds no mounted corpora and cannot answer a
-/// cross-root address, so the CLI degrades to in-process whenever the page may
-/// carry one.
+/// `mrd links` is served warm by the resident daemon, which resolves a declared
+/// cross-root link against its own resident engine for the mounted root
+/// (`Registry::mounted_corpus`), so the answer's source is the daemon.
 #[test]
-fn a_page_carrying_a_rooted_spelling_is_never_served_by_the_daemon() {
+fn a_page_carrying_a_rooted_spelling_is_served_by_the_daemon() {
     let sb = sandbox();
     sb.page("claim.md", "# Claim\n\n[[sessions:notes.md]]\n");
 
-    // Warm the daemon first, on a page with no rooted spelling, so this test
-    // measures the GATE and not the absence of a daemon.
+    // Warm the daemon first, on a page with no rooted spelling, so `source`
+    // below measures which lane answered and not a spawn in progress.
     sb.page("plain.md", "# Plain\n\n[[local.md]]\n");
     let (plain_out, plain) = sb.links("plain.md");
     assert_eq!(
         plain["source"],
         "daemon",
-        "the control: an ordinary page IS served warm, so a degrade below is \
-         the gate firing and not a missing daemon: {}",
+        "the control: an ordinary page IS served warm: {}",
         whole_answer(&plain_out)
     );
 
     let (out, v) = sb.links("claim.md");
     assert_eq!(
         v["source"],
-        "ephemeral",
-        "a rooted spelling must degrade to in-process: {}",
+        "daemon",
+        "a declared rooted spelling is served warm by the daemon: {}",
+        whole_answer(&out)
+    );
+    assert_eq!(
+        v["links"]["files"]["claim.md"]["resolved_rooted"]["sessions"]["notes.md"],
+        1,
+        "the daemon resolves the rooted link into its mounted corpus: {}",
         whole_answer(&out)
     );
 }
 
+/// One asking, one answer, whichever lane served it: the `links` body and the
+/// exit code of the in-process lane equal the warm daemon's. Each page mixes
+/// what the two lanes could disagree on — a declared root beside a
+/// table-external head, a refusal, a declared head with a malformed remainder,
+/// a page outside the hash domain — and the last asking is the whole corpus.
+#[test]
+fn the_daemon_and_the_in_process_lane_give_one_answer() {
+    let sb = sandbox();
+    sb.page(
+        "mixed.md",
+        "# Mixed\n\n[[sessions:notes.md]]\n[[https://example.com]]\n[[nosuch:x.md]]\n",
+    );
+    sb.page(
+        "refusing.md",
+        "# Refusing\n\n[[sessions:absent.md]]\n[[sessions:a:b]]\n[[https://example.com]]\n",
+    );
+    sb.page(".drafts/x.md", "# Draft\n\n[[sessions:notes.md]]\n");
+
+    let askings: [(&[&str], i32); 4] = [
+        (&["links", "mixed.md", "--json"], 0),
+        (&["links", "refusing.md", "--json"], 1),
+        (&["links", ".drafts/x.md", "--json"], 0),
+        (&["links", "--json"], 1),
+    ];
+    let parsed = |out: &Output| -> Value {
+        serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("links json ({e}): {}", whole_answer(out)))
+    };
+
+    // In process first: no daemon is up yet, and none can be spawned.
+    let in_process: Vec<Output> = askings
+        .iter()
+        .map(|(args, _)| sb.run_degraded(args))
+        .collect();
+
+    for ((args, exit), cold_out) in askings.iter().zip(&in_process) {
+        let cold = parsed(cold_out);
+        assert_eq!(
+            cold["source"],
+            "ephemeral",
+            "{args:?}: the control — no daemon served this: {}",
+            whole_answer(cold_out)
+        );
+
+        let warm_out = sb.run(args);
+        let warm = parsed(&warm_out);
+        assert_eq!(
+            warm["source"],
+            "daemon",
+            "{args:?}: the daemon serves it: {}",
+            whole_answer(&warm_out)
+        );
+
+        assert_eq!(
+            warm["links"], cold["links"],
+            "{args:?}: one body across lanes"
+        );
+        assert_eq!(
+            (warm_out.status.code(), cold_out.status.code()),
+            (Some(*exit), Some(*exit)),
+            "{args:?}: one exit code across lanes\ndaemon: {}\nin process: {}",
+            whole_answer(&warm_out),
+            whole_answer(cold_out)
+        );
+    }
+
+    // The mixed page, spelled out: the declared root resolves and every
+    // table-external head is a dangling link, on both lanes.
+    let mixed = &parsed(&in_process[0])["links"]["files"]["mixed.md"];
+    assert_eq!(mixed["resolved_rooted"]["sessions"]["notes.md"], 1);
+    assert_eq!(mixed["unresolved"]["https://example.com"], 1);
+    assert_eq!(mixed["unresolved"]["nosuch:x.md"], 1);
+    assert!(mixed["refused"].is_null(), "nothing is refused: {mixed}");
+}
+
 /// The slip fixture: `Sessions:notes.md` — capital `S`, so `MountName` refuses
-/// it and no table can ever declare it. Under the [[links-probe-hoist]]
-/// narrowing that head is table-external — exactly like `[[https://…]]` — so
-/// the warm answer STANDS: served by the daemon, reported `unresolved`
-/// verbatim, exit 0. The old posture degraded here to speak a `bad-ref`
-/// refusal, and that rebuild-per-typo is the cost the narrowing removes; the
-/// address plane still refuses the spelling on every door that consults it
-/// (`walk`, pins, a NAMED read).
+/// it and no table can ever declare it. That head is table-external — exactly
+/// like `[[https://…]]` — so it is served by the daemon and reported
+/// `unresolved` verbatim, exit 0; the address plane refuses the spelling on
+/// every door that takes an address (`walk`, pins, a NAMED read).
 #[test]
 fn a_malformed_rooted_spelling_stays_on_the_daemon() {
     let sb = sandbox();

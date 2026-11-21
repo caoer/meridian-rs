@@ -8,8 +8,9 @@ use std::io;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use model::catalog::{DocumentCatalog, DocumentLease, EagerCatalog};
+use model::catalog::{DocumentCatalog, DocumentLease, EagerCatalog, MemberFault, RootedCatalog};
 use wire::{ErrorCode, Path as WPath, PinSpec, Root};
+use wire_serve::mount_corpus::MountCorpora;
 use wire_serve::read::{links, page_decorations, page_decorations_in};
 use wire_serve::write::{SpliceArgs, splice};
 
@@ -127,6 +128,21 @@ const LINKED: &[(&str, &str)] = &[
     ("c.md", "# C\n\nno edges\n"),
 ];
 
+/// `query::links_in` over the ambient corpus under an empty mount table.
+fn links_in(
+    index: &model::CorpusIndex,
+    catalog: &dyn DocumentCatalog,
+    path: Option<&str>,
+) -> Result<BTreeMap<String, query::FileLinks>, MemberFault> {
+    query::links_in(
+        index,
+        catalog,
+        &RootedCatalog::ambient(catalog),
+        &addr::MountSet::default(),
+        path,
+    )
+}
+
 fn frame(
     root: &fs::WorkspaceRoot,
     index: &model::CorpusIndex,
@@ -142,6 +158,7 @@ fn frame(
         catalog,
         unserved,
         path.map(|p| WPath(p.to_owned())).as_ref(),
+        |_| Ok(MountCorpora::default()),
         stamp,
         0,
         || Ok(live),
@@ -154,7 +171,7 @@ fn the_edge_map_over_leases_equals_the_eager_map_and_holds_one_body() {
     let (index, docs) = corpus(LINKED);
     let leased = Leased::new(&docs);
 
-    let whole = query::links_in(&index, &leased, None).unwrap();
+    let whole = links_in(&index, &leased, None).unwrap();
     assert_eq!(whole, query::links(&index, &docs, None));
     assert_eq!(whole.len(), 3, "a link-less member keeps its empty entry");
     assert_eq!(leased.scanned(), ["a.md", "b.md", "c.md"]);
@@ -168,14 +185,14 @@ fn the_edge_map_over_leases_equals_the_eager_map_and_holds_one_body() {
 
     let named = Leased::new(&docs);
     assert_eq!(
-        query::links_in(&index, &named, Some("b.md")).unwrap(),
+        links_in(&index, &named, Some("b.md")).unwrap(),
         query::links(&index, &docs, Some("b.md"))
     );
     assert_eq!(named.scanned(), ["b.md"], "a named page pins that page");
 
     let absent = Leased::new(&docs);
     assert!(
-        query::links_in(&index, &absent, Some("ghost.md"))
+        links_in(&index, &absent, Some("ghost.md"))
             .unwrap()
             .is_empty()
     );
@@ -188,8 +205,8 @@ fn a_known_member_that_cannot_be_leased_refuses_the_edge_map() {
     for fault in [Fault::Backing, Fault::NoLease, Fault::OtherVersion] {
         let leased = Leased::new(&docs);
         leased.fail("b.md", fault);
-        let refused = query::links_in(&index, &leased, None)
-            .expect_err("a cold member is not an absent member");
+        let refused =
+            links_in(&index, &leased, None).expect_err("a cold member is not an absent member");
         assert_eq!(refused.path, "b.md", "{fault:?}");
         assert_eq!(leased.live.get(), 0, "{fault:?}");
         // The members before it were served; nothing after it was admitted.
@@ -228,7 +245,9 @@ fn the_links_frame_reads_membership_from_metadata_and_names_a_faulting_member() 
             // A page outside the hash domain is read from disk; its edges
             // resolve from names alone.
             Some(".hidden/out.md") => assert_eq!(leased.scanned(), [] as [String; 0]),
-            Some(member) => assert_eq!(leased.scanned(), [member]),
+            // A named member is pinned for the roots its links name, released
+            // while the mount table is read, then pinned for its edges.
+            Some(member) => assert_eq!(leased.scanned(), [member, member]),
         }
     }
 
