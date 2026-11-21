@@ -56,6 +56,31 @@ fn tree_charge_equals_the_heap_its_drop_frees() {
                [link](dest) #tag\n\n```rust\ncode\n```\n\npara ^anchor\n\n| a | b |\n\
                | - | - |\n| c | d |\n<!-- comment --> `inline`\n";
     let doc = model::build(raw.to_owned(), syntax::parse(raw));
+    // The fixture must hold each boxed kind, or the census would pass without
+    // charging a box.
+    let (mut callouts, mut qualified, mut unqualified) = (0, 0, 0);
+    let mut stack = vec![&doc.root];
+    while let Some(node) = stack.pop() {
+        match &node.kind {
+            model::NodeKind::Callout(_) => callouts += 1,
+            model::NodeKind::Wikilink { qualifiers, .. }
+            | model::NodeKind::Embed { qualifiers, .. } => {
+                if qualifiers.is_some() {
+                    qualified += 1;
+                } else {
+                    unqualified += 1;
+                }
+            }
+            _ => {}
+        }
+        stack.extend(&node.children);
+    }
+    drop(stack);
+    assert_eq!(
+        (callouts, qualified, unqualified),
+        (1, 2, 2),
+        "the fixture lost a callout or a qualified or unqualified link"
+    );
     let raw_bytes = std::sync::Arc::clone(&doc.raw);
     let charged = model::allocation::document(&doc).tree;
     let before = LIVE.load(Ordering::Relaxed);
