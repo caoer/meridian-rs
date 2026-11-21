@@ -281,10 +281,9 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Every production `src/` file in the workspace — **except `model`, which
-/// DEFINES the two constructors**: its own internal delegation
-/// (`candidate_of_batch` calls `candidate_of_body`) is the definition, not a
-/// door, and a definition counted as a door is the false positive that gets an
-/// instrument deleted.
+/// DEFINES the two constructors**: a definition is not a door, and a
+/// definition counted as a door is the false positive that gets an instrument
+/// deleted.
 fn production_sources() -> Vec<PathBuf> {
     let root = workspace_root();
     let mut out = Vec::new();

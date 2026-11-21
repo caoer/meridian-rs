@@ -84,7 +84,7 @@ pub fn eval_telemetry(
         rules
             .iter()
             .map(|rule| {
-                let run = kernel::run_rule_metered(&globals, rule, event, limits);
+                let run = kernel::run_rule_metered(globals, rule, event, limits);
                 let outcome = run.outcome.map(|mut effects| {
                     if event.depth >= limits.max_depth {
                         effects.retain(|e| e.kind.domain() != Domain::Md);
@@ -794,7 +794,7 @@ pub fn eval_with_limits(
         let globals = kernel::effect_globals();
         let mut out = Vec::new();
         for rule in rules {
-            out.extend(kernel::run_rule(&globals, rule, event, limits)?);
+            out.extend(kernel::run_rule(globals, rule, event, limits)?);
         }
         // Depth cap (0003 §5): withhold cascading md.* past the ceiling.
         if event.depth >= limits.max_depth {
@@ -831,7 +831,7 @@ pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Eff
     }
     kernel::on_eval_stack(|| {
         let globals = kernel::effect_globals();
-        kernel::run_task(&globals, task, ctx, limits)
+        kernel::run_task(globals, task, ctx, limits)
     })
 }
 

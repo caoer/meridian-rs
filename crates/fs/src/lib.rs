@@ -4001,16 +4001,16 @@ pub fn is_write_conflict(e: &io::Error) -> bool {
 /// Execute a validated batch as a two-file atomic commit (contract §6.5, §6.1).
 ///
 /// The batch is the sealed [`model::ValidatedBatch`] — the ONLY entry to disk.
-/// Its private `_sealed` field means only `model`'s CAS validation mints one,
+/// Its fields are private, so only `model`'s CAS validation mints one,
 /// so an unvalidated write is unconstructable at this call site. `content_path`
-/// receives the content edits (`batch.edits`); when `batch.receipt` is `Some`,
+/// receives the content edits (`batch.edits()`); when `batch.receipt()` is `Some`,
 /// `receipt_path` MUST also be `Some` and names the (distinct) receipt file
 /// that receives the append. Paths are threaded separately because the seal is
 /// deliberately path-less.
 ///
 /// # The validated pre-image
 /// `expected_content` is the content file's EXACT bytes the caller validated
-/// the batch against (the bytes whose offsets `batch.edits` spans index). The
+/// the batch against (the bytes whose offsets `batch.edits()` spans index). The
 /// splice SOURCE is these bytes — this function never re-reads the file to
 /// splice into, so validated spans can never land in drifted bytes. Before the
 /// renames commit anything, the live destination is compared against this
@@ -4039,7 +4039,7 @@ pub fn is_write_conflict(e: &io::Error) -> bool {
 /// intent is exactly what a receipt lint finds.
 ///
 /// # Seam contract (enforced fail-loud)
-/// `receipt_path` presence MUST match `batch.receipt` presence, and
+/// `receipt_path` presence MUST match `batch.receipt()` presence, and
 /// `receipt_path` MUST differ from `content_path` — a same-file receipt would
 /// let the second rename clobber the first (§6.5 "two files"). Both
 /// violations return [`io::ErrorKind::InvalidInput`] before any byte is
@@ -4248,7 +4248,7 @@ pub fn stage_batch(
     candidate: &model::CandidateDocument,
 ) -> io::Result<StagedCommit> {
     // Seam contract, enforced BEFORE any disk write (fail-loud).
-    match (receipt_path, batch.receipt.as_ref()) {
+    match (receipt_path, batch.receipt()) {
         (Some(rp), Some(_)) if rp == content_path => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -4271,7 +4271,7 @@ pub fn stage_batch(
     let content_dst = root.0.join(content_path);
     let content_new = apply_spans(
         expected_content,
-        batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
+        batch.edits().iter().map(|e| (&e.span, e.text.as_str())),
     );
 
     // The candidate must BE the splice result: the document the caller
@@ -4290,7 +4290,7 @@ pub fn stage_batch(
     // Receipt file (when named): read pre-batch bytes (absent ⇒ empty, a create),
     // reconcile the append against them, stage. On any failure the already-staged
     // content temp is cleaned up so a failed apply leaves no litter.
-    let (receipt, receipt_expected) = match (receipt_path, batch.receipt.as_ref()) {
+    let (receipt, receipt_expected) = match (receipt_path, batch.receipt()) {
         (Some(rp), Some(append)) => {
             let receipt_dst = root.0.join(rp);
             match stage_receipt(&receipt_dst, append) {
@@ -4638,7 +4638,7 @@ pub enum SetPayload<'a> {
 ///
 /// # Seam contract (enforced fail-loud, `InvalidInput` before any byte)
 /// Two or more members; content paths pairwise distinct; the receipt path
-/// distinct from every content path; every member's `batch.receipt` is `None`
+/// distinct from every content path; every member's `batch.receipt()` is `None`
 /// (the set receipt is passed set-level, never per member); each member's
 /// candidate is its batch's splice result.
 ///
@@ -4690,7 +4690,7 @@ fn stage_set(
     }
     for (i, m) in members.iter().enumerate() {
         if let SetPayload::Edit { batch, .. } = &m.payload
-            && batch.receipt.is_some()
+            && batch.receipt().is_some()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -4735,7 +4735,7 @@ fn stage_set(
             } => {
                 let new_bytes = apply_spans(
                     expected_content,
-                    batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
+                    batch.edits().iter().map(|e| (&e.span, e.text.as_str())),
                 );
                 if new_bytes != candidate.raw().as_bytes() {
                     discard_staged(&contents);
@@ -5412,7 +5412,7 @@ mod tests {
     /// The sealed candidate the byte-landing primitives demand, for this
     /// fixture's batch over `PLAN_S0`.
     fn candidate(vb: &model::ValidatedBatch) -> model::CandidateDocument {
-        model::candidate_of_batch("notes/plan.md", PLAN_S0, vb)
+        model::candidate_of_batch("notes/plan.md", vb)
     }
 
     /// The receipt lint (§6.5 recovery): does the receipt file record the anchor
@@ -5506,7 +5506,7 @@ mod tests {
             .enumerate()
             .map(|(i, rel)| {
                 let vb = set_validated(&format!("ship by September-{}", i + 1));
-                let cand = model::candidate_of_batch(&rel.to_string_lossy(), SET_S0, &vb);
+                let cand = model::candidate_of_batch(&rel.to_string_lossy(), &vb);
                 (vb, cand)
             })
             .collect()
@@ -5702,7 +5702,7 @@ mod tests {
 
         // A member-level receipt append (must be set-level).
         let with_receipt = validated(Some(receipt_append()));
-        let cand = model::candidate_of_batch(&rels[0].to_string_lossy(), PLAN_S0, &with_receipt);
+        let cand = model::candidate_of_batch(&rels[0].to_string_lossy(), &with_receipt);
         let bad = vec![
             SetMember {
                 content_path: &rels[0],
@@ -5886,7 +5886,7 @@ mod tests {
     }
 
     /// A receipt-less batch commits the content file alone (receipts are
-    /// per-request, §6.1) — `receipt_path` `None` pairs with `batch.receipt`
+    /// per-request, §6.1) — `receipt_path` `None` pairs with `batch.receipt()`
     /// `None`.
     #[test]
     fn content_only_commit() {

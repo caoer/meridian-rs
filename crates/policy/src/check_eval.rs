@@ -5,6 +5,7 @@
 //! pure over the injected change facts.
 
 use std::cell::RefCell;
+use std::sync::OnceLock;
 
 use starlark::environment::{Globals, GlobalsBuilder, Module};
 use starlark::eval::Evaluator;
@@ -154,8 +155,12 @@ pub(crate) fn check_dialect() -> Dialect {
 
 /// The CHECK ceiling globals: the Starlark standard library plus ONLY `refuse`.
 /// This is the ENTIRE capability surface a CHECK sees — no write, no outward reach.
-pub(crate) fn check_globals() -> Globals {
-    GlobalsBuilder::standard().with(check_api).build()
+///
+/// Built once per process and shared by every evaluation thread, so a builtin
+/// registered here keeps no state of its own; per-run state rides `eval.extra`.
+pub(crate) fn check_globals() -> &'static Globals {
+    static GLOBALS: OnceLock<Globals> = OnceLock::new();
+    GLOBALS.get_or_init(|| GlobalsBuilder::standard().with(check_api).build())
 }
 
 /// Parse-check a CHECK source without running it — the load gate. Applies the
@@ -272,7 +277,7 @@ fn eval_check(
             let mut depth_overflow = false;
             let mut fault: Option<String> = None;
             let mut missing = false;
-            match eval.eval_module(ast, &globals) {
+            match eval.eval_module(ast, globals) {
                 Ok(_) => match module.get("check_change") {
                     Some(hook) => {
                         if let Err(e) = eval.eval_function(hook, &[change_value], &[]) {
