@@ -546,6 +546,32 @@ engine-side.
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it
   can never move the root or break a held token; a cookie inside the hash
   domain is refused.
+- **The stream that can vouch.** `Seen` is a proof only where the stream
+  hands the engine events in the order the kernel raised them. inotify does:
+  one queue per watch instance, read in order. FSEvents does not. Its kernel
+  queue is ordered, but `fseventsd`, the daemon between that queue and every
+  client stream, can deliver an entry for a path ahead of the entries for
+  events the kernel raised before it. A new sentinel's entry then arrives
+  alone in a callback batch, or first in its batch, while the entries of
+  writes that completed before the sentinel existed are still to come; it
+  can carry the created flag, and an event id lower than theirs. A barrier
+  takes that entry for a sighting and answers `Seen` over a dirty set
+  that lacks those writes, and the vouch that follows serves the root from
+  before them. Measured on macOS 26.7 with `tools/fsevents-order/`, which
+  holds the probe that shows the reordering and the kernel-queue tap that
+  shows the kernel's own order beside it: one barrier in about 60,000 with
+  three streams open at once, one in about 5,000 with six. No rule over the
+  sentinel's own entries closes the gap: requiring the created flag and
+  creating the sentinel empty both leave it open, admitting a callback batch
+  atomically does not help because the early entry is as often in an earlier
+  batch, and `FSEventStreamFlushSync` returns before the daemon has
+  delivered the events it had not yet read. The sound answer on FSEvents is
+  the §6.2 extent-refresh floor for every guard-grade question. The engine
+  vouches from a sighting there all the same, because that floor is a stat
+  sweep of every member: 1.9 s against 42 ms for one read, and the same for
+  one write, on a root of 222,000 members. So a `Seen` on FSEvents is a
+  measured bound, not a proof, and what closes it is a floor cheap enough
+  to answer every guard-grade question there.
 - **The base-plane count.** Beside the md dirty set, the feed keeps one
   counter of events that can move a `.base` member, and every doubt collapse
   advances it too (the event classes: `base-projection.md` §7). It holds no
