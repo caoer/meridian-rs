@@ -16,10 +16,10 @@
 //! ⊂ addressable). See [`Domain`] for the predicate and [`crate::hash_domain`] for
 //! the walk that consumes it.
 
-use std::cell::OnceCell;
-use std::collections::BTreeMap;
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::WorkspaceRoot;
 
@@ -173,6 +173,12 @@ pub struct LinkTargetProbe<'a> {
     /// ratified tie-break (byte length, then lexicographic) so the pick is
     /// `first()` and determinism holds by construction.
     index: OnceCell<BTreeMap<String, Vec<String>>>,
+    /// Parent directory → the UTF-8 entry names [`Self::spelled_on_disk`]
+    /// listed there, or `None` for a directory that could not be listed, so
+    /// K probes in one directory cost one `read_dir`. A listing is taken on
+    /// the first probe into its directory and answers for the probe's life,
+    /// the same per-serve snapshot `index` is.
+    dir_entries: RefCell<HashMap<PathBuf, Option<HashSet<String>>>>,
 }
 
 impl<'a> LinkTargetProbe<'a> {
@@ -184,6 +190,7 @@ impl<'a> LinkTargetProbe<'a> {
             root,
             domain,
             index: OnceCell::new(),
+            dir_entries: RefCell::new(HashMap::new()),
         }
     }
 
@@ -247,12 +254,16 @@ impl<'a> LinkTargetProbe<'a> {
             .root
             .0
             .join(candidate.parent().unwrap_or(Path::new("")));
-        let Ok(entries) = std::fs::read_dir(parent) else {
-            return false;
-        };
-        entries
-            .flatten()
-            .any(|e| e.file_name().to_str() == Some(name))
+        let mut cache = self.dir_entries.borrow_mut();
+        let entry = cache.entry(parent).or_insert_with_key(|dir| {
+            let entries = std::fs::read_dir(dir).ok()?;
+            let names: HashSet<String> = entries
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect();
+            Some(names)
+        });
+        entry.as_ref().is_some_and(|names| names.contains(name))
     }
 }
 
@@ -767,17 +778,30 @@ fn match_segs(pat: &[String], path: &[&str]) -> bool {
 }
 
 /// Glob one segment: `*` matches any run within the segment, `?` one char.
+/// Matches in place, allocating nothing: a pattern with no wildcard is a
+/// string compare, an all-ASCII pair walks bytes ([`seg_glob_bytes`]), and
+/// anything else walks chars ([`seg_glob_utf8`]). The three arms agree on
+/// every input.
 fn seg_glob(pat: &str, name: &str) -> bool {
-    let pat: Vec<char> = pat.chars().collect();
-    let name: Vec<char> = name.chars().collect();
+    if !pat.contains(['*', '?']) {
+        return pat == name;
+    }
+    if pat.is_ascii() && name.is_ascii() {
+        return seg_glob_bytes(pat.as_bytes(), name.as_bytes());
+    }
+    seg_glob_utf8(pat, name)
+}
+
+/// [`seg_glob`] over ASCII, where one byte is one char.
+fn seg_glob_bytes(pat: &[u8], name: &[u8]) -> bool {
     let (mut pi, mut ni) = (0usize, 0usize);
     // (pat index just after the last `*`, name index that `*` is anchored at).
     let mut star: Option<(usize, usize)> = None;
     while ni < name.len() {
-        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == name[ni]) {
+        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == name[ni]) {
             pi += 1;
             ni += 1;
-        } else if pi < pat.len() && pat[pi] == '*' {
+        } else if pi < pat.len() && pat[pi] == b'*' {
             star = Some((pi + 1, ni));
             pi += 1;
         } else if let Some((resume_pi, anchor_ni)) = star {
@@ -789,10 +813,45 @@ fn seg_glob(pat: &str, name: &str) -> bool {
             return false;
         }
     }
-    while pi < pat.len() && pat[pi] == '*' {
+    while pi < pat.len() && pat[pi] == b'*' {
         pi += 1;
     }
     pi == pat.len()
+}
+
+/// [`seg_glob`] by char: `pat` and `name` are the unmatched suffixes, and each
+/// step drops one whole char from the front, so `?` and a backtracking `*`
+/// consume a multi-byte char as one.
+fn seg_glob_utf8(mut pat: &str, mut name: &str) -> bool {
+    // (pattern suffix just after the last `*`, name suffix that `*` is
+    // anchored at).
+    let mut star: Option<(&str, &str)> = None;
+    while let Some(nc) = name.chars().next() {
+        if let Some(pc) = pat.chars().next() {
+            if pc == '?' || pc == nc {
+                pat = &pat[pc.len_utf8()..];
+                name = &name[nc.len_utf8()..];
+                continue;
+            }
+            if pc == '*' {
+                pat = &pat[1..];
+                star = Some((pat, name));
+                continue;
+            }
+        }
+        if let Some((resume_pat, anchor_name)) = star
+            && let Some(ac) = anchor_name.chars().next()
+        {
+            // Backtrack: let the `*` swallow one more name char.
+            let next_anchor = &anchor_name[ac.len_utf8()..];
+            pat = resume_pat;
+            name = next_anchor;
+            star = Some((resume_pat, next_anchor));
+        } else {
+            return false;
+        }
+    }
+    pat.bytes().all(|b| b == b'*')
 }
 
 struct ParsedConfig {
@@ -1116,5 +1175,65 @@ mod tests {
         assert_eq!(Domain::new().version(), 0);
         assert_eq!(Domain::from_config("ignore:\n  - \"x/**\"\n").version(), 0);
         assert_eq!(Domain::from_config("ignore: []\n").version(), 0);
+    }
+
+    /// A non-ASCII pattern or name takes the char arm: `?` and a
+    /// backtracking `*` consume a multi-byte char as one, never a byte of it.
+    #[test]
+    fn seg_glob_matches_multibyte_segments_by_char() {
+        let cases = [
+            ("é*", "éa", true),
+            ("?b", "éb", true),
+            ("*ü", "aü", true),
+            ("a*", "日本", false),
+            ("日*", "日本", true),
+            ("*本", "日本", true),
+            ("?", "日", true),
+            ("??", "日", false),
+            ("é?", "é", false),
+            ("*éb", "éaéb", true),
+            ("*éb", "éaéc", false),
+            ("*.md", "日本.md", true),
+            ("n?te", "nöte", true),
+            // A `*` in the name matches the pattern's `*` as a literal char.
+            ("é*z", "é*z", true),
+            ("é*", "é", true),
+            // No wildcard: a string compare.
+            ("é", "é", true),
+            ("é", "e", false),
+        ];
+        for (pat, name, want) in cases {
+            assert_eq!(seg_glob(pat, name), want, "{pat:?} against {name:?}");
+        }
+    }
+
+    /// The byte arm and the char arm are one algorithm: on ASCII input, where
+    /// both apply, they give the same answer.
+    #[test]
+    fn seg_glob_byte_and_char_arms_agree_on_ascii() {
+        let cases = [
+            ("scratch*", "scratch-1", true),
+            ("a*b*c", "aXbYc", true),
+            ("a*b*c", "aXbY", false),
+            ("a**b", "ab", true),
+            ("a?c", "abc", true),
+            ("a?c", "ac", false),
+            ("*", "", true),
+            ("?", "", false),
+            ("*a", "banana", true),
+            ("*an", "banana", false),
+        ];
+        for (pat, name, want) in cases {
+            assert_eq!(
+                seg_glob_bytes(pat.as_bytes(), name.as_bytes()),
+                want,
+                "byte arm: {pat:?} against {name:?}"
+            );
+            assert_eq!(
+                seg_glob_utf8(pat, name),
+                want,
+                "char arm: {pat:?} against {name:?}"
+            );
+        }
     }
 }

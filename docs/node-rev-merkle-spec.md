@@ -1689,6 +1689,14 @@ not become a mover on each prewarm. Builders publish a leaf together with
 its slot or condition. A prior whose membership disagrees pays one scan for
 real holes and reconciles them as movers.
 
+The eager pass (`fs::update_corpus`) loads 16 or more movers on two to four
+workers: each mover is read, checked against its planned leaf and parsed off
+the caller's thread, and every mover is loaded before the first is applied.
+The pass then applies them in mover order, so the maps, the name index, the
+divergence verdict and the refusal (the first failing mover in mover order)
+are the ones the one-at-a-time pass produces. Fewer movers load one at a
+time.
+
 Under the residency controller the same pass runs over a generation's slots
 (`fs::update_corpus_with` over `registry::residency::catalog::Slots`). An
 unmoved member keeps its slot by shared reference, so consecutive
