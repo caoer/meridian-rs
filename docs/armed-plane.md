@@ -266,6 +266,11 @@ before bytes land. Outputs:
   body bytes.
 - Send cannot ride `write.lock`, so it stays an intent; the engine never marks
   it delivered (`armed.intents[]`, `wire-contract.md` § A.2.1).
+- Middleware and the check gate judge **one law per write**. The door
+  resolves the armed law once, under the write flock, at the put's own path;
+  the middleware rows and the gate both read that resolution, so a rule page
+  saved between the two legs cannot give them different laws. A middleware
+  birth is gated at its own path with its own resolution.
 
 ## Registration and arming
 
@@ -455,8 +460,11 @@ trusted write path from the workspace's own attested `meridian/armed-rules.md`
 plus marker, never from a caller:
 
 - wire host: `armed_disk::resolve_at`
-  (`crates/wire-serve/src/armed_disk.rs:78`), from the write gate
-  (`crates/wire-serve/src/gate.rs:91`) and the reaction feeder
+  (`crates/wire-serve/src/armed_disk.rs:78`), once per write. The splice and
+  create doors (`write::splice`, `write::create_with_cache`) resolve it under
+  the write flock and hand that one law to the middleware leg and to the gate
+  (`gate::gate_write_with_law`); every other gated site resolves it in the
+  write gate (`gate::enforce_gate`), and the reaction feeder resolves its own
   (`crates/wire-serve/src/reaction.rs:49`);
 - run plane: its own `DiskPages` page-source (`crates/run/src/gate.rs:73`).
 
