@@ -3295,7 +3295,8 @@ mod accept_containment_tests {
 
         // A second dial wakes the loop again; its next pass sees `stop`.
         stop.store(true, Ordering::SeqCst);
-        let _wake = UnixStream::connect(&socket).unwrap();
+        // A loop that saw `stop` already has closed the listener.
+        let _wake = UnixStream::connect(&socket);
         accept.join().expect("the loop stops at its next pass");
     }
 
@@ -3317,7 +3318,8 @@ mod accept_containment_tests {
         thread::sleep(Duration::from_millis(500));
         let n = passes.load(Ordering::SeqCst);
         stop.store(true, Ordering::SeqCst);
-        let _wake = UnixStream::connect(&socket).unwrap();
+        // A loop that saw `stop` already has closed the listener.
+        let _wake = UnixStream::connect(&socket);
         accept.join().unwrap();
         assert!(
             (1..=30).contains(&n),
