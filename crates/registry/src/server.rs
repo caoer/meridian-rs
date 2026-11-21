@@ -2434,6 +2434,17 @@ fn dispatch_read(
             "no workspace bound — send `hello` with a `workspace` first",
         ));
     };
+    // The document a read names is checked against disk before its currency
+    // pass (merkle-spec §6.7, the named document).
+    match &op {
+        Op::Toc { path }
+        | Op::Cat { path, .. }
+        | Op::Extract { path, .. }
+        | Op::Read { path, .. } => {
+            registry.sight_named(ws, Path::new(&path.0));
+        }
+        _ => {}
+    }
     match op {
         Op::Toc { path } => warm_engine_read(registry, ws, |engine| {
             with_engine_document(engine, ws, &path, |doc| {
@@ -2857,6 +2868,7 @@ fn mint_fingerprint(
         // unvouched live observation here was a full stat sweep per mint,
         // serialized on the workspace memo — and every agent read mints one.
         Some(path) => {
+            registry.sight_named(ws, &path);
             let (_, _, token) = registry
                 .currency_refresh_with(ws, DOOR_COOKIE_TIMEOUT, |memo| {
                     wire_serve::write::scope_token_observed(memo, &path)
