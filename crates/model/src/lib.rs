@@ -14,6 +14,7 @@
 //! **No serde on any public type** — model facts reach the wire only via
 //! the serving host's projection seam (law 3).
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, btree_map};
 use std::ops::Range;
 use std::sync::Arc;
@@ -2762,7 +2763,7 @@ impl CorpusIndex {
     /// deterministic source-relative-then-shortest pick, not an oracle answer.
     #[must_use]
     pub fn resolve_linkpath(&self, linkpath: &str, from: &str) -> Option<String> {
-        pick_source_relative(&self.linkpath_candidates(linkpath), from)
+        pick_source_relative(&self.candidates(linkpath), from)
     }
 
     /// [`CorpusIndex::resolve_linkpath`] together with the set it picked from,
@@ -2786,12 +2787,20 @@ impl CorpusIndex {
     /// qualifier matched on whole segments, alias fallback). Empty when the
     /// linkpath dangles or carries a root separator.
     ///
-    /// One owner for the candidate rule: `resolve_linkpath` is this set plus
-    /// the pick. A consumer that must know whether a spelling is UNIQUE — the
-    /// move plan minting a new spelling, `move.md` §4 — reads the set; a
-    /// consumer that wants the app's answer takes the pick.
+    /// A consumer that must know whether a spelling is UNIQUE — the move plan
+    /// minting a new spelling, `move.md` §4 — reads the set; a consumer that
+    /// wants the app's answer takes the pick.
     #[must_use]
     pub fn linkpath_candidates(&self, linkpath: &str) -> Vec<String> {
+        self.candidates(linkpath).into_owned()
+    }
+
+    /// The candidate rule — its one owner. [`CorpusIndex::resolve_linkpath`]
+    /// is this set plus the pick and [`CorpusIndex::linkpath_candidates`] is
+    /// this set owned, so the pick and the published set cannot disagree. The
+    /// set borrows the index bucket whenever a whole bucket is the answer.
+    fn candidates(&self, linkpath: &str) -> Cow<'_, [String]> {
+        const NONE: &[String] = &[];
         // C-3 (address-grammar § 5.1): a `linkpath` whose head carries a `:`
         // must be root-peeled by the caller first — otherwise the basename
         // fallback turns `sessions:24-01-retro/notes.md` into `notes` and
@@ -2800,44 +2809,40 @@ impl CorpusIndex {
         // rule only, not the wider `addr::confined`: a `..` spelling is a vault
         // address this seam answers correctly.
         if addr::head_carries_root_separator(linkpath) {
-            return Vec::new();
+            return Cow::Borrowed(NONE);
         }
         let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
-        let base = key.rsplit('/').next().unwrap_or(key.as_str()).to_string();
+        let base = key.rsplit('/').next().unwrap_or(key.as_str());
+        // A bare linkpath names every file with that basename, else an alias.
+        //
         // Subdir linkpath (`a/b`) ⇒ a path ending in `a/b.md` (§4.5), never any
-        // `b.md`: the qualifier is part of the address. Match vault-root
-        // (`a/b.md`) or nested (`c/a/b.md`). A qualifier that matches no
-        // candidate leaves the link DANGLING (unresolved is first-class, §4.5)
-        // — the app never adopts a basename match for a missed path. The
-        // retired bare-basename degradation here turned nonexistent
-        // `agents/x/CARD` spellings into resolved edges onto real homes (or
-        // onto the SOURCE file itself), and the phantom inbound edge then
-        // blocked `mrd rm` of the adopted home (p1-fuzzy-resolve, 2026-08-18).
-        // The full spelling may still name a frontmatter alias: alias
-        // resolution is an exact full-spelling match, not a path walk.
-        if key.contains('/') {
-            if let Some(candidates) = self.by_basename.get(&base) {
+        // `b.md`: the qualifier is part of the address. It matches at the vault
+        // root (`a/b.md`) or nested (`c/a/b.md`), on whole segments. A
+        // qualifier that matches no candidate leaves the link DANGLING
+        // (unresolved is first-class, §4.5) — a missed path never adopts a
+        // basename match, which would turn a nonexistent `agents/x/CARD`
+        // spelling into an edge onto a real home. The full spelling may still
+        // name a frontmatter alias: alias resolution is an exact full-spelling
+        // match, not a path walk.
+        let bucket = if key.contains('/') {
+            if let Some(same_basename) = self.by_basename.get(base) {
                 let qualified = format!("{key}.md");
-                let suffix = format!("/{qualified}");
-                let narrowed: Vec<String> = candidates
+                let narrowed: Vec<String> = same_basename
                     .iter()
-                    .filter(|p| {
-                        let lower = p.to_lowercase();
-                        lower == qualified || lower.ends_with(&suffix)
-                    })
+                    .filter(|p| matches_qualified_path(p, &qualified))
                     .cloned()
                     .collect();
                 if !narrowed.is_empty() {
-                    return narrowed;
+                    return Cow::Owned(narrowed);
                 }
             }
-            return self.by_alias.get(&key).cloned().unwrap_or_default();
-        }
-        self.by_basename
-            .get(&base)
-            .or_else(|| self.by_alias.get(&key))
-            .cloned()
-            .unwrap_or_default()
+            self.by_alias.get(&key)
+        } else {
+            self.by_basename
+                .get(base)
+                .or_else(|| self.by_alias.get(&key))
+        };
+        bucket.map_or(Cow::Borrowed(NONE), |paths| Cow::Borrowed(paths.as_slice()))
     }
 
     /// Sole address owner: resolve a ref spelling (`meridian-lock` ref,
@@ -3199,6 +3204,27 @@ impl RefResolution {
             }
             _ => None,
         }
+    }
+}
+
+/// Whether vault path `path` is the file a subdir-qualified linkpath names:
+/// it equals `qualified_lc`, or ends with it at a segment boundary
+/// (`…/{qualified_lc}`), compared case-insensitively. `qualified_lc` is the
+/// caller's key and is already lowercase. An ASCII path compares in place; any
+/// other path is lowercased first.
+fn matches_qualified_path(path: &str, qualified_lc: &str) -> bool {
+    fn ends_at_segment(path: &[u8], tail: &[u8], eq: impl Fn(&[u8], &[u8]) -> bool) -> bool {
+        match path.len().checked_sub(tail.len()) {
+            None => false,
+            Some(0) => eq(path, tail),
+            Some(cut) => path[cut - 1] == b'/' && eq(&path[cut..], tail),
+        }
+    }
+    let tail = qualified_lc.as_bytes();
+    if path.is_ascii() {
+        ends_at_segment(path.as_bytes(), tail, <[u8]>::eq_ignore_ascii_case)
+    } else {
+        ends_at_segment(path.to_lowercase().as_bytes(), tail, |a, b| a == b)
     }
 }
 
@@ -4043,6 +4069,59 @@ mod tests {
             None,
             "a missed subpath qualifier dangles — never a bare-basename pick",
         );
+    }
+
+    /// The subdir qualifier matches on whole segments, in either byte class:
+    /// a directory whose name merely ENDS with the qualifier's first segment
+    /// (`xcaveman/` for `caveman/…`) is a different address. The published
+    /// candidate set and the pick come from one rule.
+    #[test]
+    fn subpath_qualifier_matches_whole_segments_only() {
+        let mut index = CorpusIndex::new();
+        let empty = build(String::new(), syntax::parse(""));
+        for p in [
+            "sources/git/caveman/CAVEMAN.md",
+            "sources/git/xcaveman/CAVEMAN.md",
+            "notes/Ünïcode/Card.md",
+            "notes/xÜnïcode/Card.md",
+            "Card.md",
+        ] {
+            index.insert(p, &empty);
+        }
+        for (linkpath, want) in [
+            ("caveman/CAVEMAN", "sources/git/caveman/CAVEMAN.md"),
+            ("ünïcode/card", "notes/Ünïcode/Card.md"),
+            ("ÜNÏCODE/CARD.md", "notes/Ünïcode/Card.md"),
+        ] {
+            assert_eq!(
+                index.linkpath_candidates(linkpath),
+                vec![want.to_string()],
+                "{linkpath}: the set holds the whole-segment match alone",
+            );
+            assert_eq!(
+                index.resolve_linkpath(linkpath, "elsewhere/from.md"),
+                Some(want.to_string()),
+                "{linkpath}: the pick is over that set",
+            );
+        }
+
+        for (path, qualified, want) in [
+            ("a/b.md", "a/b.md", true),
+            ("A/B.md", "a/b.md", true),
+            ("c/a/b.md", "a/b.md", true),
+            ("ca/b.md", "a/b.md", false),
+            ("b.md", "a/b.md", false),
+            ("Ü/b.md", "ü/b.md", true),
+            ("c/Ü/b.md", "ü/b.md", true),
+            ("cÜ/b.md", "ü/b.md", false),
+            ("a/b.md", "ü/b.md", false),
+        ] {
+            assert_eq!(
+                matches_qualified_path(path, qualified),
+                want,
+                "{path} against {qualified}"
+            );
+        }
     }
 
     /// A subdir-qualified linkpath whose path exists nowhere stays DANGLING —
