@@ -379,6 +379,16 @@ cached 32-byte fold, a dirty bit, a `last_seq` stamp (§6.3).
   exception re-observes; both exclusion-held `ambient_root` corpus reads leave
   the write path. The splice response keeps its `wire-contract.md` §4.4
   transition fields.
+- **The overlay names what it moved.** From a mark
+  (`DomainCache::mark_overlay_moves`) the memo journals every path its
+  own-write overlay moves: a leaf set, a remove, each member a membership
+  overlay drops. While the journal stands, the memo's leaf set differs from
+  its leaf set at the mark's root on those paths alone
+  (`DomainCache::overlay_moves`). An observation that moves a leaf ends the
+  journal: what moved is then known only by comparing leaf sets. A write
+  door marks after its entry observation and after each frame it records,
+  so a commit's follow step (§6.7) costs what the commit wrote, never the
+  corpus.
 - **Write doors ride the same `DomainCache` the feed patches.** The daemon
   passes `Registry::domain_cache` into each write door — an argument, not a
   process-wide hook. The registry makes the door-entry observation inside the
@@ -1598,6 +1608,10 @@ member's bytes per external batch — measured ~1/s under foreign writes.
   expects the commit's `root_after`; a memo that has moved past it skips the
   step and leaves the baseline to the detector, as a refused reconcile does:
   a commit's own files are never told with bytes past its `root_after`.
+  The step classifies the paths the overlay journal names (§6.1) when the
+  journal starts at the frame's `root_before`, the root the baseline is at,
+  and the memo's whole leaf set when it does not. Both name the same movers:
+  a baseline at that root holds the leaf set the journal started from.
 - An ordinary cycle observes vouched-only under the flock
   (`Registry::door_observation_vouched`): cookie probe, take-and-apply, vouch,
   all inside one `DETECT_CADENCE`. Any miss releases the flock and skips the
