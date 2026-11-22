@@ -998,18 +998,24 @@ impl RunningServer {
                     }
                     warm_beside(&registry, &theirs, &warm)?;
                 }
-                Offer::Busy => {
+                Offer::Busy(what) => {
                     // Every `busy` held the serving daemon's callers for the
                     // drain bound, so the tries are counted and spaced out.
                     busy += 1;
+                    let what = what.as_deref().unwrap_or("it named nothing");
                     if busy >= succession::BUSY_TRIES {
                         return Err(io::Error::new(
                             io::ErrorKind::TimedOut,
                             format!(
-                                "the serving daemon answered busy {busy} times and keeps serving"
+                                "the serving daemon answered busy {busy} times ({what}) and keeps serving"
                             ),
                         ));
                     }
+                    timing::say!(
+                        "registry: the serving daemon answered busy ({what}); try {busy} of {}, asking again in {}s",
+                        succession::BUSY_TRIES,
+                        retry.as_secs()
+                    );
                     thread::sleep(retry);
                     retry = (retry * 2).min(succession::BUSY_RETRY_MAX);
                 }

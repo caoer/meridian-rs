@@ -88,6 +88,9 @@ struct Answer {
     grant: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// With `reason:"busy"`: what was still running when the drain ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    busy: Option<String>,
     #[serde(default)]
     warm: Vec<PathBuf>,
     #[serde(default)]
@@ -384,12 +387,61 @@ pub(crate) enum Granted {
     Kept,
 }
 
-/// Answer `grant:false` with `reason` and this daemon's warm set.
-fn refuse(stream: &UnixStream, registry: &Registry, reason: &str) -> io::Result<Granted> {
+/// Why a `handover` request was not granted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Undrained {
+    /// The successor's warm set does not cover this daemon's.
+    Warm,
+    /// Another handover is draining this daemon, or it is stopping.
+    Taken,
+    /// This many connections had not reached a request boundary when the
+    /// drain bound passed: in dispatch, mid-line, or writing an answer.
+    Requests(usize),
+    /// A background pass (reaper, pre-warm, saver) outlasted the drain bound.
+    Background,
+    /// A query or a compaction holds a sql cache open.
+    SqlCache,
+}
+
+impl Undrained {
+    /// The wire `reason`.
+    fn reason(self) -> &'static str {
+        match self {
+            Undrained::Warm => "warm",
+            Undrained::Taken
+            | Undrained::Requests(_)
+            | Undrained::Background
+            | Undrained::SqlCache => "busy",
+        }
+    }
+
+    /// The wire `busy`: what was still running, when a drain found it.
+    fn busy(self) -> Option<String> {
+        match self {
+            Undrained::Warm | Undrained::Taken => None,
+            Undrained::Requests(n) => Some(format!("{n} request(s) in flight")),
+            Undrained::Background => Some("background work in a pass".to_owned()),
+            Undrained::SqlCache => Some("a sql cache in use".to_owned()),
+        }
+    }
+}
+
+impl std::fmt::Display for Undrained {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.busy() {
+            Some(what) => write!(f, "{}: {what}", self.reason()),
+            None => f.write_str(self.reason()),
+        }
+    }
+}
+
+/// Answer `grant:false` with why and this daemon's warm set.
+fn refuse(stream: &UnixStream, registry: &Registry, why: Undrained) -> io::Result<Granted> {
     let answer = Answer {
         status: "handover".to_owned(),
         grant: false,
-        reason: Some(reason.to_owned()),
+        reason: Some(why.reason().to_owned()),
+        busy: why.busy(),
         warm: registry.warm_workspaces(),
         conns: Vec::new(),
     };
@@ -445,37 +497,38 @@ fn covers(registry: &Registry, claimed: &[PathBuf]) -> bool {
 
 /// The drain: every connection thread parks or ends, background work ends
 /// its pass and stays out, the sql caches close and the state file is
-/// flushed. `Err` names why the handover is abandoned.
+/// flushed. `Err` names why the handover is abandoned, and for a `busy` one
+/// what was still running.
 fn drain<'a>(
     succession: &'a Succession,
     registry: &Registry,
     claimed: &[PathBuf],
-) -> Result<std::sync::RwLockWriteGuard<'a, ()>, &'static str> {
+) -> Result<std::sync::RwLockWriteGuard<'a, ()>, Undrained> {
     let deadline = Instant::now() + DRAIN_BOUND;
-    let drained = {
+    let reading = {
         let readers = succession.live();
         let (readers, _) = succession
             .moved
             .wait_timeout_while(readers, DRAIN_BOUND, |readers| readers.reading > 0)
             .unwrap_or_else(PoisonError::into_inner);
-        readers.reading == 0
+        readers.reading
     };
-    if !drained {
-        return Err("busy");
+    if reading > 0 {
+        return Err(Undrained::Requests(reading));
     }
     let background = loop {
         match succession.background.try_write() {
             Ok(guard) => break guard,
             Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => return Err("busy"),
+            Err(_) => return Err(Undrained::Background),
         }
     };
     // A request served during the drain may have warmed something new.
     if !covers(registry, claimed) {
-        return Err("warm");
+        return Err(Undrained::Warm);
     }
     if !registry.close_sql_stores() {
-        return Err("busy");
+        return Err(Undrained::SqlCache);
     }
     registry.flush();
     Ok(background)
@@ -488,6 +541,7 @@ fn pass(stream: &UnixStream, conns: Vec<ConnState>, mut fds: Vec<RawFd>) -> io::
         status: "handover".to_owned(),
         grant: true,
         reason: None,
+        busy: None,
         warm: Vec::new(),
         conns,
     };
@@ -520,18 +574,18 @@ pub(crate) fn grant(
 ) -> io::Result<Granted> {
     let claimed: Ask = serde_json::from_str(request).map_err(io::Error::other)?;
     if !covers(registry, &claimed.warm) {
-        return refuse(stream, registry, "warm");
+        return refuse(stream, registry, Undrained::Warm);
     }
     // One handover at a time.
     if succession.quiesce.swap(true, Ordering::SeqCst) {
-        return refuse(stream, registry, "busy");
+        return refuse(stream, registry, Undrained::Taken);
     }
     let _resume_on_panic = ResumeOnPanic { succession, resume };
     let background = match drain(succession, registry, &claimed.warm) {
         Ok(background) => background,
-        Err(reason) => {
-            resume_all(succession, resume, reason);
-            return refuse(stream, registry, reason);
+        Err(why) => {
+            resume_all(succession, resume, &why.to_string());
+            return refuse(stream, registry, why);
         }
     };
 
@@ -549,7 +603,7 @@ pub(crate) fn grant(
         // This daemon is stopping.
         drop((listener, singleton, background));
         resume_all(succession, resume, "this daemon is stopping");
-        return refuse(stream, registry, "busy");
+        return refuse(stream, registry, Undrained::Taken);
     };
     let (conns, fds): (Vec<ConnState>, Vec<RawFd>) = {
         let readers = succession.live();
@@ -596,8 +650,9 @@ pub(crate) enum Offer {
     Absent,
     /// The resident holds these warm; warm them and ask again.
     Warm(Vec<PathBuf>),
-    /// The resident could not drain; ask again later.
-    Busy,
+    /// The resident could not drain; ask again later. Carries what it named
+    /// as still running, when it named anything.
+    Busy(Option<String>),
     /// Committed: these are this process's now.
     Granted {
         listener: UnixListener,
@@ -611,7 +666,7 @@ pub(crate) enum Offer {
 /// descriptor it received, the listening socket's copy among them.
 fn after_loss(socket: &Path) -> Offer {
     if UnixStream::connect(socket).is_ok() {
-        Offer::Busy
+        Offer::Busy(None)
     } else {
         Offer::Absent
     }
@@ -675,7 +730,7 @@ pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
     if !answer.grant {
         return Ok(match answer.reason.as_deref() {
             Some("warm") => Offer::Warm(answer.warm),
-            _ => Offer::Busy,
+            _ => Offer::Busy(answer.busy),
         });
     }
     // Continuation messages carry the descriptors past the first message's.
@@ -776,7 +831,7 @@ mod tests {
             asking.join().unwrap().unwrap()
         });
 
-        assert!(matches!(offer, Offer::Busy), "{offer:?}");
+        assert!(matches!(offer, Offer::Busy(None)), "{offer:?}");
         assert!(
             DrawerLock::try_acquire(tmp.path()).unwrap().is_none(),
             "the resident still holds its lock"

@@ -1413,7 +1413,15 @@ it is `mrd daemon`.
     compaction was still running 5 s after the resident stopped reading new
     requests. The resident has resumed; the successor asks again after 2 s,
     then after twice as long each time up to 60 s, and exits at the twelfth
-    `busy`.
+    `busy`. The line carries `busy`, what was still running: `"<n> request(s)
+    in flight"` (connections that had not reached a request boundary — in
+    dispatch, mid-line, or writing an answer its client does not read),
+    `"background work in a pass"` or `"a sql cache in use"`. The resident's
+    log line (`handover abandoned (busy: …)`) and the successor's (`the
+    serving daemon answered busy (…)`, with the try's number and the wait
+    before the next) carry the same words. A caller that bounds the
+    successor's start waits out warm-beside plus this schedule — up to 60 s
+    of drains and 422 s of waits — or stops the successor short of it.
   - `grant:true` — the line carries open descriptors as `SCM_RIGHTS`
     ancillary data, in order: the listening socket, the singleton lock, then
     one per entry of `conns`, each `{"workspace":<bound root or null>,
