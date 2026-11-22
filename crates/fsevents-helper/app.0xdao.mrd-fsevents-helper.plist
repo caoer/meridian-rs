@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- System-domain LaunchDaemon for the mrd /dev/fsevents helper. Install:
+     sudo install -m 0755 mrd-fsevents-helper /usr/local/libexec/
+     sudo install -m 0644 app.0xdao.mrd-fsevents-helper.plist /Library/LaunchDaemons/
+     sudo launchctl bootstrap system /Library/LaunchDaemons/app.0xdao.mrd-fsevents-helper.plist -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>app.0xdao.mrd-fsevents-helper</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/libexec/mrd-fsevents-helper</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/var/log/mrd-fsevents-helper.log</string>
+</dict>
+</plist>

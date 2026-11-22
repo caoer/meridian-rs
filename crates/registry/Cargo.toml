@@ -109,6 +109,10 @@ notify = { workspace = true }
 # zero-dependency leaf that reads no clock and allocates nothing when
 # `MRD_TIMING` is off, so the hot path pays for the answer only when asked.
 timing = { workspace = true }
+# The macOS ordered source (docs/fsevents-helper.md): the feed subscribes to
+# `mrd-fsevents-helper` and decodes its records through the helper crate's own
+# lib, so the two ends share one codec. `libc` is its only edge.
+fsevents-helper = { workspace = true }
 # Mount names in generation descriptors: the roots a member's links address
 # (`model::catalog::DocumentCatalog::link_roots`).
 addr = { workspace = true }

@@ -38,6 +38,7 @@ default-members = [
     "crates/lock",
     "crates/git",
     "crates/config",
+    "crates/fsevents-helper",
 ]
 
 [workspace.package]
@@ -87,6 +88,10 @@ git = { path = "crates/git", version = "1.1.0" }
 # content. Downstream of `model` — it is the markdown engine's own parser that
 # gives the config a rev, which is what "config is content" means.
 config = { path = "crates/config", version = "1.1.0" }
+# The macOS ordered event source (docs/fsevents-helper.md): the helper binary
+# and the record codec + subscribing client `registry` reads it through. `libc`
+# only, no workspace crate.
+fsevents-helper = { path = "crates/fsevents-helper", version = "1.1.0" }
 
 serde = { version = "1", features = ["derive"] }
 # `raw_value` is what lets a consumer carry a response through VERBATIM: the

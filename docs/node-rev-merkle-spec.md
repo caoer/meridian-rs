@@ -580,6 +580,20 @@ engine-side.
   name resolution and `sql` rows are current to the measured bound. A
   premise minted at that bound is re-checked by the write door at door
   grade, so a stale one refuses and never lands a write.
+- **The ordered source on macOS.** The kernel queue behind `fseventsd` is
+  ordered, and `/dev/fsevents` hands it to a root watcher as raised. Where
+  `mrd-fsevents-helper` runs, a feed that qualifies takes its events from the
+  helper and discards the FSEvents stream's. A barrier there writes no
+  sentinel; it asks the helper for a fence, which the helper sends behind an
+  event of its own. `Seen` is then a proof, every consumer asks the barrier
+  as on inotify, and the named-document check does not run. A feed has one source at a time, and each change of source is a
+  missed-event collapse, so one floor pass covers the hand-over. A loss
+  report from the helper is a kernel event overflow. On that source a
+  completed write is one whose descriptor is closed, because that is when the
+  kernel raises the content event. Without the helper, or once a subscription
+  ends, the feed is on the FSEvents stream and the paragraph above holds
+  unchanged. The helper's privilege, socket and records, how a feed
+  qualifies, and what sends it back: `fsevents-helper.md`.
 - **The base-plane count.** Beside the md dirty set, the feed keeps one
   counter of events that can move a `.base` member, and every doubt collapse
   advances it too (the event classes: `base-projection.md` §7). It holds no
@@ -1531,11 +1545,11 @@ Two grades, bound to their consumers:
 | warm read pass — read family, `sql`, `script` entry (`Registry::warm_or_build`, cheap half) | engine current now? | current-as-of-the-question | cookie barrier → take-and-apply → `Trusted` → overlay fold (`Registry::currency_refresh`); floor on a named miss. The barrier makes the stamp current for the ambient premise tokens a read mints (`wire-contract.md` §5.4 and its §2 mint law); it costs one sentinel write plus delivery, bounded by the door cookie budget |
 | `wire-contract.md` § A.11 post-result `live` | did the corpus move past the rows? | current-as-of-the-question | same call, same vouch |
 | `wire-contract.md` §4.7 scoped mint (`fingerprint {scope}`) | the scope's token now? | current-as-of-the-question | same call, same vouch; the scope folds from the same memo under the same lock (`Registry::currency_refresh_with`). A mint is a premise a write door re-checks at door grade, so it needs no grade above the read family's. Every agent read and premise-less put mints one, so an unvouched floor here is O(corpus) per call, serialized on the workspace memo |
-| write door `root_before` — the wire doors and the run plane's delta-mint bracket | §6.1 door-entry observation | guard | `Registry::door_observation`: barrier, take-and-apply, vouch, floor on a named miss. On a stream that does not prove order it asks no barrier and takes the floor (`door.floor.stream_unordered`). The bracket's `root_after` is the commit's own overlay, as at a wire door |
+| write door `root_before` — the wire doors and the run plane's delta-mint bracket | §6.1 door-entry observation | guard | `Registry::door_observation`: barrier, take-and-apply, vouch, floor on a named miss. On a feed whose source does not prove order (the FSEvents stream; §6.4) it asks no barrier and takes the floor (`door.floor.stream_unordered`). The bracket's `root_after` is the commit's own overlay, as at a wire door |
 | prewarm quiet check | may this sweep be skipped? | latency-only | O(1), no cookie: nothing pending after take-and-apply, memo `Trusted`, cached served fold == the engine's stamp. `domain_stat_signature` walk survives only with no live feed (`FeedSlot::Failed`), under the quiet backoff |
 | `wire-contract.md` §4.7 detect pre-check (`WorkspaceRing::detect`) | root moved since baseline? | latency-only + fallback clock | the same O(1) quiet check through the shared memo; the private fold memo serves `prime` and the miss path only. §6.6's poll survives: even under a quiet vouch the backstop runs once per `DETECT_FLOOR_CADENCE` (30 s) — the push plane's guard against silent capture loss. The backstop is a stat pass that holds no memo lock across its I/O: it snapshots the memo's member keys under the lock (`DomainCache::backstop_snapshot`), walks and stats the domain unlocked, reads bytes only for members the floor would not trust on a key match (`fs::backstop_movers`), and hands every disagreement to the feed as a dirty hint (§6.4 additional-feed door). It re-reads the domain config unlocked first; a config the memo has not observed (including a non-member legacy config, which raises no member event) marks `vouch-failure`, and the observation becomes the full sweep. The cycle's vouched observation then applies the hints at O(dirty). A hint only adds work and never grants trust. Without a live feed there is nothing to hint into, and the backstop is the true floor, as before. A floor held under the shared memo on a 63k-member root parks every reader for the whole sweep |
 
-**The named document.** On a stream that does not prove order (§6.4), a
+**The named document.** On a feed whose source does not prove order (§6.4), a
 request that names one document — `toc`, `cat`, `extract`, `read`, and a mint
 scoped to a file — stats that path before its currency pass
 (`Registry::sight_named`). The memo's record stands when it is the same file
@@ -1544,8 +1558,9 @@ racy window, or absent on both sides. Otherwise the path goes to the feed as
 a dirty hint (§6.4 additional-feed door), the pass's take-and-apply re-reads
 that one member, the root moves, and the incremental pass serves the document
 as it stands on disk. The cost is one `lstat` and one short memo lock per
-request. A hint only adds work and never grants trust. On an ordered stream
-the check does not run: `Seen` already covers the document.
+request. A hint only adds work and never grants trust. On an ordered source
+(inotify, or the macOS helper) the check does not run: `Seen` already covers
+the document.
 
 **The cookie holdoff (posture, both doors).** A `CookieTimeout` collapse is
 sticky doubt until the next take, which converts it to a full sweep and clears

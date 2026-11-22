@@ -51,6 +51,7 @@ frontmatter.
 | `merkle` | `node-rev-merkle-spec.md` | `node_rev` + merkle encoding, the resident tree, the event feed |
 | `fp` | `fingerprint-norm-spec.md` | the fingerprint CID token + norm-v2 |
 | `armed` | `armed-plane.md` | the arming ladder + the `gate()` seam |
+| `fsevents-helper` | `fsevents-helper.md` | the macOS ordered event source: the helper's privilege, socket, handshake and records; when a feed trusts it |
 | `run` | `run-plane.md` | the run plane, preset and session birth |
 | `move` | `move.md` | the move door — rename plus reference rewrite, in-process |
 | `base-projection` | `base-projection.md` | the `.base` projection relations, membership, `base_fold`, `link.exclusion_path` |
