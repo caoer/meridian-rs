@@ -3055,12 +3055,15 @@ impl Registry {
     /// Nothing to do without a published memo and a live feed: the pass that
     /// follows enters cold or takes the floor, and both read the disk.
     pub(crate) fn sight_named(&self, workspace: &Path, rel: &Path) {
-        if self.stream_ordered() || !feed::member_candidate(rel) {
+        if self.stream_ordered(None) || !feed::member_candidate(rel) {
             return;
         }
         let Some((cache, Some(feed))) = self.published_memo(workspace) else {
             return;
         };
+        if feed.on_helper() {
+            return;
+        }
         let recorded = fs::StatKey::of_path(&workspace.join(rel))
             .is_ok_and(|on_disk| fs::lock_memo(&cache).records_member(rel, on_disk.as_ref()));
         if !recorded {
@@ -3068,18 +3071,21 @@ impl Registry {
         }
     }
 
-    /// Whether a sighting on this registry's feeds proves ordered delivery
-    /// ([`feed::STREAM_ORDERED`]). A test sets the other answer, so the arm
-    /// one platform takes runs on every platform's test lane.
+    /// Whether a sighting on `feed` proves ordered delivery: the platform's
+    /// stream does ([`feed::STREAM_ORDERED`]), or the feed's source is the
+    /// helper ([`feed::WorkspaceFeed::on_helper`]). A test sets the platform's
+    /// answer, so the arm one platform takes runs on every platform's test
+    /// lane.
     #[cfg_attr(
         not(test),
         expect(clippy::unused_self, reason = "the test build reads its own field")
     )]
-    fn stream_ordered(&self) -> bool {
+    fn stream_ordered(&self, feed: Option<&feed::WorkspaceFeed>) -> bool {
         #[cfg(test)]
-        return self.stream_ordered.load(Ordering::Relaxed);
+        let platform = self.stream_ordered.load(Ordering::Relaxed);
         #[cfg(not(test))]
-        feed::STREAM_ORDERED
+        let platform = feed::STREAM_ORDERED;
+        platform || feed.is_some_and(feed::WorkspaceFeed::on_helper)
     }
 
     /// The write door's §6.1 door-entry observation, made inside the door's
@@ -3149,10 +3155,15 @@ impl Registry {
         // `Unproven` is a timeout under contention, and they are opposite
         // facts about the daemon.
         //
-        // Where the stream does not prove order a sighting is a measured
-        // bound, and a door needs a proof: no barrier is asked, no sentinel
-        // is written, and the observation is the floor's.
-        let ordered = self.stream_ordered();
+        // Where the feed's source does not prove order a sighting is a
+        // measured bound, and a door needs a proof: no barrier is asked, no
+        // sentinel is written, and the observation is the floor's. That door
+        // is also where a feed that could be on the helper is told to try it
+        // again (`docs/fsevents-helper.md` §5).
+        let ordered = self.stream_ordered(feed.as_deref());
+        if let Some(feed) = feed.as_ref().filter(|_| !ordered) {
+            feed.retry_helper();
+        }
         let cookie = feed
             .as_ref()
             .filter(|_| ordered)
@@ -8341,6 +8352,51 @@ mod engine_tests {
             .root(&::fs::WorkspaceRoot(canonical.clone()))
             .unwrap();
         assert_eq!(observed.0, truth.0, "the door serves the disk truth");
+        assert_eq!(feed.cookie_written(), written, "the door asked a barrier");
+    }
+
+    /// `docs/fsevents-helper.md` §4, §5: where the stream does not prove
+    /// order, a feed on the helper gives the door its barrier back, and the
+    /// helper is the one source — an edit it has not named is not in the
+    /// vouched root (no floor ran), the same edit named is. A door after the
+    /// helper is gone asks no barrier and serves the floor's root, with no
+    /// error.
+    #[test]
+    fn a_door_on_the_helper_source_vouches_and_floors_once_it_is_gone() {
+        use fsevents_helper::{fse, wire};
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("notes/plan.md", &plan_page("August"))]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.warm_or_build(&ws).unwrap();
+        let cache = reg.domain_cache(&canonical);
+        reg.stream_ordered.store(false, Ordering::Relaxed);
+        let feed = reg.live_feed(&canonical).expect("a live feed");
+        let helper = feed::fake::FakeHelper::start(home.path());
+        feed.attach_helper(&canonical, helper.socket.clone());
+        feed::fake::until("the helper to become the source", || feed.on_helper());
+        let door = || {
+            reg.door_observation(&canonical, &cache, Duration::from_secs(10))
+                .unwrap()
+        };
+        let truth = || {
+            ::fs::DomainCache::new()
+                .root(&::fs::WorkspaceRoot(canonical.clone()))
+                .unwrap()
+        };
+        // The hand-over's one floor pass.
+        let before = door();
+
+        fs::write(canonical.join("notes/plan.md"), plan_page("September")).unwrap();
+        assert_eq!(door().0, before.0, "a vouched root, from the helper alone");
+        helper.send(fse::CONTENT_MODIFIED, wire::Node::File, "notes/plan.md");
+        assert_eq!(door().0, truth().0, "the named edit is in the vouched root");
+
+        helper.hang_up();
+        feed::fake::until("the feed to leave the helper", || !feed.on_helper());
+        fs::write(canonical.join("notes/plan.md"), plan_page("October")).unwrap();
+        let written = feed.cookie_written();
+        assert_eq!(door().0, truth().0, "the floor's root");
         assert_eq!(feed.cookie_written(), written, "the door asked a barrier");
     }
 

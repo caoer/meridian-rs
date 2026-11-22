@@ -1,0 +1,25 @@
+[package]
+name = "fsevents-helper"
+description = "The macOS root helper that reads /dev/fsevents in kernel order and serves each unprivileged engine the path events under its workspace root over a unix socket, plus the wire format and the engine's subscribe call"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "fsevents_helper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mrd-fsevents-helper"
+path = "src/main.rs"
+
+# libc alone, by charter: the helper runs as root, so its whole graph is what an
+# auditor reads. libc is already a graph dependency (cache, fs, run).
+[dependencies]
+libc = "0.2"

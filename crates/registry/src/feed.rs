@@ -86,6 +86,10 @@ use std::time::{Duration, Instant};
 use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
 use notify::{EventKind, RecursiveMode, Watcher as _};
 
+mod helper;
+#[cfg(test)]
+pub(crate) use helper::fake;
+
 /// The dirty set's size floor for the all-dirty collapse. Sized well above
 /// any plausible cold-gap edit burst (the delta plane bounds one frame at
 /// 128 rows) and well below corpus scale, so a runaway producer degrades to
@@ -120,8 +124,30 @@ const COOKIE_HOLDOFF: Duration = Duration::from_secs(60);
 /// ahead of the entries for writes that completed before the sentinel
 /// existed, so a sighting there is a measured bound and not a proof. A
 /// guard-grade observation then takes the floor without asking the barrier,
-/// and a read checks the document it names against disk.
+/// and a read checks the document it names against disk. A feed whose source
+/// is the helper ([`WorkspaceFeed::on_helper`]) is ordered on any platform.
 pub(crate) const STREAM_ORDERED: bool = cfg!(not(target_os = "macos"));
+
+/// The name, under [`COOKIE_DIR`], of the file a take on the helper source
+/// writes one byte to (`docs/fsevents-helper.md` §4, consumed events and the
+/// kernel's coalescing). It carries no token and no serial, so an event on it
+/// is no sighting.
+const TAKE_MARK: &str = "take";
+
+/// The helper socket a feed tries (`docs/fsevents-helper.md` §2, §5): the
+/// path `MRD_FSEVENTS_SOCKET` names when it is set, none when it is set
+/// empty, and otherwise the standing path on macOS and none elsewhere. A test
+/// build has no standing path: its feeds reach a helper only when the
+/// variable names one or a test attaches its own
+/// ([`WorkspaceFeed::attach_helper`]).
+fn helper_socket() -> Option<PathBuf> {
+    match std::env::var_os("MRD_FSEVENTS_SOCKET") {
+        Some(named) if named.is_empty() => None,
+        Some(named) => Some(PathBuf::from(named)),
+        None => (cfg!(target_os = "macos") && !cfg!(test))
+            .then(|| PathBuf::from(fsevents_helper::SOCKET_PATH)),
+    }
+}
 
 /// Why a rescan was marked — every rescan carries its cause into the log and
 /// the record; an anonymous rescan is unconstructible (merkle-spec §6.4,
@@ -205,6 +231,11 @@ pub(crate) struct WorkspaceFeed {
     /// This feed's sentinel-name token ([`cookie_token`]): a sentinel whose
     /// name carries another token is no sighting of this feed.
     cookie_token: String,
+    /// The link to the macOS ordered source, when a helper socket is named
+    /// ([`helper_socket`]).
+    helper: std::sync::OnceLock<Arc<helper::HelperLink>>,
+    /// [`TAKE_MARK`]'s path in this feed's workspace.
+    take_mark: PathBuf,
     /// Test seam: the serial of the last sentinel write that landed.
     #[cfg(test)]
     cookie_written: AtomicU64,
@@ -230,6 +261,44 @@ struct SightingGate {
     resume: std::sync::mpsc::Receiver<()>,
 }
 
+impl FeedSync {
+    /// One path of one event from the feed's source, the state lock held and
+    /// handed back.
+    ///
+    /// §6.4 cookie sighting — UPSTREAM of the member filter: a sentinel is
+    /// the ordered stream's proof-of-delivery, never dirt. Every event on one
+    /// of this feed's sentinels was raised after its barrier began, so its
+    /// serial, read from the path, vouches exactly that barrier. A removal
+    /// and another feed's sentinel prove nothing. Any other path is admitted
+    /// ([`FeedState::admit`]).
+    fn path_event<'a>(
+        &'a self,
+        mut s: std::sync::MutexGuard<'a, FeedState>,
+        rel: &Path,
+        abs: &Path,
+        kind: EventKind,
+        sentinel_prefix: &str,
+    ) -> std::sync::MutexGuard<'a, FeedState> {
+        if let Ok(name) = rel.strip_prefix(COOKIE_DIR) {
+            // On the helper source only its fence vouches a barrier: a
+            // sentinel written before the switch proves nothing there.
+            if let Some(serial) = sighting(name, sentinel_prefix, kind).filter(|_| !s.helper) {
+                s.cookie_seen = s.cookie_seen.max(serial);
+                self.cookie.notify_all();
+                #[cfg(test)]
+                {
+                    drop(s);
+                    self.park_after_sighting(serial);
+                    s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+            return s;
+        }
+        s.admit(rel, abs, kind);
+        s
+    }
+}
+
 #[cfg(test)]
 impl FeedSync {
     /// Park the watcher thread on an armed gate, the state lock released. A
@@ -244,6 +313,16 @@ impl FeedSync {
             .is_some_and(|g| g.announce.send(serial).is_ok() && g.resume.recv().is_ok());
         if !parked {
             *gate = None;
+        }
+    }
+}
+
+impl Drop for WorkspaceFeed {
+    /// The link thread holds the shared state, not the feed: tell it the
+    /// feed is gone.
+    fn drop(&mut self) {
+        if let Some(link) = self.helper.get() {
+            link.stop();
         }
     }
 }
@@ -310,6 +389,10 @@ struct FeedState {
     /// `Default` is zero (no holdoff) so unit fixtures stay deterministic
     /// unless they opt in.
     cookie_holdoff: Duration,
+    /// The feed's source is the helper (`docs/fsevents-helper.md` §4): its
+    /// records are admitted and the kernel watcher's events are discarded.
+    /// `false`: the reverse.
+    helper: bool,
 }
 
 /// A kept `.base` walk: reusable while the base-plane count still reads
@@ -421,6 +504,11 @@ impl WorkspaceFeed {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let mut s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
+                // One source at a time: while the helper feeds, this stream
+                // tells nothing, its errors and rescans included.
+                if s.helper {
+                    return;
+                }
                 if let Ok(event) = event {
                     if event.need_rescan() {
                         s.collapse(RescanCause::Overflow);
@@ -434,27 +522,7 @@ impl WorkspaceFeed {
                         let Ok(rel) = path.strip_prefix(&root) else {
                             continue;
                         };
-                        // §6.4 cookie sighting — UPSTREAM of the member
-                        // filter: a sentinel is the ordered stream's
-                        // proof-of-delivery, never dirt. Every event on
-                        // one of this feed's sentinels was raised after
-                        // its barrier began, so its serial, read from the
-                        // path, vouches exactly that barrier. A removal
-                        // and another feed's sentinel prove nothing.
-                        if let Ok(name) = rel.strip_prefix(COOKIE_DIR) {
-                            if let Some(serial) = sighting(name, &sentinel_prefix, event.kind) {
-                                s.cookie_seen = s.cookie_seen.max(serial);
-                                sink.cookie.notify_all();
-                                #[cfg(test)]
-                                {
-                                    drop(s);
-                                    sink.park_after_sighting(serial);
-                                    s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
-                                }
-                            }
-                            continue;
-                        }
-                        s.admit(rel, path, event.kind);
+                        s = sink.path_event(s, rel, path, event.kind, &sentinel_prefix);
                     }
                     if s.doubt.is_some() {
                         sink.cookie.notify_all();
@@ -476,14 +544,66 @@ impl WorkspaceFeed {
         // `Unproven` and the caller keeps the extent-refresh floor.
         let _ = cookie_dir_ready(&workspace.join(COOKIE_DIR));
         watcher.watch(workspace, RecursiveMode::Recursive)?;
-        Ok(WorkspaceFeed {
+        let feed = WorkspaceFeed {
             _watcher: watcher,
             sync,
             cookie_serial: AtomicU64::new(0),
             cookie_token: token,
+            helper: std::sync::OnceLock::new(),
+            take_mark: workspace.join(COOKIE_DIR).join(TAKE_MARK),
             #[cfg(test)]
             cookie_written: AtomicU64::new(0),
-        })
+        };
+        if let Some(socket) = helper_socket() {
+            feed.link_helper(workspace, socket);
+        }
+        Ok(feed)
+    }
+
+    /// Start this feed's link to the helper at `socket`: from here the link
+    /// decides which source feeds ([`helper::HelperLink`]).
+    fn link_helper(&self, workspace: &Path, socket: PathBuf) {
+        self.helper.get_or_init(|| {
+            helper::HelperLink::spawn(
+                Arc::clone(&self.sync),
+                workspace.to_path_buf(),
+                format!("{}-", self.cookie_token),
+                socket,
+            )
+        });
+    }
+
+    /// Test seam: link this feed to a helper at `socket`.
+    #[cfg(test)]
+    pub(crate) fn attach_helper(&self, workspace: &Path, socket: PathBuf) {
+        self.link_helper(workspace, socket);
+    }
+
+    /// Test seam: the link's wait between attempts.
+    #[cfg(test)]
+    pub(crate) fn set_helper_retry_after(&self, wait: Duration) {
+        if let Some(link) = self.helper.get() {
+            link.set_retry_after(wait);
+        }
+    }
+
+    /// Whether the helper is this feed's source: its sightings then prove
+    /// ordered delivery (`docs/fsevents-helper.md` §4).
+    pub(crate) fn on_helper(&self) -> bool {
+        self.sync
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .helper
+    }
+
+    /// A write door found this feed on a stream that does not prove order:
+    /// let the link try the helper again when its wait has passed. O(1), and
+    /// nothing without a link.
+    pub(crate) fn retry_helper(&self) {
+        if let Some(link) = self.helper.get() {
+            link.retry();
+        }
     }
 
     /// Test seam: park the watcher thread after every cookie sighting. Each
@@ -595,6 +715,18 @@ impl WorkspaceFeed {
             }
         }
         let serial = self.cookie_serial.fetch_add(1, Ordering::Relaxed) + 1;
+        // On the helper source the barrier is the helper's fence, and no
+        // sentinel is written (`docs/fsevents-helper.md` §4). A source that
+        // changes under the wait is a collapse, which answers `Unproven`.
+        if let Some(link) = self.helper.get().filter(|_| self.on_helper()) {
+            if !link.ask(serial) {
+                return CookieOutcome::Unproven;
+            }
+            let waiting = timing::op::phase("cookie.wait");
+            let outcome = self.await_sighting(serial, timeout, doubt_on_timeout);
+            waiting.stop();
+            return outcome;
+        }
         let dir = workspace.join(dir);
         let sentinel = dir.join(format!("{}-{serial}", self.cookie_token));
         let write =
@@ -684,12 +816,21 @@ impl WorkspaceFeed {
     }
 
     /// Take whatever is pending, leaving the set clean.
+    ///
+    /// On the helper source a take that returns something first writes
+    /// [`TAKE_MARK`], under the state lock: the kernel drops an event that
+    /// repeats the previous one, and the mark puts an event of this process
+    /// after every event the take consumes, so a later write to a taken
+    /// member is announced (`docs/fsevents-helper.md` §4).
     pub(crate) fn take(&self) -> Pending {
         let mut s = self
             .sync
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if s.helper && (s.doubt.is_some() || !s.dirty.is_empty()) {
+            let _ = std::fs::write(&self.take_mark, b"1");
+        }
         s.take()
     }
 
