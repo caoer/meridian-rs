@@ -345,61 +345,15 @@ impl Controller {
                     return Ok(None);
                 }
             }
-            state.permits.reserve(1);
-            if key.is_some() {
-                let pending = state.pending + 1;
-                state.raw.reserve(pending);
-                state.raw_versions.reserve(pending);
+            // The fit counts the rows this wave would insert; a turn that
+            // opens no wave gives their capacity back before the ledger
+            // unlocks, so the floor never rises for a load that is not live.
+            let tables = state.reserve_wave(key.is_some());
+            let opened = open_or_refuse(&mut state, key, bytes, revision, unpaused);
+            if !matches!(opened, Ok(Some(_))) {
+                state.unreserve_wave(tables);
             }
-            let floor = state.floor_exact();
-            let fits =
-                state.limit == 0 || state.total_exact() + bytes as u128 <= state.limit as u128;
-            let oversized = key.is_some()
-                && state.limit != 0
-                && bytes as u128 > (state.limit as u128).saturating_sub(floor);
-            // While another member's oversized load waits, a new load that is
-            // not oversized pauses, so the live loads drain (merkle-spec §6.4).
-            let now = Instant::now();
-            if let Some(key) = key
-                && !unpaused
-                && !oversized
-                && state.limit != 0
-                && state.waits_for(key, now)
-            {
-                state.owe(key, now);
-                return Err(AdmissionError::Paused);
-            }
-            // One member waits at a time, and loads another member's wait or
-            // slot paused take their turn before the next oversized load
-            // (merkle-spec §6.4): no record forms against them, and they end
-            // without this caller's help.
-            if let Some(key) = key
-                && oversized
-                && let Some(kept_out) = state.keeps_out(key, now)
-            {
-                return Err(kept_out);
-            }
-            let exclusive_available = state.transient.is_none() || state.transient == key;
-            let slot_waits_for_retirement = oversized
-                && exclusive_available
-                && state.permits.is_empty()
-                && state.detached_floor == 0;
-            let may_overflow = slot_waits_for_retirement && state.retiring == 0;
-            if !fits
-                && !may_overflow
-                && let Some(refused) = refusal(
-                    &mut state,
-                    key,
-                    bytes,
-                    oversized,
-                    slot_waits_for_retirement,
-                    unpaused,
-                )
-            {
-                return Err(refused);
-            }
-            if fits || (may_overflow && state.reclaimable == 0) {
-                let id = open_wave(&mut state, key, bytes, revision, fits)?;
+            if let Some(id) = opened? {
                 return Ok(Some(Reservation {
                     controller: self.clone(),
                     id,
@@ -528,6 +482,66 @@ struct Retirement {
     key: Key,
     resident: Option<Resident>,
 }
+/// One admission turn over a ledger whose tables hold the wave's rows
+/// ([`Ledger::reserve_wave`]): the wave's id when the load is admitted, its
+/// refusal, or `None` when shedding a cached body can still make room.
+fn open_or_refuse(
+    state: &mut Ledger,
+    key: Option<Key>,
+    bytes: usize,
+    revision: u64,
+    unpaused: bool,
+) -> Result<Option<u64>, AdmissionError> {
+    let floor = state.floor_exact();
+    let fits = state.limit == 0 || state.total_exact() + bytes as u128 <= state.limit as u128;
+    let oversized = key.is_some()
+        && state.limit != 0
+        && bytes as u128 > (state.limit as u128).saturating_sub(floor);
+    // While another member's oversized load waits, a new load that is
+    // not oversized pauses, so the live loads drain (merkle-spec §6.4).
+    let now = Instant::now();
+    if let Some(key) = key
+        && !unpaused
+        && !oversized
+        && state.limit != 0
+        && state.waits_for(key, now)
+    {
+        state.owe(key, now);
+        return Err(AdmissionError::Paused);
+    }
+    // One member waits at a time, and loads another member's wait or
+    // slot paused take their turn before the next oversized load
+    // (merkle-spec §6.4): no record forms against them, and they end
+    // without this caller's help.
+    if let Some(key) = key
+        && oversized
+        && let Some(kept_out) = state.keeps_out(key, now)
+    {
+        return Err(kept_out);
+    }
+    let exclusive_available = state.transient.is_none() || state.transient == key;
+    let slot_waits_for_retirement =
+        oversized && exclusive_available && state.permits.is_empty() && state.detached_floor == 0;
+    let may_overflow = slot_waits_for_retirement && state.retiring == 0;
+    if !fits
+        && !may_overflow
+        && let Some(refused) = refusal(
+            state,
+            key,
+            bytes,
+            oversized,
+            slot_waits_for_retirement,
+            unpaused,
+        )
+    {
+        return Err(refused);
+    }
+    if fits || (may_overflow && state.reclaimable == 0) {
+        return open_wave(state, key, bytes, revision, fits).map(Some);
+    }
+    Ok(None)
+}
+
 /// Open the loading wave of an admitted load: its permit, its member's row
 /// and, for a load that does not fit, the serialized slot. An admitted
 /// waiting member's record ends here.

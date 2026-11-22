@@ -436,6 +436,33 @@ impl Ledger {
         }
     }
 
+    /// Reserve the rows a new wave inserts: its permit and, for a member's
+    /// load, a raw record for every pending load. The fit measured next
+    /// counts the tables as that wave leaves them. Returns the capacities
+    /// [`Self::unreserve_wave`] restores.
+    pub(super) fn reserve_wave(&mut self, member: bool) -> [usize; 3] {
+        let held = [
+            self.permits.capacity(),
+            self.raw.capacity(),
+            self.raw_versions.capacity(),
+        ];
+        self.permits.reserve(1);
+        if member {
+            let pending = self.pending + 1;
+            self.raw.reserve(pending);
+            self.raw_versions.reserve(pending);
+        }
+        held
+    }
+
+    /// Give back what [`Self::reserve_wave`] grew. Each capacity it returned
+    /// already held a raw record for every pending load.
+    pub(super) fn unreserve_wave(&mut self, held: [usize; 3]) {
+        self.permits.shrink_to(held[0]);
+        self.raw.shrink_to(held[1]);
+        self.raw_versions.shrink_to(held[2]);
+    }
+
     pub(super) fn floor_exact(&self) -> u128 {
         model::allocation::arc_bytes::<Control>() as u128
             + self.rows.allocation_size() as u128

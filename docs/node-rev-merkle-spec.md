@@ -967,6 +967,10 @@ measurements, not a raw-length multiplier or an RSS estimate; the peak
 reservation is the length rule below. The controller
 counts its own tables, descriptors (each member's version descriptor and the
 source handle allocation it alone owns) and reservation metadata separately.
+An admission turn reserves the table rows its wave would insert before it
+measures the fit, so the fit counts them, and gives that capacity back before
+the ledger unlocks when the turn opens no wave: a load that is refused, or
+that first sheds a cached body, leaves the floor where it stood.
 
 **Load-peak declarations.** Every load of a version is admitted under one
 rule of its byte length, `residency::load_peak(len) = 72 KiB + 416·len`: the

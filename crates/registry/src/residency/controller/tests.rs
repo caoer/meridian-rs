@@ -172,6 +172,39 @@ fn raw_lease_survives_descriptor_destruction_and_is_charged_once() {
     assert_eq!(budget.report().raw, 0);
 }
 
+/// A load refused for room leaves the ledger's tables as it found them. The
+/// limit is the exact total, so any capacity its turn kept would show as
+/// overage; the pinned members cross the raw table's growth points.
+#[test]
+fn a_refused_load_keeps_no_table_capacity() {
+    let parent = tempfile::tempdir().unwrap();
+    let store = RawStore::new(parent.path()).unwrap();
+    let budget = Controller::new(0);
+    let mut held = Vec::new();
+    for n in 0..30 {
+        // Bodies far larger than a table, so the one-byte load is never
+        // oversized and takes no serialized slot.
+        let raw = format!("# Held {n}\n\n{}", "a paragraph\n\n".repeat(64));
+        let member = budget.retain(Arc::new(store.retain(raw.as_bytes()).unwrap()));
+        held.push(member.pin(Access::Read, 131_072).unwrap());
+        let refused = budget.retain(Arc::new(
+            store.retain(format!("# Refused {n}\n").as_bytes()).unwrap(),
+        ));
+        budget.set_limit(budget.report().total);
+        assert!(matches!(
+            refused.pin(Access::Read, 1),
+            Err(Error::Admission(AdmissionError::Busy))
+        ));
+        assert_eq!(
+            budget.report().overage,
+            0,
+            "the load refused beside {} pinned members grew the ledger",
+            held.len()
+        );
+        budget.set_limit(0);
+    }
+}
+
 #[test]
 fn reservations_and_floor_overflow_do_not_wrap_or_disappear_early() {
     let budget = Controller::new(0);
