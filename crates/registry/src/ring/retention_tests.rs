@@ -413,7 +413,9 @@ fn a_door_step_on_a_memo_moved_past_its_observation_tells_nothing() {
     let reader_saw = observe(&registry, &root, &cache);
     assert_ne!(door_saw, reader_saw);
 
-    let told = ring.reconcile_observed(&root, &cache, &door_saw).unwrap();
+    let told = ring
+        .reconcile_observed(&root, &cache, &baseline, &door_saw)
+        .unwrap();
     assert!(
         !told && ring.frames_after(0).is_empty(),
         "a frame stamped {door_saw:?} over bytes the memo folds to {reader_saw:?}: {:?}",

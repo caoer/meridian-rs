@@ -272,13 +272,77 @@ pub fn reconcile_delta(
         .watcher
         .diff_leaves(leaves)
         .expect("primed: watch.root is Some");
+    reconcile_diff(
+        ws_root,
+        ring,
+        watch,
+        watch_root,
+        &diff,
+        &|path| leaves.get(path).copied(),
+        disk_root,
+    )
+}
+
+/// [`reconcile_delta`] when the caller can name every path whose leaf may
+/// differ from the baseline (merkle-spec §6.1, the overlay journal): `moved`
+/// carries each with its leaf now, `None` for a path that is no longer a
+/// member, and `disk_root` folds the baseline's leaf set with those paths
+/// replaced. Same classification, same frames, same baseline; the cost
+/// follows `moved`, not the corpus. An unprimed watch stays unprimed and
+/// tells nothing.
+///
+/// # Errors
+/// As [`reconcile_delta`].
+///
+/// # Panics
+/// As [`reconcile_delta`]: unreachable by construction.
+pub fn reconcile_moved(
+    ws_root: &fs::WorkspaceRoot,
+    ring: &mut RootRing,
+    watch: &mut WatchState,
+    moved: &std::collections::BTreeMap<String, Option<[u8; 32]>>,
+    disk_root: &Root,
+) -> Result<Option<DeltaFrame>, Box<ErrorBody>> {
+    let Some(watch_root) = watch.root.clone() else {
+        return Ok(None);
+    };
+    if watch_root == *disk_root {
+        return Ok(None);
+    }
+    let diff = watch
+        .watcher
+        .diff_moved(moved)
+        .expect("primed: watch.root is Some");
+    reconcile_diff(
+        ws_root,
+        ring,
+        watch,
+        watch_root,
+        &diff,
+        &|path| moved.get(path).copied().flatten(),
+        disk_root,
+    )
+}
+
+/// The step [`reconcile_delta`] and [`reconcile_moved`] share once the movers
+/// are known: `diff` against the baseline at `watch_root`, `leaf` the
+/// observed leaf of a path now.
+fn reconcile_diff(
+    ws_root: &fs::WorkspaceRoot,
+    ring: &mut RootRing,
+    watch: &mut WatchState,
+    watch_root: Root,
+    diff: &fs::LeafDiff,
+    leaf: &dyn Fn(&str) -> Option<[u8; 32]>,
+    disk_root: &Root,
+) -> Result<Option<DeltaFrame>, Box<ErrorBody>> {
     // An already-recorded commit needs only replacement bytes. Its before
     // bodies cannot affect the silent transition and need no admission or I/O.
     let silent = ring.chains(&watch_root, disk_root);
     let mut changes = fs::WatchChanges::default();
     let mut upserts: Vec<(String, Vec<u8>)> = Vec::new();
     for path in &diff.added {
-        let Some(bytes) = read_verified(ws_root, path, leaves)? else {
+        let Some(bytes) = read_verified(ws_root, path, leaf(path))? else {
             return Ok(None);
         };
         if !silent {
@@ -300,7 +364,7 @@ pub fn reconcile_delta(
                     .to_vec(),
             )
         };
-        let Some(after) = read_verified(ws_root, path, leaves)? else {
+        let Some(after) = read_verified(ws_root, path, leaf(path))? else {
             return Ok(None);
         };
         if let Some(before) = before {
@@ -511,7 +575,7 @@ pub fn prime(
         let diff = members.diff_leaves(leaves);
         members.retain_matching(leaves);
         for path in diff.added.iter().chain(&diff.changed) {
-            let Some(bytes) = read_verified(ws_root, path, leaves)? else {
+            let Some(bytes) = read_verified(ws_root, path, leaves.get(path).copied())? else {
                 return Ok(false);
             };
             upserts.push((path.clone(), bytes));
@@ -548,7 +612,7 @@ pub fn prime(
 fn read_verified(
     ws_root: &fs::WorkspaceRoot,
     path: &str,
-    leaves: &std::collections::BTreeMap<String, [u8; 32]>,
+    observed: Option<[u8; 32]>,
 ) -> Result<Option<Vec<u8>>, Box<ErrorBody>> {
     let bytes = match std::fs::read(ws_root.0.join(path)) {
         Ok(bytes) => bytes,
@@ -559,7 +623,7 @@ fn read_verified(
             return Err(Box::new(err));
         }
     };
-    if leaves.get(path) != Some(&model::leaf_digest(&bytes)) {
+    if observed != Some(model::leaf_digest(&bytes)) {
         return Ok(None);
     }
     Ok(Some(bytes))
