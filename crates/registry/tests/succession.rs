@@ -263,3 +263,68 @@ fn a_successor_that_never_adopts_leaves_the_daemon_serving() {
     old.shutdown();
     assert!(!socket.exists(), "an ordinary stop removes the socket");
 }
+
+#[test]
+fn a_request_that_does_not_end_keeps_the_daemon_and_the_answer_names_it() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp);
+    let old = RunningServer::start(test_config(&tmp, "old")).unwrap();
+    let socket = old.socket_path().to_path_buf();
+
+    let mut held = Conn::open(&socket);
+    held.hello(&ws);
+    held.toc_until_warm();
+    let warm = Conn::open(&socket).call(&json!({"op": "handover", "warm": []}))["warm"].clone();
+
+    // A caller stopped in the middle of a request line: its connection is at
+    // no request boundary, so it cannot be parked.
+    let mut stalled = Conn::open(&socket);
+    stalled.hello(&ws);
+    stalled.writer.write_all(br#"{"op": "toc", "#).unwrap();
+    // Longer than the tick a connection waits for its next bytes.
+    thread::sleep(Duration::from_millis(300));
+
+    // The drain waits its whole bound for that one connection, then the
+    // daemon serves on and says what it waited for.
+    let asked = Instant::now();
+    let told = Conn::open(&socket).call(&json!({"op": "handover", "warm": warm}));
+    assert_eq!(told["grant"], json!(false), "{told}");
+    assert_eq!(told["reason"], json!("busy"), "{told}");
+    // The count is the stalled connection, and for an instant in every accept
+    // poll the accept loop's own pass.
+    assert!(
+        told["busy"]
+            .as_str()
+            .is_some_and(|what| what.ends_with(" request(s) in flight")),
+        "{told}"
+    );
+    assert!(
+        asked.elapsed() >= Duration::from_secs(4),
+        "the drain waited its bound: {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(held.toc()["ok"], json!(true), "the daemon serves on");
+
+    // The request ends: both connections are at a boundary, and the next ask
+    // is granted at once.
+    stalled.writer.write_all(b"\"path\": \"a.md\"}\n").unwrap();
+    let mut answer = String::new();
+    stalled.reader.read_line(&mut answer).unwrap();
+    let answer: Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(answer["ok"], json!(true), "{answer}");
+    let asked = Instant::now();
+    let mut dying = Conn::open(&socket);
+    let granted = dying.call(&json!({"op": "handover", "warm": warm}));
+    assert_eq!(granted["grant"], json!(true), "{granted}");
+    assert_eq!(granted["conns"].as_array().unwrap().len(), 2, "{granted}");
+    assert!(
+        asked.elapsed() < Duration::from_secs(4),
+        "nothing to wait for: {:?}",
+        asked.elapsed()
+    );
+    drop(dying);
+
+    assert_eq!(held.toc()["ok"], json!(true), "resumed");
+    assert!(!old.handed_over());
+    old.shutdown();
+}
