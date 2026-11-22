@@ -1958,10 +1958,11 @@ takeover) are not timed.
 - `collapse` — the applied set collapsed doubt.
 - `untrusted` — the §6.2 close does not hold the memo trusted.
 - `no_overlay` — the resident overlay folded no root.
-- `stream_unordered` — the feed is live on a stream that does not prove order
-  (FSEvents; `node-rev-merkle-spec.md` §6.4), so the door asked no barrier.
-  Write plane only, and there it is every observation: a platform constant,
-  never load.
+- `stream_unordered` — the feed is live on a source that does not prove order
+  (the FSEvents stream; `node-rev-merkle-spec.md` §6.4), so the door asked no
+  barrier. Write plane only. On a Mac without the ordered source
+  (`fsevents-helper.md`) it is every observation; with it, the observations
+  between a lost subscription and the next one. Never load.
 
 **A phase reports only where it completed.** One that never ran emits no line:
 nothing from `snapshot` down under `--list`, no `snapshot` for `--dry` on bash.

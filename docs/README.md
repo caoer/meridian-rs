@@ -127,6 +127,7 @@ anchors, and pins are in `doc-system.md`.
 | `armed-plane.md` | `armed` | The arming ladder and the `gate()` seam | you arm a workspace or touch the write gate |
 | `base-projection.md` | `base-projection` | `.base` (Obsidian Bases) projection into the sql face: membership, relations, the `base_fold` witness, `link.exclusion_path` | you work on `.base` files in the sql face |
 | `body-projection.md` | `body-projection` | Section body text in the sql face: the exclusive-chunk law, the `body` relation, the content-addressed cache protocol | you work on body text in the sql face |
+| `fsevents-helper.md` | `fsevents-helper` | The macOS ordered event source: the root helper on `/dev/fsevents`, its socket, handshake and records, and when a feed trusts it | you work on the macOS feed, the helper, or its install |
 | `run-plane.md` | `run` | The run plane (`mrd run`) and preset / session birth | you work on `run`, `realise`, or `preset` |
 | `move.md` | `move` | The move door: `mrd move` — rename plus reference rewrite, in-process, never a wire op | you work on `mrd move` or on what a rename must rewrite |
 | `status.md` | `status` | CLI / build snapshot, **descriptive** only; also the home of R12, the armed-plane exit reading | you want "what the binary exposes today" |
