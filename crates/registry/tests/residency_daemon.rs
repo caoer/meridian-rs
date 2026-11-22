@@ -520,6 +520,10 @@ fn two_requests_load_at_once_under_an_allowance_of_several_declarations() {
                     live = live.max(report.reservations);
                     over = over.max(report.total.saturating_sub(report.limit));
                     transient |= report.transient;
+                    // A report takes the ledger's lock, which every load
+                    // takes: leave it free between reads, or the scans wait
+                    // on this sampler until their connection times out.
+                    std::thread::sleep(Duration::from_micros(50));
                 }
                 (live, over, transient)
             });
