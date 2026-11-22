@@ -996,6 +996,11 @@ pub struct DomainCache {
     /// fresher config read from disk; a config write applies the commit's
     /// own bytes through `overlay_membership`.
     domain_seen: Option<domain::Domain>,
+    /// The own-write overlay's journal (merkle-spec §6.1): the served root at
+    /// the last [`mark_overlay_moves`](Self::mark_overlay_moves) and every
+    /// path the overlay has moved since. `None` when no mark stands — none
+    /// was made, or an observation moved a leaf after it.
+    overlay_journal: Option<(model::MerkleRoot, std::collections::BTreeSet<PathBuf>)>,
     /// The §6.2 timestamp-granularity calibration, probed lazily at the
     /// first observation (the cache's workspace open). `None` = not yet
     /// probed.
@@ -1031,6 +1036,17 @@ pub struct DomainCache {
     sweeps: u64,
     /// Member identities `stat`ed across all sweeps — the pair's other half.
     member_stats: u64,
+}
+
+/// The own-write overlay's journal as read ([`DomainCache::overlay_moves`],
+/// merkle-spec §6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayMoves {
+    /// The served root when the journal started.
+    pub since: model::MerkleRoot,
+    /// Every path the overlay moved since, with its leaf now; `None` is a
+    /// path that is no longer a member.
+    pub moved: BTreeMap<PathBuf, Option<[u8; 32]>>,
 }
 
 /// A spelled §5.4 premise token at one scope: the minted `Root`-family token,
@@ -1143,6 +1159,7 @@ impl DomainCache {
             stamps,
             served,
             domain_seen,
+            overlay_journal,
             calibration,
             feed,
             acked_losses: _,
@@ -1198,6 +1215,14 @@ impl DomainCache {
         }
         if let Some(domain) = domain_seen {
             bytes = bytes.saturating_add(domain.heap_bytes());
+        }
+        if let Some((since, moved)) = overlay_journal {
+            bytes = bytes
+                .saturating_add(since.0.capacity())
+                .saturating_add(model::allocation::btree_bytes::<PathBuf, ()>(moved.len()));
+            for path in moved {
+                bytes = bytes.saturating_add(path.capacity());
+            }
         }
         bytes.saturating_add(feed.heap_bytes())
     }
@@ -1430,6 +1455,9 @@ impl DomainCache {
         }
         if advanced {
             self.served = None;
+            // A leaf moved that no overlay wrote: the journal no longer
+            // names every mover since its mark.
+            self.overlay_journal = None;
         }
         self.domain_seen = Some(domain.clone());
         self.acked_losses = losses_at_start;
@@ -1797,6 +1825,7 @@ impl DomainCache {
             return Ok(false);
         }
         self.stamp_advance(rel);
+        self.journal_overlay_move(rel);
         self.leaves.insert(
             rel.to_path_buf(),
             LeafSeen {
@@ -1826,6 +1855,7 @@ impl DomainCache {
             return Ok(false);
         }
         self.stamp_advance(rel);
+        self.journal_overlay_move(rel);
         self.leaves.remove(rel);
         self.served = None;
         Ok(true)
@@ -1855,6 +1885,7 @@ impl DomainCache {
             let _ = self.tree.remove_leaf(rel);
             self.leaves.remove(rel);
             self.stamp_advance(rel);
+            self.journal_overlay_move(rel);
         }
         let changed = self.domain_seen.as_ref() != Some(&domain) || !departed.is_empty();
         self.domain_seen = Some(domain);
@@ -1862,6 +1893,42 @@ impl DomainCache {
             self.served = None;
         }
         Ok(changed)
+    }
+
+    /// Start the own-write overlay's journal at the current served root
+    /// (merkle-spec §6.1), dropping what an earlier mark collected. Before
+    /// any observation has landed there is no root to start from and no
+    /// journal stands.
+    pub fn mark_overlay_moves(&mut self) {
+        self.overlay_journal = self
+            .overlay_root()
+            .ok()
+            .map(|since| (since, std::collections::BTreeSet::new()));
+    }
+
+    /// What the own-write overlay moved since the last
+    /// [`mark_overlay_moves`](Self::mark_overlay_moves), each path with its
+    /// leaf now: this memo's leaf set differs from its leaf set at
+    /// [`OverlayMoves::since`] on those paths alone. A named path may hold
+    /// the leaf it held at the mark. `None` when no journal stands; the
+    /// leaf sets themselves ([`Self::leaf_digests`]) then say what moved.
+    /// O(paths named).
+    #[must_use]
+    pub fn overlay_moves(&self) -> Option<OverlayMoves> {
+        let (since, moved) = self.overlay_journal.as_ref()?;
+        Some(OverlayMoves {
+            since: since.clone(),
+            moved: moved
+                .iter()
+                .map(|rel| (rel.clone(), self.leaves.get(rel).map(|seen| seen.digest)))
+                .collect(),
+        })
+    }
+
+    fn journal_overlay_move(&mut self, rel: &Path) {
+        if let Some((_, moved)) = &mut self.overlay_journal {
+            moved.insert(rel.to_path_buf());
+        }
     }
 
     /// The served root over the current overlay state — the resident tree's
@@ -5428,6 +5495,28 @@ impl Watcher {
             .map(|baseline| diff_baseline_entries(baseline, leaves))
     }
 
+    /// [`Self::diff_leaves`] over the paths `moved` names alone: each with
+    /// its leaf now, `None` for a path that is no longer a member. The same
+    /// diff when every path whose leaf differs from the baseline is named; a
+    /// named path that did not move adds nothing. O(paths named). `None`
+    /// until primed.
+    #[must_use]
+    pub fn diff_moved(&self, moved: &BTreeMap<String, Option<[u8; 32]>>) -> Option<LeafDiff> {
+        let baseline = self.baseline.as_ref()?;
+        let mut diff = LeafDiff::default();
+        for (path, now) in moved {
+            match (baseline.get(path), now) {
+                (Some(_), None) => diff.removed.push(path.clone()),
+                (None, Some(_)) => diff.added.push(path.clone()),
+                (Some(entry), Some(fresh)) if *fresh != entry.identity.digest => {
+                    diff.changed.push(path.clone());
+                }
+                _ => {}
+            }
+        }
+        Some(diff)
+    }
+
     /// Classify a snapshot against the retained baseline. `None` until primed.
     /// Unchanged identities need no body read.
     ///
@@ -7137,6 +7226,145 @@ mod domain_cache_tests {
             super::domain::Domain::from_markdown(config).version(),
         );
         assert_eq!(cache.overlay_root().unwrap(), expected);
+    }
+
+    /// The overlay journal's law (merkle-spec §6.1): from its mark, the paths
+    /// it names cover every leaf that differs from the mark's leaf set, each
+    /// with its leaf now — across a leaf set, a birth, a remove and a
+    /// membership overlay. An observation that moves a leaf ends it.
+    #[test]
+    fn the_overlay_journal_names_every_leaf_the_overlay_moved() {
+        use std::path::{Path, PathBuf};
+        let (_tmp, root) = workspace(&[
+            ("a.md", b"# A\n".as_slice()),
+            ("drafts/x.md", b"# X\n".as_slice()),
+            ("drafts/y.md", b"# Y\n".as_slice()),
+            ("notes/b.md", b"# B\n".as_slice()),
+            ("notes/c.md", b"# C\n".as_slice()),
+        ]);
+        let mut cache = DomainCache::new();
+        assert!(cache.overlay_moves().is_none(), "no mark, no journal");
+        cache.mark_overlay_moves();
+        assert!(
+            cache.overlay_moves().is_none(),
+            "no observation has landed: there is no root to mark"
+        );
+        let at_mark = cache.root(&root).unwrap();
+        cache.mark_overlay_moves();
+        let before = cache.leaf_digests();
+        assert_eq!(
+            cache
+                .overlay_moves()
+                .map(|moves| (moves.since, moves.moved)),
+            Some((at_mark.clone(), std::collections::BTreeMap::new()))
+        );
+        // An observation that moves no leaf leaves the journal standing.
+        cache.root(&root).unwrap();
+        assert!(cache.overlay_moves().is_some());
+
+        let config = "---\nignore:\n  - \"drafts/**\"\n---\n# Domain\n";
+        cache
+            .overlay_leaf(Path::new("a.md"), model::leaf_digest(b"# A2\n"))
+            .unwrap();
+        cache
+            .overlay_leaf(Path::new("notes/new.md"), model::leaf_digest(b"# New\n"))
+            .unwrap();
+        cache.overlay_remove(Path::new("notes/c.md")).unwrap();
+        cache
+            .overlay_leaf(
+                Path::new("meridian/domain.md"),
+                model::leaf_digest(config.as_bytes()),
+            )
+            .unwrap();
+        cache
+            .overlay_membership(super::domain::Domain::from_markdown(config))
+            .unwrap();
+        // An overlay that changes nothing names nothing.
+        assert!(
+            !cache
+                .overlay_leaf(Path::new("notes/b.md"), model::leaf_digest(b"# B\n"))
+                .unwrap()
+        );
+
+        let moves = cache.overlay_moves().expect("the journal stands");
+        assert_eq!(moves.since, at_mark);
+        let after = cache.leaf_digests();
+        let differing: Vec<PathBuf> = before
+            .keys()
+            .chain(after.keys())
+            .filter(|rel| before.get(*rel) != after.get(*rel))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            moves.moved.keys().cloned().collect::<Vec<_>>(),
+            differing,
+            "the journal names the movers and nothing else here"
+        );
+        assert_eq!(differing.len(), 6, "{differing:?}");
+        for (rel, leaf) in &moves.moved {
+            assert_eq!(*leaf, after.get(rel).copied(), "{}", rel.display());
+        }
+
+        // A mark starts over at the current root.
+        cache.mark_overlay_moves();
+        let restarted = cache.overlay_moves().expect("a fresh journal");
+        assert_eq!(restarted.since, cache.overlay_root().unwrap());
+        assert!(restarted.moved.is_empty());
+
+        // An observation that moves a leaf ends it.
+        fs::write(root.0.join("notes/b.md"), b"# B, by someone else\n").unwrap();
+        cache.root(&root).unwrap();
+        assert!(
+            cache.overlay_moves().is_none(),
+            "a leaf moved that no overlay wrote"
+        );
+    }
+}
+
+#[cfg(test)]
+mod watcher_moved_tests {
+    //! [`Watcher::diff_moved`] against its oracle, [`Watcher::diff_leaves`].
+
+    use super::{Watcher, WorkspaceRoot};
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
+
+    /// A member set over a small path alphabet: path index to content byte.
+    fn members() -> impl Strategy<Value = BTreeMap<u8, u8>> {
+        prop::collection::btree_map(0u8..12, 0u8..4, 0..12)
+    }
+
+    fn path(index: u8) -> String {
+        format!("d{}/f{index}.md", index % 3)
+    }
+
+    proptest! {
+        /// Naming every path whose leaf differs from the baseline — and any
+        /// others, moved or not, member or not — gives exactly the diff the
+        /// whole leaf view gives.
+        #[test]
+        fn the_named_movers_diff_as_the_whole_leaf_view_does(
+            baseline in members(),
+            now in members(),
+            also_named in prop::collection::btree_set(0u8..14, 0..6),
+        ) {
+            let mut watcher = Watcher::new(WorkspaceRoot(std::path::PathBuf::from("/unread")));
+            let prepared = watcher
+                .prepare_snapshot(baseline.iter().map(|(i, b)| (path(*i), vec![*b])).collect())
+                .unwrap();
+            let _ = watcher.replace(prepared);
+            let leaves: BTreeMap<String, [u8; 32]> = now
+                .iter()
+                .map(|(i, b)| (path(*i), model::leaf_digest(&[*b])))
+                .collect();
+            let moved: BTreeMap<String, Option<[u8; 32]>> = (0u8..14)
+                .filter(|i| baseline.get(i) != now.get(i) || also_named.contains(i))
+                .map(|i| (path(i), leaves.get(&path(i)).copied()))
+                .collect();
+            prop_assert_eq!(watcher.diff_moved(&moved), watcher.diff_leaves(&leaves));
+        }
     }
 }
 

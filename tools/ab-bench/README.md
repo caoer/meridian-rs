@@ -39,6 +39,7 @@ first with the last.
 | `model` | a section read of a 1 MB page, `mrd walk` over 100 pins into it, `mrd links` over 10,000 links to a basename 2,000 pages share | hand-built |
 | `cache` | daemon restart with a parse cache on disk and one file edited: first answer, cache re-saved, CPU; default and `MRD_RESIDENCY_HOST_BYTES` modes | 50,000-file vault |
 | `mem` | cold start with an empty cache: resident memory once loaded, time, CPU | vaults of `--mem-sizes` files, 20,000 heading-heavy pages |
+| `follow` | one `mrd put` with and without a primed `sub` watcher on the workspace: elapsed, daemon CPU, the door's flock hold (`flock.hold.door` from the daemon's `MRD_TIMING` lines), the detect cycles' holds, daemon CPU at rest | vaults of `--follow-sizes` files |
 
 Elapsed time is one CLI process from spawn to exit. Daemon CPU is `utime+stime`
 from `/proc/<pid>/stat` (10 ms steps), or `wait4` rusage where the driver starts

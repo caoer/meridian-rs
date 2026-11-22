@@ -18,8 +18,10 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -552,6 +554,118 @@ def s_mem(ctx, sizes=(50000,)):
             ctx.log(f"{S} {name} round {r}")
 
 
+def subscribe(arm, ws):
+    """Hold one primed `sub` watcher on `ws`, the wire op a host daemon sends.
+    Returns the open connection; pushed frames are read and dropped."""
+    (path,) = (arm.home / ".cache/mrd-run").glob("*.sock")
+    conn = socket.socket(socket.AF_UNIX)
+    conn.connect(str(path))
+    lines = conn.makefile("rwb")
+
+    def call(req):
+        t0 = time.time()
+        while True:
+            lines.write(json.dumps(req).encode() + b"\n")
+            lines.flush()
+            resp = json.loads(lines.readline())
+            warming = (resp.get("error") or {}).get("code") == "corpus_warming"
+            if not warming or time.time() - t0 > 900:
+                return resp
+            time.sleep(0.05)
+
+    call({"op": "hello", "proto": 1, "workspace": str(ws)})
+    ack = call({"op": "sub"})
+    if not ack.get("ok"):
+        raise RuntimeError(f"[{arm.name}] sub refused: {ack}")
+    threading.Thread(target=lambda: [None for _ in lines], daemon=True).start()
+    return conn
+
+
+def timing_lines(path, offset):
+    """The daemon's `mrd-timing` measurements appended past `offset`: (phase, us)."""
+    with open(path, "rb") as f:
+        f.seek(offset)
+        for line in f.read().decode(errors="replace").splitlines():
+            if line.startswith("mrd-timing cmd=daemon "):
+                fields = dict(kv.split("=", 1) for kv in line.split()[1:])
+                yield fields["phase"], int(fields["us"])
+
+
+def settle(pid, timeout=120.0):
+    """Wait out the daemon's start-up work: until 2 s pass under 5% of a core."""
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        c0 = cpu_seconds(pid)
+        time.sleep(2.0)
+        if cpu_seconds(pid) - c0 < 0.1:
+            return
+
+
+def s_follow(ctx, sizes=(20000, 200000)):
+    """one `mrd put` on a vault, with and without a primed `sub` watcher."""
+    S = "follow"
+    card = "bench-card.md"
+    for files in sizes:
+        arms = ctx.arms(f"{S}-{files}")
+        fx = gen_vault(ctx, files)
+        for a in arms:
+            home_config(a)
+            ws = a.state / "ws"
+            copy_tree(fx, ws)
+            (ws / card).write_text("---\ntype: task\nstatus: a\n---\n\n# a card\n\nbody\n")
+            # The first call spawns the daemon, which keeps this environment.
+            a.run(["read", card, "--json"], ws, check=False,
+                  extra_env={"MRD_TIMING": str(a.state / "timing.log")})
+            warm(a, ws, ["read", card, "--json"])
+            for v in "ba" * 5:
+                a.run(["put", card, "--force"], ws, stdin=(PUT_EDIT % v).encode())
+            settle(a.daemon_pid())
+        held = []
+        # Without a subscriber first: a watcher stays primed after its
+        # subscriber leaves.
+        for variant in ("nosub", "sub"):
+            if variant == "sub":
+                held = [subscribe(a, a.state / "ws") for a in arms]
+                for a in arms:
+                    settle(a.daemon_pid())
+            for r, order in interleave(arms, ctx.rounds(6)):
+                for a in order:
+                    ws, log = a.state / "ws", a.state / "timing.log"
+                    pid = a.daemon_pid()
+                    name = f"{variant}_{files // 1000}k"
+                    n = 30
+                    c0, at = cpu_seconds(pid), log.stat().st_size
+                    for i in range(n):
+                        w, *_ = a.run(["put", card, "--force"], ws,
+                                      stdin=(PUT_EDIT % "ba"[i % 2]).encode())
+                        ctx.sink.put(s=S, m=f"wall_put_{name}", arm=a.name, r=r, v=w)
+                    ctx.sink.put(s=S, m=f"daemon_cpu_per_put_{name}", arm=a.name, r=r,
+                                 v=(cpu_seconds(pid) - c0) / n)
+                    phases = list(timing_lines(log, at))
+                    for phase, us in phases:
+                        if phase == "flock.hold.door":
+                            ctx.sink.put(s=S, m=f"wall_door_hold_{name}", arm=a.name, r=r,
+                                         v=us / 1e6)
+                    detect = [us for phase, us in phases
+                              if phase.startswith("flock.hold.") and phase != "flock.hold.door"]
+                    ctx.sink.put(s=S, m=f"wall_detect_hold_per_put_{name}", arm=a.name, r=r,
+                                 v=sum(detect) / 1e6 / n)
+                    floors = sum(1 for phase, _ in phases if phase.startswith("door.floor"))
+                    ctx.sink.put(s=S, m=f"door_floors_per_put_{name}", arm=a.name, r=r,
+                                 v=floors / n)
+                    # The watcher at rest: daemon CPU over a window with no put.
+                    c0 = cpu_seconds(pid)
+                    quiet(3.0)
+                    ctx.sink.put(s=S, m=f"daemon_cpu_idle_per_s_{name}", arm=a.name, r=r,
+                                 v=(cpu_seconds(pid) - c0) / 3.0)
+                ctx.log(f"{S} {files} {variant} round {r}")
+        for conn in held:
+            conn.close()
+        for a in arms:
+            a.stop_daemons()
+            shutil.rmtree(a.state)
+
+
 def first_page(ws):
     for p in sorted(ws.rglob("*.md")):
         return str(p.relative_to(ws))
@@ -575,6 +689,7 @@ def stop_all(ctx):
 SCENARIOS = {
     "read": s_read, "links": s_links, "bulk": s_bulk, "probe": s_probe,
     "flight": s_flight, "write": s_write, "model": s_model, "cache": s_cache, "mem": s_mem,
+    "follow": s_follow,
 }
 
 
@@ -588,6 +703,8 @@ def main():
     ap.add_argument("--only", default="", help="comma-separated scenarios")
     ap.add_argument("--rounds-scale", type=float, default=1.0)
     ap.add_argument("--mem-sizes", default="50000", help="vault sizes for the mem scenario")
+    ap.add_argument("--follow-sizes", default="20000,200000",
+                    help="vault sizes for the follow scenario")
     args = ap.parse_args()
     ctx = Ctx(args)
     names = args.only.split(",") if args.only else list(SCENARIOS)
@@ -610,6 +727,8 @@ def main():
         try:
             if n == "mem":
                 s_mem(ctx, tuple(int(x) for x in args.mem_sizes.split(",")))
+            elif n == "follow":
+                s_follow(ctx, tuple(int(x) for x in args.follow_sizes.split(",")))
             else:
                 SCENARIOS[n](ctx)
             ctx.sink.put(s=n, m="_done", arm="", r=-1, v=time.time() - t0,

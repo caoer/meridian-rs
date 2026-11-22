@@ -93,6 +93,14 @@ pub struct WorkspaceRing {
     /// parks before the settle step. One-shot.
     #[cfg(test)]
     pause_after_door_observation: Mutex<Option<PauseGate>>,
+    /// Test-only: the follow step ignores the overlay journal and classifies
+    /// the memo's whole leaf view — the oracle the journal's movers are held
+    /// to.
+    #[cfg(test)]
+    follow_whole: std::sync::atomic::AtomicBool,
+    /// Test-only: how many follow steps classified the journal's movers.
+    #[cfg(test)]
+    journal_follows: AtomicUsize,
 }
 
 /// A test seam's announce and resume channels.
@@ -179,6 +187,10 @@ impl WorkspaceRing {
             pause_after_detect_observation: Mutex::new(None),
             #[cfg(test)]
             pause_after_door_observation: Mutex::new(None),
+            #[cfg(test)]
+            follow_whole: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            journal_follows: AtomicUsize::new(0),
         }
     }
 
@@ -606,22 +618,48 @@ impl WorkspaceRing {
     }
 
     /// The door's follow step, on the root `expected` its commit left the
-    /// memo at: [`Self::reconcile_pair`] over the memo's root and leaves when
-    /// the memo still folds to `expected`. A memo a reader has moved past it
+    /// memo at, from a baseline at `since`: classify what moved when the
+    /// memo still folds to `expected`. A memo a reader has moved past it
     /// tells nothing and leaves the baseline to the detector, as a refused
     /// reconcile does: a commit's own files must not be told with bytes past
     /// its `root_after`.
+    ///
+    /// The movers are the overlay journal's when it starts at `since`
+    /// (merkle-spec §6.1) — the commit's own writes, O(what it wrote) — and
+    /// the memo's whole leaf view otherwise ([`Self::reconcile_pair`]).
     fn reconcile_observed(
         &self,
         ws_root: &fs::WorkspaceRoot,
         cache: &Arc<Mutex<fs::DomainCache>>,
+        since: &Root,
         expected: &Root,
     ) -> Result<bool, Box<ErrorBody>> {
-        let (root, leaves) = memo_pair(cache)?;
-        if root != *expected {
-            return Ok(false);
-        }
-        self.reconcile_pair(ws_root, &leaves, &root)
+        // The journal's movers with the root they fold to, under one memo
+        // hold, as `memo_pair` reads its pair.
+        let journal = {
+            let mut memo = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let root = memo.overlay_root().map_err(|e| io_error_body(&e))?;
+            if root.0 != expected.0 {
+                return Ok(false);
+            }
+            memo.overlay_moves()
+                .filter(|journal| journal.since.0 == since.0)
+                .map(|journal| string_spelled(journal.moved))
+        };
+        #[cfg(test)]
+        let journal = journal.filter(|_| !self.follow_whole.load(Ordering::SeqCst));
+        let Some(moved) = journal else {
+            let (root, leaves) = memo_pair(cache)?;
+            if root != *expected {
+                return Ok(false);
+            }
+            return self.reconcile_pair(ws_root, &leaves, &root);
+        };
+        #[cfg(test)]
+        self.journal_follows.fetch_add(1, Ordering::SeqCst);
+        let mut state = self.state();
+        let RingState { ring, watch, .. } = &mut *state;
+        Ok(wire_serve::watch::reconcile_moved(ws_root, ring, watch, &moved, expected)?.is_some())
     }
 
     /// The flock-held step: classify the memo's leaf view `leaves`, whose
@@ -690,7 +728,8 @@ impl WorkspaceRing {
         let at_before = self.state().watch.root() == Some(&frame.delta.root_before);
         if at_before
             && *observed == frame.delta.root_after
-            && let Err(e) = self.reconcile_observed(ws_root, cache, observed)
+            && let Err(e) =
+                self.reconcile_observed(ws_root, cache, &frame.delta.root_before, observed)
         {
             timing::say!("registry: commit baseline follow: {e:?}");
         }
@@ -741,6 +780,7 @@ impl<'a> DoorPlane<'a> {
         #[cfg(test)]
         park(&self.ring.pause_after_door_observation);
         self.ring.settle(self.ws_root, self.cache);
+        mark_overlay_moves(self.cache);
         Ok(observed)
     }
 }
@@ -752,16 +792,39 @@ impl wire_serve::seq::SeqSink for DoorPlane<'_> {
 
     /// Recorded, then followed. The door's own-write overlay landed in this
     /// memo, so it already folds to the frame's `root_after` — no second
-    /// observation.
+    /// observation. The journal restarts here: a door that commits again
+    /// under the same flock hold follows from this frame's `root_after`.
     fn committed(&self, frame: &DeltaFrame) {
         self.ring.advance(frame.clone());
         self.ring
             .follow(self.ws_root, self.cache, frame, &frame.delta.root_after);
+        mark_overlay_moves(self.cache);
     }
 }
 
 /// A memo's leaves by String-spelled workspace-relative path.
 type LeafView = std::collections::BTreeMap<String, [u8; 32]>;
+
+/// Start the memo's overlay journal at its current root (merkle-spec §6.1):
+/// the door's settle step has run, or its frame is recorded and followed,
+/// so the baseline sits at that root unless a step left it for the detector.
+fn mark_overlay_moves(cache: &Arc<Mutex<fs::DomainCache>>) {
+    cache
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .mark_overlay_moves();
+}
+
+/// The overlay journal's movers by String-spelled path, the spelling a
+/// [`LeafView`] keeps: a non-UTF-8 name stays baseline-invisible.
+fn string_spelled(
+    moved: std::collections::BTreeMap<std::path::PathBuf, Option<[u8; 32]>>,
+) -> std::collections::BTreeMap<String, Option<[u8; 32]>> {
+    moved
+        .into_iter()
+        .filter_map(|(rel, leaf)| rel.to_str().map(|s| (s.to_owned(), leaf)))
+        .collect()
+}
 
 /// The memo's root alone: the cheap test of whether a step has work.
 fn memo_root(cache: &Arc<Mutex<fs::DomainCache>>) -> Result<Root, Box<ErrorBody>> {
@@ -1196,5 +1259,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod follow_tests;
 #[cfg(test)]
 mod retention_tests;
