@@ -1768,6 +1768,7 @@ fn serve_conn(
                 line,
                 &mut writer,
                 ctx.build_sha.as_deref(),
+                Some(&stream),
             )?;
             // U20b framing: the request loop is left for good; the connection
             // is push-only from here. Desync is unrepresentable. Dual planes ⇒
@@ -1800,12 +1801,16 @@ fn serve_conn(
 
 /// Serve one request line: count it, dispatch it, write the one response
 /// line. `Some` when an accepted `sub` armed the connection for push.
+/// `peer` is the socket the line arrived on, watched for the caller leaving
+/// while a `sql` statement runs ([`caller_left`]); `None` on a socketless
+/// door, whose caller cannot leave mid-call.
 fn serve_one(
     registry: &Registry,
     session: &mut Session,
     line: &str,
     writer: &mut impl Write,
     build_sha: Option<&str>,
+    peer: Option<&UnixStream>,
 ) -> io::Result<Option<ArmedSub>> {
     // Activity clock: every frame counts, before dispatch, success or not.
     registry.note_request();
@@ -1818,6 +1823,7 @@ fn serve_one(
         &mut armed,
         line,
         build_sha,
+        peer,
     );
     writer.write_all(out.as_bytes())?;
     writer.flush()?;
@@ -1887,7 +1893,7 @@ pub fn serve_lines(
             continue;
         }
         if let Some(ArmedSub { from_seq, guard }) =
-            serve_one(registry, &mut session, &line, writer, build_sha)?
+            serve_one(registry, &mut session, &line, writer, build_sha, None)?
         {
             let workspace = session
                 .attached
@@ -2027,6 +2033,30 @@ fn peer_closed(probe: &mut UnixStream) -> bool {
     }
 }
 
+/// Has the caller of a request still in flight on `stream` left? One
+/// zero-timeout `poll` that reads nothing, so bytes a pipelining caller sent
+/// ahead (its next request) stay where the request loop will read them and
+/// are no sign of leaving (`docs/wire-contract.md` § A.11).
+///
+/// `POLLOUT` is the one event asked for, so a hangup reported here is the
+/// end of the WRITE side: the peer closed the connection, and the answer has
+/// no one to reach. A peer that only shut its own write side (a half-close)
+/// can still read and is not gone. Linux reports `POLLHUP` for an AF_UNIX
+/// stream only once both directions have ended; macOS's `poll` reports it for
+/// a `POLLOUT` request off the write filter's end-of-file, which a half-close
+/// does not raise — reasoned from XNU, not measured.
+pub(crate) fn caller_left(stream: &UnixStream) -> bool {
+    let mut pfd = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: `pfd` is one valid, initialised `pollfd` on the stack, `nfds` is
+    // 1, and `stream` is borrowed for the call, so its fd stays open.
+    let ready = unsafe { libc::poll(&raw mut pfd, 1, 0) };
+    ready > 0 && (pfd.revents & (libc::POLLHUP | libc::POLLERR)) != 0
+}
+
 /// Route one frame by `op` and render the `\n`-terminated response line.
 ///
 /// Wire classes project per negotiated `rev`: v3 re-keys request before decode
@@ -2039,6 +2069,7 @@ fn handle_line(
     armed: &mut Option<ArmedSub>,
     line: &str,
     build_sha: Option<&str>,
+    peer: Option<&UnixStream>,
 ) -> String {
     // §3.1 raw-lexeme id law: classification and id validation happen on the
     // RAW `id` lexeme, BEFORE typed decode. A non-conforming lexeme is refused
@@ -2112,7 +2143,7 @@ fn handle_line(
                 wire_serve::rev::rename_request(&mut obj);
             }
             let (response, duration_us) =
-                serve_wire(registry, attached.as_deref(), armed, &obj, *rev);
+                serve_wire(registry, attached.as_deref(), armed, &obj, *rev, peer);
             wire_line(&response, *rev, duration_us)
         }
     }
@@ -2373,6 +2404,7 @@ fn serve_wire(
     armed: &mut Option<ArmedSub>,
     obj: &Map<String, Value>,
     rev: Rev,
+    peer: Option<&UnixStream>,
 ) -> (wire::Response, Option<u64>) {
     let id = obj.get("id").and_then(Value::as_u64);
     let (body, duration_us) = match wire_serve::decode::decode(obj, rev) {
@@ -2380,7 +2412,7 @@ fn serve_wire(
             // U7: dispatch call alone (after decode, before render).
             let ledger = timing::op::begin();
             let started = Instant::now();
-            let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
+            let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3, peer);
             let elapsed = started.elapsed();
             let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
             log_slow_op(
@@ -2423,6 +2455,7 @@ fn dispatch_read(
     id: Option<u64>,
     op: Op,
     v3: bool,
+    peer: Option<&UnixStream>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     // § A.5 mount-table discovery: machine-scoped, so it dispatches BEFORE
     // the binding guard — a workspace-less connection (a bare `hello`) may
@@ -2737,7 +2770,9 @@ fn dispatch_read(
             let (_, engine) = registry
                 .warm_generation(ws)
                 .map_err(|e| warm_err_to_wire(&e))?;
-            crate::sql_op::serve(registry, ws, &engine, &query)
+            crate::sql_op::serve(registry, ws, &engine, &query, &|| {
+                peer.is_some_and(caller_left)
+            })
         }
         // U20b §4.7 push channel. Arm here; convert after ack (`serve_conn`).
         // S2: stands behind the same bind + deny ceiling as composed reads.
@@ -3168,6 +3203,9 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
 
 #[cfg(test)]
 mod settle_race_tests;
+
+#[cfg(test)]
+mod caller_leave_tests;
 
 /// R2/S2 accept-loop fault containment, driven at the dispatch seam: a real
 /// spawn failure cannot be provoked in-process without taking the test binary

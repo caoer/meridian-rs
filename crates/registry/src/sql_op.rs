@@ -230,12 +230,16 @@ fn lock_store_bounded<'s, T>(
 /// cannot be read for the currency pass; `lock_timeout` (retry) when another
 /// `sql` call held this workspace's projection cache past [`SQL_STORE_WAIT`];
 /// the caller's own SQL failing is a SUCCESS body with `error` set and
-/// `state: UNVERIFIED` — their register, not ours.
+/// `state: UNVERIFIED` — their register, not ours. So is a statement
+/// interrupted because `caller_left` answered `true` while it ran
+/// (`docs/wire-contract.md` § A.11): a caller that has gone stops holding
+/// the instance, and the body it would have read goes to no one.
 pub(crate) fn serve(
     registry: &Registry,
     ws: &Path,
     engine: &crate::engine::WorkspaceEngine,
     query: &str,
+    caller_left: &(dyn Fn() -> bool + Sync),
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     // THE HOLD, AND ITS END. The mutex covers the append and the opening of
     // this call's own read — nothing else. `begin_read` clones a connection off
@@ -263,7 +267,7 @@ pub(crate) fn serve(
     })?;
 
     let result = read
-        .run(query)
+        .run_until(query, caller_left)
         .map_err(|e| store_error("cannot query the sql cache", e))?;
     let as_of = engine.at_fingerprint.0.clone();
 
@@ -324,7 +328,7 @@ pub(crate) fn serve_warm(
     let (_, engine) = registry
         .warm_generation(ws)
         .map_err(|e| io_error(format!("cannot warm the corpus: {e}")))?;
-    serve(registry, ws, &engine, query)
+    serve(registry, ws, &engine, query, &|| false)
 }
 
 /// One append to a cache of `ws`, from `engine`'s generation.

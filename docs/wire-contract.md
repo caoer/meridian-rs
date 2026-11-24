@@ -3305,6 +3305,19 @@ one borrow; per-row `rev` and `revs_read` carry falsifiability.
   There is no read/append exclusion lease or preparation-wait loop. The existing
   bounded store-mutex wait still returns `lock_timeout` / `retry`; actual I/O
   stays `io_error` / `env`.
+- **A caller that leaves ends its statement**: while the caller's statement
+  runs, the daemon watches the connection it arrived on, and once the peer
+  has closed it (a hangup, never bytes of a pipelined next request) it
+  interrupts the statement within a tick, rolls it back and ends the read, so
+  an abandoned call stops holding the instance's threads, memory and handle on
+  the cache. The deadline a caller keeps is its own and never crosses the
+  wire: a caller that gives up closes its connection, and that close is the
+  signal. A half-close (`shutdown(SHUT_WR)`) is not a hangup: the caller can
+  still read its answer. That is measured on Linux; on macOS it rests on the
+  socket reporting a hangup only once its write side has ended, and is
+  unmeasured. The answer, a `sql` body
+  with the engine's interrupt words in `error`, goes to no one. The append and the
+  store-mutex wait before the statement run to their end either way.
 - **History compaction** (off unless the daemon's environment sets
   `MRD_SQL_COMPACTION` to a whole number m ≥ 2; `0` or unset never compacts):
   once a reap interval the daemon counts, on a read of each open cache of a

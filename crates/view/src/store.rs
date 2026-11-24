@@ -836,6 +836,48 @@ pub struct ColMeta {
     pub ty: String,
 }
 
+/// How often [`SqlRead::run_until`] asks whether its caller has left, and,
+/// once it has, how often it re-sends the interrupt. Re-sent because `DuckDB`
+/// clears a connection's interrupt flag each time a statement starts, so one
+/// signal can land in the gap before a statement (or the next statement of a
+/// multi-statement call) and be discarded.
+pub const LEAVE_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// [`run_query`] beside a watcher that interrupts `conn` while `gone`
+/// answers `true`. The watcher is joined before this returns, so no
+/// interrupt reaches the `ROLLBACK` and config restore that follow; a flag
+/// it left set is cleared when the `ROLLBACK` starts. A watcher thread the
+/// host cannot spawn leaves the statement unwatched — the behaviour before
+/// this existed — rather than failing a call that can still be answered.
+fn run_query_until(
+    conn: &Connection,
+    query: &str,
+    gone: &(dyn Fn() -> bool + Sync),
+) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
+    let interrupt = conn.interrupt_handle();
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let watcher = std::thread::Builder::new()
+            .name("sql-leave-watch".into())
+            .spawn_scoped(scope, || {
+                while !done.load(Ordering::Acquire) {
+                    if gone() {
+                        interrupt.interrupt();
+                    }
+                    std::thread::park_timeout(LEAVE_TICK);
+                }
+            })
+            .ok();
+        let result = run_query(conn, query);
+        done.store(true, Ordering::Release);
+        // Woken, so a call that finished never waits out the watcher's tick.
+        if let Some(watcher) = watcher {
+            watcher.thread().unpark();
+        }
+        result
+    })
+}
+
 /// Execute one caller query on `conn` and materialise all rows + column
 /// metadata. Returns the SQL error string (never a structured error) so the
 /// caller can buffer it into its answer — the engine's words flow verbatim.
@@ -2706,8 +2748,39 @@ impl SqlRead {
         self,
         sql: &str,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
+        self.finish(sql, None)
+    }
+
+    /// [`SqlRead::run`] for a caller that can leave: while the statement
+    /// runs, `gone` is asked every [`LEAVE_TICK`], and once it answers `true`
+    /// the statement is interrupted, so a read nobody will receive stops
+    /// holding the instance's threads, memory and this read's handle on the
+    /// store. The interrupted statement is the caller's own failure (`Ok`
+    /// with `DuckDB`'s interrupt words); the rollback and config restore run
+    /// as on every call.
+    ///
+    /// # Errors
+    /// As [`SqlRead::run`].
+    #[allow(clippy::type_complexity)]
+    pub fn run_until(
+        self,
+        sql: &str,
+        gone: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
+        self.finish(sql, Some(gone))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn finish(
+        self,
+        sql: &str,
+        gone: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
         self.policy.check()?;
-        let result = run_query(&self.conn, sql);
+        let result = match gone {
+            None => run_query(&self.conn, sql),
+            Some(gone) => run_query_until(&self.conn, sql, gone),
+        };
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
         let rolled_back = self.conn.execute_batch("ROLLBACK");
         // Always restore — the transaction never held the engine's config, so
@@ -4261,6 +4334,62 @@ pub(crate) mod tests {
             "the read's snapshot was pinned by its BEGIN, so the later append \
              is invisible to it"
         );
+    }
+
+    /// A statement that would run for minutes, on a read whose caller leaves
+    /// 200 ms in, ends within seconds as the caller's own interrupted SQL, and
+    /// the read lets go of the instance: no read is left open on the store.
+    #[test]
+    fn a_read_whose_caller_left_is_interrupted_and_released() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let read = store.begin_read().expect("read");
+        let left = AtomicBool::new(false);
+        let started = Instant::now();
+        let answer = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                left.store(true, Ordering::Release);
+            });
+            read.run_until("SELECT sum(hash(i)) FROM range(1000000000000) t(i)", &|| {
+                left.load(Ordering::Acquire)
+            })
+        })
+        .expect("the rollback lane itself does not fail");
+        let elapsed = started.elapsed();
+
+        let error = answer.expect_err("an interrupted statement is the caller's failure");
+        assert!(
+            error.to_lowercase().contains("interrupt"),
+            "the engine's interrupt words, verbatim: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the statement ran {elapsed:?} after its caller left at 200 ms"
+        );
+        assert!(
+            store.wait_for_reads(Duration::ZERO),
+            "the interrupted read still holds the instance"
+        );
+        // The lane is whole after an interrupt: the next read answers.
+        let next = store.begin_read().expect("read").run("SELECT 42").expect("lane");
+        assert_eq!(next.expect("rows").1, vec![vec![serde_json::json!(42)]]);
+    }
+
+    /// The control: a caller that stays gets its answer.
+    #[test]
+    fn a_read_whose_caller_stays_is_answered() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let answer = store
+            .begin_read()
+            .expect("read")
+            .run_until("SELECT 42", &|| false)
+            .expect("lane");
+        assert_eq!(answer.expect("rows").1, vec![vec![serde_json::json!(42)]]);
     }
 
     /// The property that un-serializes `sql`: a live read borrows nothing from

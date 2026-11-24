@@ -4989,6 +4989,7 @@ mod engine_tests {
             &canonical,
             &engine,
             "SELECT path FROM doc ORDER BY path",
+            &|| false,
         )
         .expect("the call answers");
         let wire::ResponseBody::Sql {
