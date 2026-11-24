@@ -836,6 +836,76 @@ pub struct ColMeta {
     pub ty: String,
 }
 
+/// How often [`SqlRead::run_until`] asks whether its caller has left, and,
+/// once it has, how often it re-sends the interrupt. Re-sent because `DuckDB`
+/// clears a connection's interrupt flag each time a statement starts, so one
+/// signal can land in the gap before a statement (or the next statement of a
+/// multi-statement call) and be discarded.
+pub const LEAVE_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// [`run_query`] beside a watcher that interrupts `conn` while `gone`
+/// answers `true`. The watcher is joined before this returns, so no
+/// interrupt reaches the `ROLLBACK` and config restore that follow; a flag
+/// it left set is cleared when the `ROLLBACK` starts.
+fn run_query_until(
+    conn: &Connection,
+    query: &str,
+    gone: &(dyn Fn() -> bool + Sync),
+) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
+    let interrupt = conn.interrupt_handle();
+    watched(gone, &|| interrupt.interrupt(), || run_query(conn, query))
+}
+
+/// Run `body` beside a watcher thread that calls `interrupt` every
+/// [`LEAVE_TICK`] while `gone` answers `true`, and end the watcher when
+/// `body` ends — by returning or by unwinding. A body that panics would
+/// otherwise leave the watcher looping and `thread::scope` waiting on it for
+/// ever, holding the request thread and everything it owns.
+///
+/// A watcher thread the host cannot spawn leaves `body` unwatched — the
+/// behaviour before the watcher existed — rather than failing a call that
+/// can still be answered.
+fn watched<T>(
+    gone: &(dyn Fn() -> bool + Sync),
+    interrupt: &(dyn Fn() + Sync),
+    body: impl FnOnce() -> T,
+) -> T {
+    /// Ends the watcher on drop, so every exit from `body` ends it.
+    struct EndWatch<'a> {
+        done: &'a AtomicBool,
+        watcher: Option<std::thread::Thread>,
+    }
+    impl Drop for EndWatch<'_> {
+        fn drop(&mut self) {
+            self.done.store(true, Ordering::Release);
+            // Woken, so a call that finished never waits out the tick.
+            if let Some(watcher) = &self.watcher {
+                watcher.unpark();
+            }
+        }
+    }
+
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let watcher = std::thread::Builder::new()
+            .name("sql-leave-watch".into())
+            .spawn_scoped(scope, || {
+                while !done.load(Ordering::Acquire) {
+                    if gone() {
+                        interrupt();
+                    }
+                    std::thread::park_timeout(LEAVE_TICK);
+                }
+            })
+            .ok();
+        let _end = EndWatch {
+            done: &done,
+            watcher: watcher.map(|w| w.thread().clone()),
+        };
+        body()
+    })
+}
+
 /// Execute one caller query on `conn` and materialise all rows + column
 /// metadata. Returns the SQL error string (never a structured error) so the
 /// caller can buffer it into its answer — the engine's words flow verbatim.
@@ -2706,8 +2776,39 @@ impl SqlRead {
         self,
         sql: &str,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
+        self.finish(sql, None)
+    }
+
+    /// [`SqlRead::run`] for a caller that can leave: while the statement
+    /// runs, `gone` is asked every [`LEAVE_TICK`], and once it answers `true`
+    /// the statement is interrupted, so a read nobody will receive stops
+    /// holding the instance's threads, memory and this read's handle on the
+    /// store. The interrupted statement is the caller's own failure (`Ok`
+    /// with `DuckDB`'s interrupt words); the rollback and config restore run
+    /// as on every call.
+    ///
+    /// # Errors
+    /// As [`SqlRead::run`].
+    #[allow(clippy::type_complexity)]
+    pub fn run_until(
+        self,
+        sql: &str,
+        gone: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
+        self.finish(sql, Some(gone))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn finish(
+        self,
+        sql: &str,
+        gone: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
         self.policy.check()?;
-        let result = run_query(&self.conn, sql);
+        let result = match gone {
+            None => run_query(&self.conn, sql),
+            Some(gone) => run_query_until(&self.conn, sql, gone),
+        };
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
         let rolled_back = self.conn.execute_batch("ROLLBACK");
         // Always restore — the transaction never held the engine's config, so
@@ -4261,6 +4362,89 @@ pub(crate) mod tests {
             "the read's snapshot was pinned by its BEGIN, so the later append \
              is invisible to it"
         );
+    }
+
+    /// A statement that would run for minutes, on a read whose caller leaves
+    /// 200 ms in, ends within seconds as the caller's own interrupted SQL, and
+    /// the read lets go of the instance: no read is left open on the store.
+    #[test]
+    fn a_read_whose_caller_left_is_interrupted_and_released() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let read = store.begin_read().expect("read");
+        let left = AtomicBool::new(false);
+        let started = Instant::now();
+        let answer = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                left.store(true, Ordering::Release);
+            });
+            read.run_until(
+                "SELECT sum(hash(i)) FROM range(1000000000000) t(i)",
+                &|| left.load(Ordering::Acquire),
+            )
+        })
+        .expect("the rollback lane itself does not fail");
+        let elapsed = started.elapsed();
+
+        let error = answer.expect_err("an interrupted statement is the caller's failure");
+        assert!(
+            error.to_lowercase().contains("interrupt"),
+            "the engine's interrupt words, verbatim: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the statement ran {elapsed:?} after its caller left at 200 ms"
+        );
+        assert!(
+            store.wait_for_reads(Duration::ZERO),
+            "the interrupted read still holds the instance"
+        );
+        // The lane is whole after an interrupt: the next read answers.
+        let next = store
+            .begin_read()
+            .expect("read")
+            .run("SELECT 42")
+            .expect("lane");
+        assert_eq!(next.expect("rows").1, vec![vec![serde_json::json!(42)]]);
+    }
+
+    /// A watched body that panics unwinds out of the watch: the watcher ends
+    /// with it, so the scope returns and the request thread's unwind frees
+    /// what it holds (review finding on PR #442). Without the drop guard the
+    /// scope waits on a watcher that never sees `done`, and this test hangs —
+    /// so it runs the watch on its own thread and fails at a bound instead.
+    #[test]
+    fn a_watched_body_that_panics_ends_its_watcher() {
+        use std::time::Duration;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let unwound = std::panic::catch_unwind(|| {
+                watched(&|| false, &|| (), || -> u8 { panic!("the body panicked") })
+            });
+            let _ = tx.send(unwound.is_err());
+        });
+        let panicked = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the watch never returned after its body panicked");
+        assert!(panicked, "the body's panic reached the caller");
+    }
+
+    /// The control: a caller that stays gets its answer.
+    #[test]
+    fn a_read_whose_caller_stays_is_answered() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        let answer = store
+            .begin_read()
+            .expect("read")
+            .run_until("SELECT 42", &|| false)
+            .expect("lane");
+        assert_eq!(answer.expect("rows").1, vec![vec![serde_json::json!(42)]]);
     }
 
     /// The property that un-serializes `sql`: a live read borrows nothing from
