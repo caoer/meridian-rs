@@ -4424,7 +4424,7 @@ pub(crate) mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let unwound = std::panic::catch_unwind(|| {
-                super::watched(&|| false, &|| (), || -> u8 { panic!("the body panicked") })
+                watched(&|| false, &|| (), || -> u8 { panic!("the body panicked") })
             });
             let _ = tx.send(unwound.is_err());
         });
