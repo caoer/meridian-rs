@@ -55,7 +55,9 @@ fn receive(reader: &mut BufReader<UnixStream>) -> Value {
 /// `sql` on it opens its read at once.
 fn bound(socket: &Path, ws: &Path) -> (UnixStream, BufReader<UnixStream>) {
     let mut stream = UnixStream::connect(socket).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     send(
         &mut stream,
@@ -64,7 +66,10 @@ fn bound(socket: &Path, ws: &Path) -> (UnixStream, BufReader<UnixStream>) {
     assert_eq!(receive(&mut reader)["ok"], true, "hello");
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        send(&mut stream, &json!({"id": 1, "op": "sql", "query": "SELECT 1"}));
+        send(
+            &mut stream,
+            &json!({"id": 1, "op": "sql", "query": "SELECT 1"}),
+        );
         let answer = receive(&mut reader);
         if answer["ok"] == true {
             return (stream, reader);
@@ -114,7 +119,10 @@ fn a_sql_whose_caller_hangs_up_stops_and_releases_the_cache() {
     assert!(!reads_open(), "no read is open before the call");
 
     let (mut leaver, leaver_reader) = bound(&socket, &ws);
-    send(&mut leaver, &json!({"id": 2, "op": "sql", "query": ENDLESS_SQL}));
+    send(
+        &mut leaver,
+        &json!({"id": 2, "op": "sql", "query": ENDLESS_SQL}),
+    );
     // The instrument first: the statement really is running on a read of
     // THIS store. A store looked up under the wrong key would have no reads,
     // and the release below would pass for the wrong reason.
@@ -133,28 +141,46 @@ fn a_sql_whose_caller_hangs_up_stops_and_releases_the_cache() {
         "the statement still holds the cache {:?} after its caller hung up",
         left.elapsed()
     );
-    eprintln!("caller-leave gate: read released {:?} after the hangup", left.elapsed());
+    eprintln!(
+        "caller-leave gate: read released {:?} after the hangup",
+        left.elapsed()
+    );
 
     // The workspace serves the next caller.
-    send(&mut other, &json!({"id": 3, "op": "sql", "query": "SELECT 7"}));
+    send(
+        &mut other,
+        &json!({"id": 3, "op": "sql", "query": "SELECT 7"}),
+    );
     let answer = receive(&mut other_reader);
     assert_eq!(answer["body"]["rows"], json!([[7]]), "{answer}");
 }
 
-/// The control: bytes alone are no hangup. A caller that sends its request
+/// The control: a half-close is no hangup. A caller that sends its request
 /// and shuts its write side still reads its answer — the read loop sees EOF
 /// only after the answer is written.
 #[test]
 fn a_caller_that_half_closes_still_gets_its_answer() {
+    // A recursive CTE re-materialises its working set each round: 40,000
+    // rows measured 1.2 s on a debug build (`tests/sql_op.rs` `SLOW_SQL`), so
+    // the watcher asks many times after the half-close lands.
+    const SPIN: &str = "WITH RECURSIVE spin(i) AS (\
+         SELECT 1 UNION ALL SELECT i + 1 FROM spin WHERE i < 40000\
+         ) SELECT count(*)::BIGINT FROM spin";
     let tmp = TempDir::new().unwrap();
     let ws = workspace(&tmp);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let (mut stream, mut reader) = bound(server.socket_path(), &ws);
-    send(
-        &mut stream,
-        &json!({"id": 2, "op": "sql", "query": "SELECT count(*)::BIGINT FROM range(20000000)"}),
-    );
+    send(&mut stream, &json!({"id": 2, "op": "sql", "query": SPIN}));
     stream.shutdown(Shutdown::Write).unwrap();
+    let closed = Instant::now();
     let answer = receive(&mut reader);
-    assert_eq!(answer["body"]["rows"], json!([[20_000_000]]), "{answer}");
+    let elapsed = closed.elapsed();
+    assert_eq!(answer["body"]["rows"], json!([[40_000]]), "{answer}");
+    // The instrument: a statement that ended before the watcher could look
+    // after the half-close would pass this control for the wrong reason.
+    assert!(
+        elapsed > Duration::from_millis(250),
+        "the statement answered {elapsed:?} after the half-close — too fast \
+         for the watcher to have looked; lengthen SPIN"
+    );
 }

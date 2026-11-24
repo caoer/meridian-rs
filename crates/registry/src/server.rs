@@ -2041,7 +2041,7 @@ fn peer_closed(probe: &mut UnixStream) -> bool {
 /// `POLLOUT` is the one event asked for, so a hangup reported here is the
 /// end of the WRITE side: the peer closed the connection, and the answer has
 /// no one to reach. A peer that only shut its own write side (a half-close)
-/// can still read and is not gone. Linux reports `POLLHUP` for an AF_UNIX
+/// can still read and is not gone. Linux reports `POLLHUP` for an `AF_UNIX`
 /// stream only once both directions have ended; macOS's `poll` reports it for
 /// a `POLLOUT` request off the write filter's end-of-file, which a half-close
 /// does not raise — reasoned from XNU, not measured.

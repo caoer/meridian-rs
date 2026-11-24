@@ -4354,9 +4354,10 @@ pub(crate) mod tests {
                 std::thread::sleep(Duration::from_millis(200));
                 left.store(true, Ordering::Release);
             });
-            read.run_until("SELECT sum(hash(i)) FROM range(1000000000000) t(i)", &|| {
-                left.load(Ordering::Acquire)
-            })
+            read.run_until(
+                "SELECT sum(hash(i)) FROM range(1000000000000) t(i)",
+                &|| left.load(Ordering::Acquire),
+            )
         })
         .expect("the rollback lane itself does not fail");
         let elapsed = started.elapsed();
@@ -4375,7 +4376,11 @@ pub(crate) mod tests {
             "the interrupted read still holds the instance"
         );
         // The lane is whole after an interrupt: the next read answers.
-        let next = store.begin_read().expect("read").run("SELECT 42").expect("lane");
+        let next = store
+            .begin_read()
+            .expect("read")
+            .run("SELECT 42")
+            .expect("lane");
         assert_eq!(next.expect("rows").1, vec![vec![serde_json::json!(42)]]);
     }
 

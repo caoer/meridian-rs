@@ -57,8 +57,8 @@ fn race(op: &Value, pending: bool) -> Vec<Told> {
     let (announced, resume) = ring.pause_next_door_observation();
     let op = wire_serve::decode::decode(op.as_object().unwrap(), Rev::V3).unwrap();
     let mid = thread::scope(|scope| {
-        let door =
-            scope.spawn(|| dispatch_read(&registry, Some(&root.0), &mut None, Some(1), op, true, None));
+        let door = scope
+            .spawn(|| dispatch_read(&registry, Some(&root.0), &mut None, Some(1), op, true, None));
         announced.recv_timeout(Duration::from_secs(10)).unwrap();
         std::fs::write(
             root.0.join("late.md"),
@@ -247,8 +247,8 @@ fn a_guarded_splice_refuses_an_edit_that_finished_before_its_door() {
     op["if_root"] = json!(start.0);
     let op = wire_serve::decode::decode(op.as_object().unwrap(), Rev::V3).unwrap();
     let answer = thread::scope(|scope| {
-        let door =
-            scope.spawn(|| dispatch_read(&registry, Some(&root.0), &mut None, Some(1), op, true, None));
+        let door = scope
+            .spawn(|| dispatch_read(&registry, Some(&root.0), &mut None, Some(1), op, true, None));
         let door_serial = reader_serial + 1;
         let deadline = Instant::now() + Duration::from_secs(10);
         while feed.cookie_written() < door_serial {
