@@ -618,13 +618,29 @@ steps:
         sha="$(sha256sum target/release/mrd | cut -d' ' -f1)"
         rev="$${CI_COMMIT_SHA}"
         base="https://git.0xdao.app/api/packages/caoer115/generic/mrd/$${rev}"
+        # UPLOAD ROUTE (docs/release.md §5.4): Cloudflare answers 524 to a PUT
+        # whose body is still arriving ~100 s in, and a slot with a slow line to
+        # the edge cannot push 70 MB in that time (main #3310 on the H100 pool:
+        # 0.5 MB/s, 524 at 1517 s). Such a slot names its relay to the forge's
+        # origin as FORGE_PACKAGES_URL — in the environment, else in
+        # /etc/ci-hostcache.env (osfiles hosts/cos-gpu-h100/ci-vm-guest.nix,
+        # modules/nixos/ci-pool/guest.nix). Uploads go there; reads stay on base.
+        pkgs="$${FORGE_PACKAGES_URL:-}"
+        if [ -z "$${pkgs}" ] && [ -r /etc/ci-hostcache.env ]; then
+          pkgs="$(sed -n 's/^FORGE_PACKAGES_URL=//p' /etc/ci-hostcache.env | tail -n1)"
+        fi
+        up="$${base}"
+        if [ -n "$${pkgs}" ]; then
+          up="$${pkgs%/}/caoer115/generic/mrd/$${rev}"
+        fi
         echo "engine: meridian-rs $${rev}"
         echo "  sha256: $${sha}"
+        echo "  upload: $${up%/caoer115/*}"
         echo "$${sha}  mrd-linux-amd64" > /tmp/mrd-linux-amd64.sha256
         put() {
           code="$(curl -s -o /tmp/put.out -w '%{http_code}' -X PUT \
             -H "Authorization: token $${FORGEJO_TOKEN}" \
-            --upload-file "$$1" "$${base}/$$2")"
+            --upload-file "$$1" "$${up}/$$2")"
           case "$${code}" in
             201) echo "published $$2" ;;
             # Append-only: this commit is already published and those bytes win.
