@@ -259,6 +259,7 @@ the tag points at (§5.2), never by the tag name, and there is **no `latest`**.
 | Files | `mrd-linux-amd64`, `mrd-darwin-arm64`, `mrd-linux-arm64`, and a `.sha256` beside each |
 | The pin a consumer records | `(COMMIT, SHA256)` |
 | Re-publish of the same commit | HTTP **409**; first published bytes stay authoritative |
+| Upload route | the runner's `FORGE_PACKAGES_URL` (step environment, else the slot's `/etc/ci-hostcache.env`) when it names one — the slot's relay to the forge's origin, off Cloudflare, which answers **524** to a PUT body still arriving ~100 s in; else the Base's host. Readers always fetch from the Base |
 | Precondition | `ci` succeeded for that tag pipeline — all six verdict lanes |
 
 | Artifact | Agent | Backend |
