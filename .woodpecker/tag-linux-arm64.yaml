@@ -53,7 +53,8 @@ steps:
     pull: false
     environment:
       CARGO_HOME: /ci-cache/meridian-rs/cargo
-      CARGO_BUILD_JOBS: "4"
+      # workstation-nyc-2 has 16c / 58.8 GiB (cap=2 -> max 12 cc1plus ~18 GiB).
+      CARGO_BUILD_JOBS: "6"
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc

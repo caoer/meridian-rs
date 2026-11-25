@@ -74,13 +74,15 @@ steps:
       RUSTC_WRAPPER: sccache
       SCCACHE_DIR: /ci-cache/sccache/publish
       SCCACHE_CACHE_SIZE: 30G
-      CC: "sccache cc"
-      CXX: "sccache c++"
+      CC: "ci-cc cc"
+      CXX: "ci-cc c++"
+      CC_KNOWN_WRAPPER_CUSTOM: ci-cc
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
       CARGO_TERM_COLOR: always
       FORGEJO_TOKEN:
         from_secret: forgejo_token
     commands:
+      - install -m 0755 tools/ci-cc /usr/local/bin/ci-cc
       # ASK THE REGISTRY FIRST. The .sha256 sidecar is the probe: it is tiny,
       # it is written after the binary, and reading it answers both questions
       # at once — is this commit published, and with which digest.

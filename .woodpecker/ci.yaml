@@ -254,71 +254,20 @@ steps:
       # `$$` is Woodpecker's escape for a literal `$` (`$$1` reaches the shell
       # as `$1`). Never `exit 0` here: it would end the step script and skip
       # the suite below.
-      - |
-        cg=/sys/fs/cgroup
-        rm -f /tmp/mem.peak
-        ( set +e; pa=0; ma=0
-          while :; do
-            a=$(sed -n 's/^anon //p' $cg/memory.stat 2>/dev/null)
-            m=$(sed -n 's/^MemAvailable: *\([0-9]*\) kB$/\1/p' /proc/meminfo)
-            [ -n "$a" ] && [ "$a" -gt "$pa" ] && pa=$a
-            [ -n "$m" ] && { [ "$ma" -eq 0 ] || [ "$m" -lt "$ma" ]; } && ma=$m
-            echo "$pa $ma" > /tmp/mem.peak.tmp && mv /tmp/mem.peak.tmp /tmp/mem.peak
-            sleep 1
-          done ) &
-        sampler=$$!
-        set +e
-        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci tools/test.sh --workspace --locked --no-run -q
-        rc=$?
-        kill "$sampler" 2>/dev/null
-        pa=0; ma=0
-        [ -s /tmp/mem.peak ] && read pa ma < /tmp/mem.peak
-        mt=$(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo)
-        [ -n "$mt" ] || mt=0
-        mp=$(cat $cg/memory.peak 2>/dev/null)
-        oom=$(sed -n 's/^oom_kill //p' $cg/memory.events 2>/dev/null)
-        gib() { awk -v b="$$1" 'BEGIN { printf "%.2f GiB", b / 1073741824 }'; }
-        echo "link step memory (cargo test --workspace --no-run, exit $rc):"
-        echo "  container anon peak (1 s samples): $(gib "$pa")"
-        echo "  container memory.peak (incl. page cache): $(gib "$mp")"
-        echo "  machine MemAvailable low: $(gib "$((ma * 1024))") of MemTotal $(gib "$((mt * 1024))")"
-        echo "  container oom_kill: $oom"
-        set -e
-        [ "$rc" -eq 0 ] || exit "$rc"
-      # --no-fail-fast: one failing test binary must not trade away the other
-      # binaries' verdicts (one red binary once cost ~80% of the suite's
-      # evidence). Inner bash for pipefail — tee must not mask cargo's exit
-      # code; the outer step shell stays POSIX.
-      #
-      # The evidence count runs in the SAME command as the suite: a failing
-      # command aborts a step's remaining commands, so a separate gate line
-      # can never fire on the zero-evidence red it exists for (OOM-killed
-      # compiler: red exit, no test output). The count prints on every path —
-      # a silently shrinking suite is the failure mode nobody watches for —
-      # and a green exit with zero evidence lines is a broken harness, so it
-      # fails the step.
-      #
-      # -q does BOTH jobs: it suppresses cargo's per-crate `Fresh`/`Running`
-      # restamp AND forwards --quiet to libtest (one character per test).
-      # Writing `-q -- --quiet` as well is fatal — "error: Option 'quiet' given
-      # more than once", every binary red, zero evidence lines. Do not add it
-      # back. Neither flag touches the evidence: `^test result` lines print in
-      # both modes, so the gate below counts exactly what it counted before,
-      # and a FAILING test still prints its name, its panic, and its captured
-      # output in full. The trade accepted: suite.log keeps binary-level
-      # counts, not the name of every passing test.
-      - |
-        set +e
-        setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci bash -o pipefail -c 'tools/test.sh --workspace --locked --no-fail-fast -q 2>&1 | tee target-ci/suite.log'
-        rc=$?
-        set -e
-        lines=$(grep -c '^test result' target-ci/suite.log || true)
-        echo "evidence lines: $lines"
-        if [ "$rc" -ne 0 ]; then
-          [ "$lines" -gt 0 ] || echo "NO MEASUREMENT — this red is not a test verdict; the build died before any test ran"
-          exit "$rc"
-        fi
-        test "$lines" -gt 0
+      # Pipelined compile + parallel binary execution (tools/ci-test-parallel.py):
+      #   1. Runs one `cargo test --workspace --locked --no-run --message-format=json-render-diagnostics`
+      #      with the 1 s cgroup memory sampler, preserving exact workspace feature
+      #      unification and sccache keys.
+      #   2. Early-launches `view::lib` (~248 s) the instant Cargo emits its binary
+      #      so it overlaps with linking the remaining ~160 mrd/registry integration
+      #      binaries.
+      #   3. Executes ALL remaining dynamically-discovered workspace test binaries
+      #      (zero hardcoded filter; any future crate/test is run automatically)
+      #      plus `cargo test --workspace --locked --doc` across a bounded worker
+      #      pool, serializing `testsuite` binaries on the 11 tracked probe files.
+      #   4. Preserves `--no-fail-fast`, `target-ci/suite.log`, `evidence lines` > 0,
+      #      and the zero-evidence red diagnostic on build death.
+      - setpriv --reuid=ci --regid=ci --init-groups env HOME=/home/ci python3 -B tools/ci-test-parallel.py --suite-log target-ci/suite.log
       # Deterministic priming-cost gate, not a wall-clock threshold. The small
       # unchanged and one-mover fixtures catch an eager map rebuild under the
       # flock while reusing the test lane's compiled dependencies.
@@ -396,11 +345,18 @@ steps:
             /^name *= *"/        { gsub(/^name *= *"|"$/,""); name=$0 }
             /perf-walltime/ && /required-features/ && name { print name; name="" }
           ' "$manifest")
+          test_args=""
+          pkg_count=0
           for t in $targets; do
-            echo "--- clippy $pkg --test $t"
-            cargo clippy -q -p "$pkg" --features perf-walltime --test "$t" --locked -- -D warnings
-            found=$((found + 1))
+            test_args="$test_args --test $t"
+            pkg_count=$((pkg_count + 1))
           done
+          if [ "$pkg_count" -gt 0 ]; then
+            echo "--- clippy $pkg ($pkg_count targets:$test_args)"
+            # shellcheck disable=SC2086
+            cargo clippy -q -p "$pkg" --features perf-walltime $test_args --locked -- -D warnings
+            found=$((found + pkg_count))
+          fi
         done
         # A wrong path returns zero targets silently; refuse that.
         test "$found" -gt 0 || { echo "no perf-gated targets discovered — the discovery is broken, not the repo"; exit 1; }
@@ -552,13 +508,15 @@ steps:
       RUSTC_WRAPPER: sccache
       SCCACHE_DIR: /ci-cache/sccache/publish
       SCCACHE_CACHE_SIZE: *sccache_size
-      CC: "sccache cc"
-      CXX: "sccache c++"
+      CC: "ci-cc cc"
+      CXX: "ci-cc c++"
+      CC_KNOWN_WRAPPER_CUSTOM: ci-cc
       RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
       CARGO_TERM_COLOR: always
       FORGEJO_TOKEN:
         from_secret: forgejo_token
     commands:
+      - install -m 0755 tools/ci-cc /usr/local/bin/ci-cc
       # STAMP THE IDENTITY, MEASURED — never invented (crates/mrd/build.rs § the
       # two rules). The script's own git probe answers `unknown` in this
       # container (the workspace is not the probe's to trust: other lanes run as

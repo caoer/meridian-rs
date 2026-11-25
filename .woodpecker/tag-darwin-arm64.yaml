@@ -74,7 +74,8 @@ steps:
     pull: false
     environment:
       CARGO_HOME: /ci-cache/meridian-rs/cargo
-      CARGO_BUILD_JOBS: "4"
+      # workstation-nyc-2 has 16c / 58.8 GiB (cap=2 -> max 12 cc1plus ~18 GiB).
+      CARGO_BUILD_JOBS: "6"
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       # The floor, docs/release.md §5.4: below 15.4 every object carries a weak
