@@ -1100,3 +1100,148 @@ fn a_non_string_fields_value_refuses_the_run_frame() {
     let resp = conn.call(&frame);
     assert_eq!(resp["ok"], json!(false), "the shape wall refuses: {resp}");
 }
+
+const HOOKS_BORN_CARD: &str = "\
+---
+caps: [md.create]
+---
+
+# Hooks
+
+```starlark
+declare(on = \"Join\")
+
+def run(event):
+    short = event[\"short\"]
+    create(path = \"agents/\" + short + \"/\" + short + \".md\", body = \"# Card\\n\")
+```
+^born-card
+";
+
+/// A `mode: fire` birth (`HOOKS.md#born-card`) rides the workspace's resident
+/// `DoorPlane` + `ResidentDoor`: it overlays its born leaf into
+/// `Registry::domain_cache` (so a stale world premise on another writer refuses
+/// `fingerprint_mismatch`), emits ONE attributed delta frame, and advances the
+/// watcher baseline so no duplicate actor-absent frame follows.
+#[test]
+fn a_mode_fire_birth_advances_the_resident_fold_and_delivers_one_attributed_frame() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::write(ws.join("HOOKS.md"), HOOKS_BORN_CARD).unwrap();
+    fs::write(ws.join("plan.md"), "# Goals\n\nship\n").unwrap();
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut sub = Conn::open(server.socket_path());
+    sub.hello_v3(&ws);
+    let ack = sub.sub();
+    assert_eq!(ack["ok"], json!(true), "sub primed: {ack}");
+
+    let mut conn = Conn::open(server.socket_path());
+    conn.hello_v3(&ws);
+    let pre_birth = conn.fingerprint();
+
+    let mut frame = run_frame(
+        30,
+        "join-seat1",
+        json!([{
+            "page": "HOOKS.md",
+            "block": "born-card",
+            "mode": "fire",
+            "input": {"short": "seat1"},
+        }]),
+    );
+    frame["actor"] = json!("daemon-hook");
+    let resp = conn.call(&frame);
+    let rows = rows_of(&resp);
+    assert_eq!(rows[0]["result"], json!("ok"), "{resp}");
+    assert_eq!(rows[0]["applied"][0]["result"], json!("born"), "{resp}");
+    assert!(ws.join("agents/seat1/seat1.md").exists());
+
+    // The birth overlaid directly into `Registry::domain_cache`, so a splice
+    // guarding against `pre_birth` refuses `fingerprint_mismatch`.
+    let refused = conn.call(&json!({
+        "id": 31, "op": "splice", "path": "plan.md",
+        "if_fingerprint": pre_birth,
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship", "new": "shipped"}},
+        }],
+    }));
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(
+        refused["error"]["code"],
+        json!("fingerprint_mismatch"),
+        "{refused}"
+    );
+
+    // Subscriber sees ONE attributed birth frame and no duplicate external frame.
+    let delta = sub
+        .next_frame()
+        .expect("subscriber receives the birth delta frame");
+    assert_eq!(delta["delta"]["actor"], json!("daemon-hook"), "{delta}");
+    assert_eq!(files_of(&delta), vec!["agents/seat1/seat1.md"], "{delta}");
+
+    let dup = sub.next_frame();
+    assert!(
+        dup.is_none(),
+        "DoorPlane::follow advanced the watcher baseline, so no duplicate external frame arrives: {dup:?}"
+    );
+    server.shutdown();
+}
+
+/// Immediately after a warm succession (`RunningServer::succeed`), a
+/// `mode: fire` birth (`HOOKS.md#born-card`) rides the successor's already-warm
+/// resident memo instead of cold-filling process-local `WRITE_CACHES`.
+#[test]
+fn a_mode_fire_birth_after_warm_succession_rides_the_resident_door() {
+    let tmp = TempDir::new().unwrap();
+    let ws = seeded(&tmp);
+    fs::write(ws.join("HOOKS.md"), HOOKS_BORN_CARD).unwrap();
+    fs::write(ws.join("plan.md"), "# Goals\n\nship\n").unwrap();
+
+    let server1 = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server1.socket_path());
+    conn.hello_v3(&ws);
+    let pre_birth = conn.fingerprint();
+
+    // Warm succession: server2 warms `Registry::domain_cache` beside server1
+    // and takes over the listening socket and idle connections.
+    let server2 = RunningServer::succeed(test_config(&tmp)).unwrap();
+
+    // First op on the carried connection after swap: Join born-card fire.
+    let mut frame = run_frame(
+        40,
+        "join-post-swap",
+        json!([{
+            "page": "HOOKS.md",
+            "block": "born-card",
+            "mode": "fire",
+            "input": {"short": "swap1"},
+        }]),
+    );
+    frame["actor"] = json!("daemon-hook");
+    let resp = conn.call(&frame);
+    let rows = rows_of(&resp);
+    assert_eq!(rows[0]["result"], json!("ok"), "{resp}");
+    assert_eq!(rows[0]["applied"][0]["result"], json!("born"), "{resp}");
+    assert!(ws.join("agents/swap1/swap1.md").exists());
+
+    // Confirm server2's resident memo holds the post-birth root.
+    let refused = conn.call(&json!({
+        "id": 41, "op": "splice", "path": "plan.md",
+        "if_fingerprint": pre_birth,
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship", "new": "shipped"}},
+        }],
+    }));
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(
+        refused["error"]["code"],
+        json!("fingerprint_mismatch"),
+        "{refused}"
+    );
+
+    server2.shutdown();
+    server1.shutdown();
+}

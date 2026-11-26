@@ -2025,19 +2025,31 @@ addressed — lock-addressed on `walk`/`check`/`status`, link-addressed on
 root once, when its resident engine is first built.
 
 **But do not price a run by that count — some full-corpus folds emit no phase
-at all.** The write doors observe through `fs::DomainCache`
-(`wire_serve::write::observed_root` → `DomainCache::root`): the cache walks
-the domain, `stat`s every member and reads every mover without a `snapshot`
-span. That cache is the process-global `wire_serve::write::WRITE_CACHES`,
-keyed by canonicalised root — first door call per process cold, later ones in
-the same process warm. The CLI does one birth per process, so always cold
-there: the process model, not `md.create`; batching births into one process
-pays it once.
+at all.** On the **CLI** (in-process callers with no resident registry), the
+write doors observe through `fs::DomainCache` (`wire_serve::write::observed_root`
+→ `DomainCache::root`): the cache walks the domain, `stat`s every member and
+reads every mover without a `snapshot` span. That fallback cache is the
+process-global `wire_serve::write::WRITE_CACHES`, keyed by canonicalised root —
+first door call per process cold, later ones in the same process warm. The CLI
+does one birth per process, so always cold there: the process model, not
+`md.create`; batching births into one process pays it once.
 
-An `md.create` therefore pays a second full-corpus observation on top of the
-plane's fold, under one `phase=snapshot` line, so `grep -c phase=snapshot`
-under-reports corpus work by more than half (37 800-member root: run-plane
-`snapshot` 446 ms, door 620 ms inside `apply`; 8 002 members: 27 ms + 58 ms).
+On the **wire/daemon** arm (`op: run` and in-script `run()`), `md.create`
+births ride the workspace's resident `DoorPlane` + `ResidentDoor`
+(`Registry::domain_cache` + `door_observation`, through `BirthDoor` on
+`RingSink`) — never `WRITE_CACHES`. Each daemon-side birth therefore observes
+through the §6.4 vouched memo (`door.vouched` / `door.floor.*`), settles and
+follows the watcher baseline, and overlays its born leaf into the resident
+memo. A birth-only fire (no page edits and no receipt, such as
+`HOOKS.md#born-card`) skips the declaring-page splice batch after
+`realize_births`, so it takes `.meridian/write.lock` once (`flock.hold.door`)
+and never stages the declaring page.
+
+On the CLI, an `md.create` therefore pays a second full-corpus observation on
+top of the plane's fold, under one `phase=snapshot` line, so `grep -c
+phase=snapshot` under-reports corpus work by more than half (37 800-member root:
+run-plane `snapshot` 446 ms, door 620 ms inside `apply`; 8 002 members: 27 ms +
+58 ms).
 
 **Subtraction will not show it**: `apply` has no nested phases — nothing under
 `crates/run/src/executor.rs` opens a span — so a large `apply` beside a

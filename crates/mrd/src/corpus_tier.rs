@@ -1202,7 +1202,7 @@ fn apply_generation(
         delta: None, // CLI host: no ring in reach (§18 row 12)
         // Proof tier drives cascade intents only — no birth can arrive.
         fields: &EMPTY_RUN_FIELDS,
-        birth_seq: None,
+        birth_door: None,
         ambient: None,
     });
     let applied = run::executor::apply(&root, &request).map_err(|error| {

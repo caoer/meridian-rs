@@ -735,7 +735,7 @@ fn execute(
         // (the documented bare-door behavior); the wire arm is the stamped
         // lane (cap `run.fields`). No ring in reach either.
         fields: &EMPTY_RUN_FIELDS,
-        birth_seq: None,
+        birth_door: None,
         // The CLI entry is the documented bare door (md-create-ambient-
         // paths): a bare birth path stays workspace-root-relative here; the
         // caller-resolved ambient lane is the wire arm's (cap `run.ambient`).

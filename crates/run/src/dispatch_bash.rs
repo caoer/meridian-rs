@@ -133,8 +133,8 @@ pub struct BashDispatch<'a> {
     /// § A.2.1 invocation-metadata passthrough (`ctx.fields`, verbatim) —
     /// rides the receipt commits; no birth can arrive on this path.
     pub fields: &'a BTreeMap<String, String>,
-    /// The workspace ring for door-committed births; `None` on the CLI entry.
-    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The host's resident create door for `md.create` births; `None` on the CLI entry.
+    pub birth_door: Option<&'a dyn executor::BirthDoor>,
     /// The caller's ambient directory for bare birth targets
     /// (md-create-ambient-paths, shape (c)); `None` on the CLI entry.
     pub ambient: Option<&'a str>,
@@ -416,7 +416,7 @@ fn locked_window(
             depth: 0,
             delta: d.delta,
             fields: d.fields,
-            birth_seq: d.birth_seq,
+            birth_door: d.birth_door,
             ambient: d.ambient,
         },
     )
@@ -628,7 +628,7 @@ fn completion_receipt(
             depth: 0,
             delta: d.delta,
             fields: d.fields,
-            birth_seq: d.birth_seq,
+            birth_door: d.birth_door,
             ambient: d.ambient,
         },
     ) {

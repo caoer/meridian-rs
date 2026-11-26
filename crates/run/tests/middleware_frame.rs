@@ -200,7 +200,7 @@ fn fire_set_field(
             depth: 0,
             delta: None,
             fields,
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         },
     )

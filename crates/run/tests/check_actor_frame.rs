@@ -155,7 +155,7 @@ fn fire_as(root: &fs::WorkspaceRoot, actor: Option<&str>) -> Result<executor::Ap
             depth: 0,
             delta: None,
             fields: &TEST_EMPTY_FIELDS,
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         },
     )

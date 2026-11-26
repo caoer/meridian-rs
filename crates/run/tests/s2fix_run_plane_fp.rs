@@ -88,7 +88,7 @@ fn apply(root: &fs::WorkspaceRoot, effects: &[Effect]) -> Result<executor::Appli
             depth: 0,
             delta: None,
             fields: &TEST_EMPTY_FIELDS,
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         },
     )

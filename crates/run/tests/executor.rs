@@ -100,7 +100,7 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
             depth: 0,
             delta: None,
             fields: &TEST_EMPTY_FIELDS,
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         },
     )
@@ -610,7 +610,7 @@ fn receipt_commits_the_threaded_exec_facts() {
             depth: 0,
             delta: None,
             fields: &TEST_EMPTY_FIELDS,
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         },
     )
@@ -779,7 +779,7 @@ fn the_adapter_maps_canonical_intents_onto_the_production_batch() {
             depth: 0,
             delta: None,
             fields: &TEST_EMPTY_FIELDS,
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         }),
     )

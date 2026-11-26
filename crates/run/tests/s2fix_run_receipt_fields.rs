@@ -59,7 +59,7 @@ fn receipt_after_apply(page_name: &str, seed: &str, effects: &[Effect]) -> Strin
             depth: 0,
             delta: None,
             fields: &TEST_EMPTY_FIELDS,
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         },
     )
