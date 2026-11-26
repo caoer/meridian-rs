@@ -48,7 +48,8 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{self, Write};
+use std::fs;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -231,33 +232,96 @@ impl Repo {
         Some(out)
     }
 
-    /// One `hash-object --stdin-paths` over the paths marked in `take`: their
-    /// oids in order, or `None` when the child did not answer every one. The
-    /// answer is padded so it lines up with `paths`: an unmarked path holds an
-    /// empty placeholder the caller never reads.
+    /// One `hash-object --stdin-paths` over the paths marked in `take` (split
+    /// into two only when some paths bypass a no-op `filter=annex` and others
+    /// do not): their oids in order, or `None` when a child did not answer
+    /// every one. The answer is padded so it lines up with `paths`: an unmarked
+    /// path holds an empty placeholder the caller never reads.
     fn hash_paths(&self, paths: &[&Path], take: &[bool]) -> Option<Vec<String>> {
-        const WHAT: &str = "hash-object --stdin-paths";
-        let mut stdin = Vec::new();
-        for (path, _) in paths.iter().zip(take).filter(|(_, take)| **take) {
-            stdin.extend_from_slice(self.relative(path).to_string_lossy().as_bytes());
-            stdin.push(b'\n');
-        }
-        if stdin.is_empty() || self.require_repo().is_err() {
+        let taken: Vec<(usize, &Path)> = paths
+            .iter()
+            .zip(take)
+            .enumerate()
+            .filter_map(|(i, (path, take))| take.then_some((i, self.relative(path))))
+            .collect();
+        if taken.is_empty() || self.require_repo().is_err() {
             return None;
         }
+        let mut out = vec![String::new(); paths.len()];
+        if !self.annex_config_allows_bypass().unwrap_or(false)
+            || self.annex_branch_config_overrides()
+        {
+            let oids = self.hash_paths_batch(&taken, false)?;
+            for ((idx, _), oid) in taken.into_iter().zip(oids) {
+                out[idx] = oid;
+            }
+            return Some(out);
+        }
+
+        let rels: Vec<&Path> = taken.iter().map(|(_, rel)| *rel).collect();
+        let noop_flags = self
+            .annex_noop_flags(&rels)
+            .unwrap_or_else(|| vec![false; rels.len()]);
+
+        let candidates: Vec<&Path> = taken
+            .iter()
+            .zip(&noop_flags)
+            .filter_map(|((_, rel), noop)| {
+                (*noop && !file_is_annex_pointer(&self.root.join(rel))).then_some(*rel)
+            })
+            .collect();
+        let safe_index = self.paths_safe_to_bypass_index(&candidates);
+
+        let mut skipped = Vec::new();
+        let mut normal = Vec::new();
+        for ((idx, rel), noop) in taken.into_iter().zip(noop_flags) {
+            if noop
+                && !file_is_annex_pointer(&self.root.join(rel))
+                && safe_index
+                    .get(normalize_rel_bytes(rel))
+                    .copied()
+                    .unwrap_or(false)
+            {
+                skipped.push((idx, rel));
+            } else {
+                normal.push((idx, rel));
+            }
+        }
+
+        if !skipped.is_empty() {
+            let oids = self.hash_paths_batch(&skipped, true)?;
+            for ((idx, _), oid) in skipped.into_iter().zip(oids) {
+                out[idx] = oid;
+            }
+        }
+        if !normal.is_empty() {
+            let oids = self.hash_paths_batch(&normal, false)?;
+            for ((idx, _), oid) in normal.into_iter().zip(oids) {
+                out[idx] = oid;
+            }
+        }
+        Some(out)
+    }
+
+    fn hash_paths_batch(&self, items: &[(usize, &Path)], skip_annex: bool) -> Option<Vec<String>> {
+        const WHAT: &str = "hash-object --stdin-paths";
+        let mut stdin = Vec::new();
+        for (_, rel) in items {
+            stdin.extend_from_slice(rel.to_string_lossy().as_bytes());
+            stdin.push(b'\n');
+        }
         let mut cmd = self.command();
+        if skip_annex {
+            disable_annex_filter(&mut cmd);
+        }
         cmd.args(["hash-object", "--stdin-paths"]);
         let stdout = self.run_with_stdin(cmd, WHAT, stdin).ok()?;
         let text = std::str::from_utf8(&stdout).ok()?;
         let mut lines = text.lines();
-        let mut out = Vec::with_capacity(paths.len());
-        for take in take {
-            if *take {
-                let oid = lines.next().filter(|line| is_oid(line))?;
-                out.push(oid.to_ascii_lowercase());
-            } else {
-                out.push(String::new());
-            }
+        let mut out = Vec::with_capacity(items.len());
+        for _ in items {
+            let oid = lines.next().filter(|line| is_oid(line))?;
+            out.push(oid.to_ascii_lowercase());
         }
         Some(out)
     }
@@ -286,7 +350,10 @@ impl Repo {
     /// the state being replaced. `--path` is what keeps the answer equal to
     /// [`Repo::blob_oid`] on those same bytes once they land — git applies that
     /// path's own `.gitattributes` filters, so a filtered page cannot get one oid
-    /// from disk and another from memory.
+    /// from disk and another from memory. When `git check-attr` assigns both
+    /// `filter=annex` and `annex.largefiles=nothing` to `path` and `bytes` are
+    /// not a git-annex pointer, `filter.annex.*` is disabled on the child so
+    /// git does not spawn `git-annex filter-process` for an identity pass.
     ///
     /// # Errors
     /// As [`Repo::blob_oid`].
@@ -298,14 +365,18 @@ impl Repo {
     ) -> Result<String, GitFail> {
         // Same guard, same reason as `hash_object`: outside a repository git
         // answers with a number about nothing.
-        self.require_repo()?;
+        let rel = self.relative(path);
+        let skip_annex = self.should_skip_annex_single(rel, is_annex_pointer(bytes))?;
 
         let mut cmd = self.command();
+        if skip_annex {
+            disable_annex_filter(&mut cmd);
+        }
         cmd.arg("hash-object");
         if write {
             cmd.arg("-w");
         }
-        cmd.arg("--path").arg(self.relative(path)).arg("--stdin");
+        cmd.arg("--path").arg(rel).arg("--stdin");
         let what = if write {
             "hash-object -w --stdin"
         } else {
@@ -921,14 +992,19 @@ impl Repo {
         // Read-only `hash-object` answers OUTSIDE a repository too — an oid
         // with no `.gitattributes` context is a number about nothing. Ask for
         // the git dir first so a non-repo root degrades typed.
-        self.require_repo()?;
+        let rel = self.relative(path);
+        let skip_annex =
+            self.should_skip_annex_single(rel, file_is_annex_pointer(&self.root.join(rel)))?;
 
         let mut cmd = self.command();
+        if skip_annex {
+            disable_annex_filter(&mut cmd);
+        }
         cmd.arg("hash-object");
         if write {
             cmd.arg("-w");
         }
-        cmd.arg("--").arg(self.relative(path));
+        cmd.arg("--").arg(rel);
         let what = if write {
             "hash-object -w"
         } else {
@@ -943,6 +1019,245 @@ impl Repo {
             });
         }
         Ok(text.to_ascii_lowercase())
+    }
+
+    /// Whether a single-path `hash-object` call may safely disable
+    /// `filter.annex.*` (`docs/wire-contract.md` § A.3). Always verifies the
+    /// repository first so non-repo / absent-git calls degrade identically.
+    fn should_skip_annex_single(
+        &self,
+        rel: &Path,
+        content_is_pointer: bool,
+    ) -> Result<bool, GitFail> {
+        self.require_repo()?;
+        if content_is_pointer || !self.annex_config_allows_bypass()? {
+            return Ok(false);
+        }
+        if !self.annex_is_noop_for(rel)? || self.annex_branch_config_overrides() {
+            return Ok(false);
+        }
+        let Some(entries) = self.index_entries_for(&[rel]) else {
+            return Ok(false);
+        };
+        if entries.is_empty() {
+            return Ok(true);
+        }
+        if entries.len() != 1 {
+            return Ok(false);
+        }
+        let Some(IndexEntryState::Regular(oid)) = entries.values().next() else {
+            return Ok(false);
+        };
+        let Some(pointers) = self.oids_that_may_be_annex_pointers(&[oid.as_str()]) else {
+            return Ok(false);
+        };
+        Ok(pointers.get(oid).copied() == Some(false))
+    }
+
+    /// Whether git config enables `filter.annex.{process,clean}` and sets
+    /// neither `annex.largefiles` nor `annex.gitaddtoannex` (which outrank
+    /// `.gitattributes`). Non-annex repositories exit `1` here and skip
+    /// `check-attr`, `ls-files`, and `cat-file` altogether.
+    fn annex_config_allows_bypass(&self) -> Result<bool, GitFail> {
+        let mut cmd = self.command();
+        cmd.args([
+            "config",
+            "--get-regexp",
+            r"^(filter\.annex\.(process|clean)|annex\.largefiles|annex\.gitaddtoannex)$",
+        ]);
+        let out = cmd.output().map_err(|source| GitFail::Spawn {
+            program: self.program.clone(),
+            source,
+        })?;
+        if out.status.code() == Some(1) && out.stderr.is_empty() {
+            return Ok(false);
+        }
+        match self.harvest(out, "config --get-regexp") {
+            Ok(stdout) => Ok(parse_annex_config(&stdout)),
+            Err(err @ (GitFail::Spawn { .. } | GitFail::NotARepo { .. })) => Err(err),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Whether `git-annex:config.log` sets a global `annex.largefiles` or
+    /// `annex.gitaddtoannex` value (which also outranks `.gitattributes`).
+    /// Conservative: returns `true` on any read/parse failure other than
+    /// object absence.
+    fn annex_branch_config_overrides(&self) -> bool {
+        let mut cmd = self.command();
+        cmd.env(NO_LAZY_FETCH, "1").args(["cat-file", "--batch"]);
+        let Ok(stdout) =
+            self.run_with_stdin(cmd, "cat-file --batch", b"git-annex:config.log\n".to_vec())
+        else {
+            return true;
+        };
+        let Ok(answers) = parse_batch_stream(&stdout) else {
+            return true;
+        };
+        match answers.first() {
+            Some(Some(blob)) => annex_config_log_overrides(&blob.bytes),
+            Some(None) => false,
+            None => true,
+        }
+    }
+
+    /// For each candidate path in `rels`, whether its git index entry is safe
+    /// to bypass `filter=annex` (absent from index, or a single stage-0
+    /// regular-file blob that is locally present and not an annex pointer).
+    fn paths_safe_to_bypass_index(&self, rels: &[&Path]) -> HashMap<Vec<u8>, bool> {
+        let mut safe = HashMap::new();
+        if rels.is_empty() {
+            return safe;
+        }
+        let Some(entries) = self.index_entries_for(rels) else {
+            return safe;
+        };
+        let mut unique_oids: Vec<&str> = entries
+            .values()
+            .filter_map(|state| match state {
+                IndexEntryState::Regular(oid) => Some(oid.as_str()),
+                IndexEntryState::Conservative => None,
+            })
+            .collect();
+        unique_oids.sort_unstable();
+        unique_oids.dedup();
+
+        let Some(pointers) = self.oids_that_may_be_annex_pointers(&unique_oids) else {
+            return safe;
+        };
+        for rel in rels {
+            let key = normalize_rel_bytes(rel);
+            let ok = match entries.get(key) {
+                None => true,
+                Some(IndexEntryState::Conservative) => false,
+                Some(IndexEntryState::Regular(oid)) => pointers.get(oid).copied() == Some(false),
+            };
+            safe.insert(key.to_vec(), ok);
+        }
+        safe
+    }
+
+    /// Stage-0 index entries for `rels` (matched literally, never as globs),
+    /// keyed by repo-root-relative (to [`Repo::root`]) path bytes.
+    fn index_entries_for(&self, rels: &[&Path]) -> Option<HashMap<Vec<u8>, IndexEntryState>> {
+        let mut out = HashMap::new();
+        for chunk in rels.chunks(256) {
+            let mut cmd = self.command();
+            cmd.args(["--literal-pathspecs", "ls-files", "-s", "-z", "--"]);
+            for rel in chunk {
+                cmd.arg(rel);
+            }
+            let stdout = self.run(cmd, "ls-files -s").ok()?;
+            for record in stdout.split(|b| *b == 0) {
+                if record.is_empty() {
+                    continue;
+                }
+                let tab = record.iter().position(|b| *b == b'\t')?;
+                let path_bytes = record[tab + 1..].to_vec();
+                let fields: Vec<&[u8]> = record[..tab].split(|b| *b == b' ').collect();
+                let state = match fields.as_slice() {
+                    [mode, oid, b"0"]
+                        if (*mode == b"100644" || *mode == b"100755")
+                            && std::str::from_utf8(oid).is_ok_and(is_oid) =>
+                    {
+                        let oid_str = std::str::from_utf8(oid).ok()?;
+                        IndexEntryState::Regular(oid_str.to_ascii_lowercase())
+                    }
+                    _ => IndexEntryState::Conservative,
+                };
+                out.entry(path_bytes)
+                    .and_modify(|slot| *slot = IndexEntryState::Conservative)
+                    .or_insert(state);
+            }
+        }
+        Some(out)
+    }
+
+    /// For each blob `oid` in `oids`, whether it could be an annex pointer:
+    /// `false` only when locally present as a blob whose size exceeds
+    /// [`MAX_ANNEX_POINTER_FILE_BYTES`] or whose bytes fail
+    /// [`is_annex_pointer`]. Uses `GIT_NO_LAZY_FETCH=1`.
+    fn oids_that_may_be_annex_pointers(&self, oids: &[&str]) -> Option<HashMap<String, bool>> {
+        let mut out = HashMap::with_capacity(oids.len());
+        if oids.is_empty() {
+            return Some(out);
+        }
+        let infos = self.object_info(oids).ok()?;
+        let mut small = Vec::new();
+        for (oid, info) in oids.iter().zip(infos) {
+            match info {
+                Some(info) if info.kind == "blob" && info.size > MAX_ANNEX_POINTER_FILE_BYTES => {
+                    out.insert((*oid).to_owned(), false);
+                }
+                Some(info) if info.kind == "blob" => {
+                    small.push(*oid);
+                }
+                _ => {
+                    out.insert((*oid).to_owned(), true);
+                }
+            }
+        }
+        if !small.is_empty() {
+            let mut query = String::new();
+            for oid in &small {
+                query.push_str(oid);
+                query.push('\n');
+            }
+            let mut cmd = self.command();
+            cmd.env(NO_LAZY_FETCH, "1").args(["cat-file", "--batch"]);
+            let stdout = self
+                .run_with_stdin(cmd, "cat-file --batch", query.into_bytes())
+                .ok()?;
+            let answers = parse_batch_stream(&stdout).ok()?;
+            if answers.len() != small.len() {
+                return None;
+            }
+            for (oid, answer) in small.into_iter().zip(answers) {
+                let is_ptr = match answer {
+                    Some(blob) => is_annex_pointer(&blob.bytes),
+                    None => true,
+                };
+                out.insert(oid.to_owned(), is_ptr);
+            }
+        }
+        Some(out)
+    }
+
+    /// Whether `git check-attr` assigns both `filter=annex` and
+    /// `annex.largefiles=nothing` to `rel`. Any non-repo / absent-git refusal
+    /// propagates; other `check-attr` refusals fall back conservatively to
+    /// `false`.
+    fn annex_is_noop_for(&self, rel: &Path) -> Result<bool, GitFail> {
+        let mut cmd = self.command();
+        cmd.args(["check-attr", "-z", "filter", "annex.largefiles", "--"])
+            .arg(rel);
+        match self.run(cmd, "check-attr") {
+            Ok(stdout) => Ok(parse_check_attr_flags(&stdout, 1).is_some_and(|flags| flags[0])),
+            Err(err @ (GitFail::Spawn { .. } | GitFail::NotARepo { .. })) => Err(err),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Batched [`Repo::annex_is_noop_for`] over `rels`, in input order, via
+    /// one `git check-attr -z --stdin` child. `None` on any refusal or
+    /// unexpected output shape (conservative fallback: keep `filter=annex`).
+    fn annex_noop_flags(&self, rels: &[&Path]) -> Option<Vec<bool>> {
+        if rels.is_empty() {
+            return Some(Vec::new());
+        }
+        let mut stdin = Vec::new();
+        for rel in rels {
+            let text = rel.to_str()?;
+            if text.contains('\0') {
+                return None;
+            }
+            stdin.extend_from_slice(text.as_bytes());
+            stdin.push(0);
+        }
+        let mut cmd = self.command();
+        cmd.args(["check-attr", "-z", "--stdin", "filter", "annex.largefiles"]);
+        let stdout = self.run_with_stdin(cmd, "check-attr --stdin", stdin).ok()?;
+        parse_check_attr_flags(&stdout, rels.len())
     }
 
     /// The one-spawn repository guard: `git rev-parse --git-dir` succeeds only
@@ -1352,6 +1667,161 @@ fn strip_prefix(repo_relative: &str, prefix: &str) -> Option<String> {
     repo_relative.strip_prefix(prefix).map(ToOwned::to_owned)
 }
 
+/// State of one path in the git index for the no-op `filter=annex` check.
+enum IndexEntryState {
+    /// Single stage-0 regular file (`100644` or `100755`) with its blob oid.
+    Regular(String),
+    /// Symlink (`120000`), unmerged (`stage != 0`), multiple entries, or other mode.
+    Conservative,
+}
+
+fn normalize_rel_bytes(rel: &Path) -> &[u8] {
+    rel.strip_prefix(".")
+        .unwrap_or(rel)
+        .as_os_str()
+        .as_encoded_bytes()
+}
+
+/// Parse `git config --get-regexp` output for the annex bypass gate: returns
+/// `true` only when `filter.annex.process` or `filter.annex.clean` is set to a
+/// non-empty value and neither `annex.largefiles` nor `annex.gitaddtoannex` is
+/// configured.
+fn parse_annex_config(stdout: &[u8]) -> bool {
+    let mut has_annex_filter = false;
+    for line in stdout.split(|b| *b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            continue;
+        }
+        let (key, val) = match line.iter().position(u8::is_ascii_whitespace) {
+            Some(pos) => (&line[..pos], line[pos + 1..].trim_ascii()),
+            None => (line, &b""[..]),
+        };
+        if key == b"annex.largefiles" || key == b"annex.gitaddtoannex" {
+            return false;
+        }
+        if (key == b"filter.annex.process" || key == b"filter.annex.clean") && !val.is_empty() {
+            has_annex_filter = true;
+        }
+    }
+    has_annex_filter
+}
+
+/// Parse `git-annex:config.log` lines (`<ts>s <key> [<value>]`) and return
+/// `true` if `annex.largefiles` or `annex.gitaddtoannex` is set to a non-empty
+/// value.
+fn annex_config_log_overrides(bytes: &[u8]) -> bool {
+    for line in bytes.split(|b| *b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let rest = line.trim_ascii_start();
+        if rest.is_empty() {
+            continue;
+        }
+        let Some(ws1) = rest.iter().position(u8::is_ascii_whitespace) else {
+            continue;
+        };
+        let after_ts = rest[ws1..].trim_ascii_start();
+        let (key, val) = match after_ts.iter().position(u8::is_ascii_whitespace) {
+            Some(pos) => (&after_ts[..pos], after_ts[pos + 1..].trim_ascii()),
+            None => (after_ts, &b""[..]),
+        };
+        if (key == b"annex.largefiles" || key == b"annex.gitaddtoannex") && !val.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Disable git-annex's filter on a single `git` child, leaving every other
+/// filter (`filter.<other>.*`, `eol`, `core.autocrlf`, `ident`) untouched.
+fn disable_annex_filter(cmd: &mut Command) {
+    cmd.args([
+        "-c",
+        "filter.annex.process=",
+        "-c",
+        "filter.annex.clean=",
+        "-c",
+        "filter.annex.smudge=",
+        "-c",
+        "filter.annex.required=false",
+    ]);
+}
+
+/// Maximum byte length of a single-line git-annex pointer file we guard
+/// against bypassing (plus optional `\r\n`).
+const MAX_ANNEX_POINTER_LEN: usize = 4096;
+const MAX_ANNEX_POINTER_FILE_BYTES: u64 = 4098;
+
+/// Whether `bytes` could be an unlocked git-annex pointer file: one line
+/// pointing at `/annex/objects/...` or `.../.git/annex/objects/...`.
+/// Conservative — any match keeps `filter=annex` active.
+fn is_annex_pointer(bytes: &[u8]) -> bool {
+    let line = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    if line.is_empty()
+        || line.len() > MAX_ANNEX_POINTER_LEN
+        || line.contains(&b'\n')
+        || line.contains(&0)
+    {
+        return false;
+    }
+    line.starts_with(b"/annex/objects/")
+        || line
+            .windows(b".git/annex/objects/".len())
+            .any(|w| w == b".git/annex/objects/")
+}
+
+/// Conservative disk-file counterpart to [`is_annex_pointer`]: symlinks
+/// (locked annex files), non-regular files, and unreadable paths return `true`
+/// so `filter=annex` stays active and git speaks any error itself.
+fn file_is_annex_pointer(path: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return true;
+    };
+    if !meta.file_type().is_file() {
+        return true;
+    }
+    if meta.len() > MAX_ANNEX_POINTER_FILE_BYTES {
+        return false;
+    }
+    let Ok(file) = fs::File::open(path) else {
+        return true;
+    };
+    let mut buf = Vec::new();
+    if file
+        .take(MAX_ANNEX_POINTER_FILE_BYTES)
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return true;
+    }
+    is_annex_pointer(&buf)
+}
+
+/// Parse `git check-attr -z filter annex.largefiles` stdout for `expected`
+/// paths: each path emits two triplets (`path\0filter\0val\0` then
+/// `path\0annex.largefiles\0val\0`). Returns `true` for a path only when
+/// `filter == "annex"` and `annex.largefiles == "nothing"`.
+fn parse_check_attr_flags(stdout: &[u8], expected: usize) -> Option<Vec<bool>> {
+    if expected == 0 {
+        return Some(Vec::new());
+    }
+    let body = stdout.strip_suffix(b"\0")?;
+    let fields: Vec<&[u8]> = body.split(|b| *b == 0).collect();
+    let (chunks, rest) = fields.as_chunks::<6>();
+    if !rest.is_empty() || chunks.len() != expected {
+        return None;
+    }
+    let mut out = Vec::with_capacity(expected);
+    for [_, attr1, val1, _, attr2, val2] in chunks {
+        if *attr1 != b"filter" || *attr2 != b"annex.largefiles" {
+            return None;
+        }
+        out.push(*val1 == b"annex" && *val2 == b"nothing");
+    }
+    Some(out)
+}
+
 /// The git program a bare [`Repo::at`] handle runs, for a caller that wants to
 /// name it in a diagnostic.
 #[must_use]
@@ -1418,5 +1888,60 @@ mod tests {
     fn empty_object_info_query_spawns_nothing() {
         let repo = Repo::at_with_program("/nonexistent", "definitely-not-git-b7f3");
         assert_eq!(repo.object_info(&[]).expect("no spawn"), Vec::new());
+    }
+
+    #[test]
+    fn annex_pointer_detection_matches_pointers_and_not_markdown() {
+        assert!(is_annex_pointer(
+            b"/annex/objects/SHA256E-s4--deadbeef.bin\n"
+        ));
+        assert!(is_annex_pointer(
+            b"../../.git/annex/objects/ab/cd/SHA256E-s4--deadbeef.bin\r\n"
+        ));
+        assert!(!is_annex_pointer(b""));
+        assert!(!is_annex_pointer(b"# Heading\n\n/annex/objects/foo\n"));
+        assert!(!is_annex_pointer(b"ordinary markdown line\n"));
+    }
+
+    #[test]
+    fn check_attr_flags_require_both_annex_filter_and_largefiles_nothing() {
+        let stdout = b"a.md\0filter\0annex\0a.md\0annex.largefiles\0nothing\0\
+                       b.bin\0filter\0annex\0b.bin\0annex.largefiles\0largerthan=1048576\0\
+                       c.md\0filter\0upper\0c.md\0annex.largefiles\0nothing\0";
+        assert_eq!(
+            parse_check_attr_flags(stdout, 3),
+            Some(vec![true, false, false])
+        );
+        assert_eq!(parse_check_attr_flags(b"short\0", 1), None);
+    }
+
+    #[test]
+    fn annex_config_gate_requires_filter_and_rejects_overrides() {
+        assert!(parse_annex_config(
+            b"filter.annex.process git-annex filter-process\n"
+        ));
+        assert!(!parse_annex_config(b""));
+        assert!(!parse_annex_config(
+            b"filter.annex.clean git-annex smudge --clean -- %f\nannex.largefiles anything\n"
+        ));
+        assert!(!parse_annex_config(
+            b"filter.annex.process git-annex filter-process\nannex.gitaddtoannex false\n"
+        ));
+    }
+
+    #[test]
+    fn annex_config_log_detects_largefiles_and_ignores_dotfiles() {
+        assert!(!annex_config_log_overrides(
+            b"1788344666s annex.dotfiles true\n"
+        ));
+        assert!(!annex_config_log_overrides(
+            b"1788344666s annex.largefiles \n"
+        ));
+        assert!(annex_config_log_overrides(
+            b"1788344666s annex.dotfiles true\n1788344999s annex.largefiles anything\n"
+        ));
+        assert!(annex_config_log_overrides(
+            b"1788344999s annex.gitaddtoannex false\n"
+        ));
     }
 }

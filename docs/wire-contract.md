@@ -1514,6 +1514,31 @@ clean filter — a child process whose run time the engine does not own (a
 git-annex filter's grows with the staged change it finds in the index).
 `splice` holds no flock while it runs.
 
+- **No-op `filter=annex` bypass.** In a git-annex repository, `.git/info/attributes`
+  assigns `* filter=annex` at higher precedence than `.gitattributes`, so every
+  path — including markdown records exempt under `*.md annex.largefiles=nothing`
+  — would otherwise spawn `git-annex filter-process` and reconcile the staged
+  index under `.git/annex/keysdb.lck` only to pass the bytes through unchanged.
+  `crates/git` disables `filter.annex.*` on a `hash-object` invocation
+  (`-c filter.annex.process= -c filter.annex.clean= -c filter.annex.smudge=
+  -c filter.annex.required=false`) only when **all** of the following hold:
+  1. `filter.annex.process` or `filter.annex.clean` is configured, and neither
+     `annex.largefiles` nor `annex.gitaddtoannex` is set in git config or
+     `git-annex:config.log` (which override `.gitattributes`);
+  2. `git check-attr` assigns both `filter=annex` and `annex.largefiles=nothing`
+     to the path;
+  3. neither the bytes being hashed nor the path's git index entry is a
+     git-annex pointer (`/annex/objects/...` or `.../.git/annex/objects/...`,
+     or a symlink / unmerged / locally-missing promisor entry — git-annex's
+     `moldkey == Nothing`).
+  Every other attribute and clean filter (`eol`, `core.autocrlf`, `ident`,
+  custom `filter.<name>`) still runs, so the oid matches what `git add` stores
+  without spawning `git-annex`. **Residual inode edge:** when a path has no
+  pointer in the index yet its worktree inode matches an already-known annexed
+  inode (e.g. a hardlink under `annex.thin` or a copy preserving the inode),
+  git-annex's `checkunchanged` would annex it without consulting `largefiles`;
+  the bypass does not read `keysdb` and hashes the raw bytes.
+
 - **Asked first.** Before the flock, `splice` rehearses the pin against the
   target bytes on disk and asks git for the oid of exactly the bytes the row
   will describe: the target as read, its anchor promotion included. `vibe`
