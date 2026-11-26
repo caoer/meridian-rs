@@ -200,9 +200,11 @@ pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2
 #    or moved-in dot-prefixed directories (`add_watch_by_event`). Matches
 #    Meridian §12.1's structural dot-segment exclusion while `WorkspaceFeed`
 #    arms `.meridian/cookies` directly (and re-arms it on late creation,
-#    deletion, or rename) and sets `with_follow_symlinks(false)` (flipped from
-#    notify's `true` default — links never enter the hash domain per
-#    `crates/fs/src/guard.rs`, and skipping them prevents symlink loops and
+#    deletion, or rename via `InotifyRearmHandle::rearm_nonrecursive_timeout`
+#    within the barrier's deadline, never holding a mutex across IPC or
+#    panicking on a stopped event loop) and sets `with_follow_symlinks(false)`
+#    (flipped from notify's `true` default — links never enter the hash domain
+#    per `crates/fs/src/guard.rs`, and skipping them prevents symlink loops and
 #    duplicate-wd path map overwrites).
 # `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }
