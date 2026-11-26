@@ -123,10 +123,14 @@ pub struct ApplyRequest<'a> {
     /// run plane interprets NO key). Empty on the CLI entry today; the § A.8
     /// wire arm threads the frame's optional `fields` (cap `run.fields`).
     pub fields: &'a BTreeMap<String, String>,
-    /// The workspace ring for door-committed births (`wire_serve::seq`), so
-    /// a daemon-side birth is numbered like any door write. `None` on the
-    /// CLI entry — its commits stay external change, exactly as `delta`.
-    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The host's resident create door for `md.create` births: the daemon
+    /// routes births through its resident `Registry::domain_cache` and
+    /// `DoorPlane` (`wire_serve::write::create_with_cache`), so a birth
+    /// observes through the §6.4 vouched memo, settles and follows the watcher
+    /// baseline, and overlays its born leaf into the resident memo — never
+    /// falling through to `WRITE_CACHES`. `None` on the CLI entry, which keeps
+    /// the in-process `wire_serve::write::create` fallback.
+    pub birth_door: Option<&'a dyn BirthDoor>,
     /// The caller's ambient directory, workspace-relative (md-create-ambient-
     /// paths law, shape (c)): the DEFAULT resolution base a
     /// baseless `md.create` path lands under ([`resolve_birth_targets`]), and
@@ -183,6 +187,24 @@ pub trait DeltaSink: std::fmt::Debug {
     /// a mint failure is the host's to degrade (its detector will still
     /// reconcile), never a reason to misreport a landed commit.
     fn committed(&self, root: &fs::WorkspaceRoot, facts: &CommitFacts<'_>);
+}
+
+/// The host seam for run-plane `md.create` births: the daemon supplies one
+/// backed by its resident `Registry::domain_cache` and `DoorPlane`, so every
+/// daemon-side birth rides `wire_serve::write::create_with_cache` with a live
+/// `ResidentDoor` (vouched observation, baseline settle/follow, resident-memo
+/// overlay) instead of falling through to process-local `WRITE_CACHES`.
+pub trait BirthDoor: std::fmt::Debug {
+    /// Realize one birth through the host's create door.
+    ///
+    /// # Errors
+    /// The create door's own typed wire refusal (e.g. `workspace_busy`,
+    /// `cas_mismatch`, `bad_path`, armed refusal, or `io_error`).
+    fn create(
+        &self,
+        root: &fs::WorkspaceRoot,
+        args: &wire_serve::write::CreateArgs,
+    ) -> Result<wire_serve::write::CreateOutcome, Box<wire::ErrorBody>>;
 }
 
 /// What one committed batch changed — the before tense held in memory by the
@@ -364,7 +386,7 @@ impl IntentApply {
             depth: base.depth,
             delta: base.delta,
             fields: base.fields,
-            birth_seq: base.birth_seq,
+            birth_door: base.birth_door,
             ambient: base.ambient,
         }
     }
@@ -1126,7 +1148,7 @@ fn realize_births(
             // D6: carried as DATA to the door, which serializes it.
             props,
         };
-        let out = create_waiting_out_busy(root, req.birth_seq, &args).map_err(|e| {
+        let out = create_waiting_out_busy(root, req.birth_door, &args).map_err(|e| {
             ExecError::BirthRefused {
                 path: path.clone(),
                 index: Some(u32::try_from(index).unwrap_or(u32::MAX)),
@@ -1156,12 +1178,16 @@ fn realize_births(
 /// repeating the request cannot change them.
 fn create_waiting_out_busy(
     root: &fs::WorkspaceRoot,
-    seq: Option<&dyn wire_serve::seq::SeqSink>,
+    birth_door: Option<&dyn BirthDoor>,
     args: &wire_serve::write::CreateArgs,
 ) -> Result<wire_serve::write::CreateOutcome, Box<wire::ErrorBody>> {
     let deadline = Instant::now() + busy_wait_budget();
     loop {
-        match wire_serve::write::create(root, seq, args, &[]) {
+        let outcome = match birth_door {
+            Some(door) => door.create(root, args),
+            None => wire_serve::write::create(root, None, args, &[]),
+        };
+        match outcome {
             Err(e) if e.code == wire::ErrorCode::WorkspaceBusy && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -1247,6 +1273,14 @@ pub fn apply_under(
         .iter()
         .filter(|e| e.kind != EffectKind::Create)
         .collect();
+
+    // A birth-only fire (no declaring-page edits and no receipt, such as
+    // `HOOKS.md#born-card`) has nothing left to splice or commit: skip the
+    // page-edit pipeline so it neither re-acquires `.meridian/write.lock`
+    // (`flock.hold.run`) nor stages an unchanged copy of `req.page`.
+    if page_effects.is_empty() && req.receipt.is_none() {
+        return applied_without_page_splice(root, req);
+    }
 
     // 2. Load under the lock.
     let doc = fs::load(root, Path::new(req.page)).map_err(|e| ExecError::Page {
@@ -1406,6 +1440,27 @@ pub fn apply_under(
         applied: req.effects.len(),
         event,
         receipt_line,
+        file_rev_after,
+    })
+}
+
+/// Completion result for a birth-only apply (no declaring-page edits and no
+/// receipt): reads `req.page` once for its unchanged `file_rev_after` and
+/// event without re-acquiring `.meridian/write.lock` or staging `req.page`.
+fn applied_without_page_splice(
+    root: &fs::WorkspaceRoot,
+    req: &ApplyRequest<'_>,
+) -> Result<Applied, ExecError> {
+    let doc = fs::load(root, Path::new(req.page)).map_err(|e| ExecError::Page {
+        path: req.page.to_owned(),
+        reason: e.to_string(),
+    })?;
+    let file_rev_after = doc.root.node_rev.0.clone();
+    let event = synthesize_event(req.page, &doc, &doc, req.depth);
+    Ok(Applied {
+        applied: req.effects.len(),
+        event,
+        receipt_line: None,
         file_rev_after,
     })
 }

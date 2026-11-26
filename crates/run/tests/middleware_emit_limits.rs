@@ -116,7 +116,7 @@ fn fire(root: &fs::WorkspaceRoot) -> Result<executor::Applied, ExecError> {
             depth: 0,
             delta: None,
             fields: &BTreeMap::new(),
-            birth_seq: None,
+            birth_door: None,
             ambient: None,
         },
     )

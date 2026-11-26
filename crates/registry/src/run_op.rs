@@ -172,10 +172,10 @@ struct RunArgs {
 fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let root = fs::WorkspaceRoot(ws.to_path_buf());
     // Delta honesty (§ A.8): every committed batch of every target mints its
-    // frame on the bound workspace's ring, inside the executor's flock.
+    // frame on the bound workspace's ring, inside the executor's flock. The
+    // same sink implements `BirthDoor`, routing `md.create` births through
+    // `DoorPlane` + `ResidentDoor` lazily when a target actually emits one.
     let sink = crate::delta_sink::RingSink::new(registry, ws);
-    // A second ring handle: the create door's SeqSink for run-plane births.
-    let birth_ring = registry.ring(ws);
     // Observation unification (engine-warm-cost design § 5): a LIVE task
     // target's bash bracket observes through the workspace's resident domain
     // memo — the same instrument every currency pass runs on. Borrowed for
@@ -188,7 +188,6 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
     let cache = live_task.then(|| registry.domain_cache(ws));
     let host = RunHost {
         sink: &sink,
-        birth_seq: &*birth_ring,
         fields: &request.fields,
         ambient: request.ambient.as_deref(),
         cache: cache.as_deref(),
@@ -241,7 +240,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                                 prelude: request.prelude.as_deref(),
                                 doors: modes::Doors {
                                     delta: Some(host.sink),
-                                    birth_seq: Some(host.birth_seq),
+                                    birth_door: Some(host.sink),
                                     fields: Some(host.fields),
                                     ambient: host.ambient,
                                 },
@@ -385,10 +384,9 @@ fn pinned_world(
 /// the § A.8 op arm and the § A.7 in-script `run()` — hold one per
 /// submission, so the two instruments cannot drift apart between doors.
 pub(crate) struct RunHost<'a> {
+    /// Both `DeltaSink` (for declaring-page splices) and `BirthDoor` (for
+    /// `md.create` births through `DoorPlane` + `ResidentDoor`).
     pub(crate) sink: &'a crate::delta_sink::RingSink<'a>,
-    /// The workspace ring as the create door's `SeqSink` — run-plane births
-    /// (`md.create`) mint numbered frames like any door write.
-    pub(crate) birth_seq: &'a dyn wire_serve::seq::SeqSink,
     /// § A.2.1 run-frame `fields` (cap `run.fields`) — verbatim onto every
     /// `md.create` birth's `ctx.fields` this request commits.
     pub(crate) fields: &'a std::collections::BTreeMap<String, String>,
@@ -506,7 +504,7 @@ fn execute_row(
         step_cwd: Some(ws),
         delta: Some(host.sink),
         fields: host.fields,
-        birth_seq: Some(host.birth_seq),
+        birth_door: Some(host.sink),
         ambient: host.ambient,
         // The daemon lane (card run-observation-unification): bracket
         // observations from the resident domain memo; the drawer memo stays
@@ -1077,5 +1075,87 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             "the fire after a load runs the edited block: {fresh:?}"
         );
         assert_ne!(fresh[0]["rev"]["block"], rev_before);
+    }
+
+    const HOOKS_BORN_CARD: &str = "\
+---
+caps: [md.create]
+---
+
+# Hooks
+
+```starlark
+declare(on = \"Join\")
+
+def run(event):
+    short = event[\"short\"]
+    create(path = \"agents/\" + short + \"/\" + short + \".md\", body = \"# Card\\n\")
+```
+^born-card
+";
+
+    /// A `mode: fire` birth (like `HOOKS.md#born-card`) rides the workspace's
+    /// resident `DoorPlane` + `ResidentDoor` (`door.vouched`) rather than
+    /// falling through to process-local `WRITE_CACHES`, overlays its born leaf
+    /// into `Registry::domain_cache`, and skips a second `flock.hold.run`
+    /// acquisition on `HOOKS.md`.
+    #[test]
+    fn a_fire_birth_rides_the_resident_door_and_does_not_reacquire_run_flock() {
+        use crate::server::slow_op_test::{LINES, THRESHOLD};
+
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS_BORN_CARD)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+
+        LINES.with(|l| l.borrow_mut().clear());
+        THRESHOLD.with(|t| t.set(Some(Duration::ZERO)));
+
+        let fire = frame(
+            1,
+            &json!([{
+                "page": "HOOKS.md",
+                "block": "born-card",
+                "mode": "fire",
+                "input": {"short": "abc12345"},
+            }]),
+        );
+        let out = rows(&serve_line(&reg, Some(&canonical), &fire, Rev::V3));
+        THRESHOLD.with(|t| t.set(None));
+
+        assert_eq!(out[0]["result"], "ok", "{out:?}");
+        assert_eq!(out[0]["applied"][0]["result"], "born", "{out:?}");
+        assert!(
+            ws.join("agents/abc12345/abc12345.md").exists(),
+            "the born file landed on disk"
+        );
+
+        let lines = LINES.with(|l| l.borrow().clone());
+        assert_eq!(lines.len(), 1, "one op, one ledger line: {lines:#?}");
+        let line = &lines[0];
+        assert!(
+            line.contains("door.vouched="),
+            "the birth observed through the resident door (vouched), not WRITE_CACHES: {line}"
+        );
+        assert!(
+            !line.contains("flock.hold.run="),
+            "a birth-only fire does not re-acquire write.lock for the declaring page: {line}"
+        );
+
+        // Resident memo already carries the born leaf (no floor sweep needed).
+        let memo = reg.domain_cache(&canonical);
+        let resident_root = memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .overlay_root()
+            .expect("resident memo has an overlay root");
+        let disk_root = fs::domain_fold(&fs::WorkspaceRoot(canonical)).expect("disk fold");
+        assert_eq!(
+            resident_root, disk_root,
+            "the birth overlaid its leaf directly into the resident memo"
+        );
     }
 }

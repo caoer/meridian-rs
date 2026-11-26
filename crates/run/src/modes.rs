@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 
 use crate::blocks::{self, AnchoredBlock, BlockError};
 use crate::caps::{self, Authority};
-use crate::executor::{self, Applied, ApplyRequest, DeltaSink, ExecError};
+use crate::executor::{self, Applied, ApplyRequest, BirthDoor, DeltaSink, ExecError};
 
 /// What a mode row reads of its page, copied out of it once: the file rev,
 /// the anchored blocks ([`blocks::PageBlocks`]) and the page's `caps:` grant.
@@ -118,8 +118,8 @@ pub struct ModeWorld<'a> {
 pub struct Doors<'a> {
     /// Delta honesty: the host's frame mint. `None` on the CLI.
     pub delta: Option<&'a dyn DeltaSink>,
-    /// The workspace ring as the create door's `SeqSink`. `None` on the CLI.
-    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The host's resident create door for `md.create` births. `None` on the CLI.
+    pub birth_door: Option<&'a dyn BirthDoor>,
     /// § A.2.1 passthrough onto every birth's `ctx.fields`.
     pub fields: Option<&'a BTreeMap<String, String>>,
     /// The caller's ambient directory, workspace-relative.
@@ -960,7 +960,7 @@ fn realize(
         depth: 0,
         delta: world.doors.delta,
         fields: world.doors.fields.unwrap_or(&NO_FIELDS),
-        birth_seq: world.doors.birth_seq,
+        birth_door: world.doors.birth_door,
         ambient: world.doors.ambient,
     };
     match executor::apply(world.root, &request) {

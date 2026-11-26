@@ -51,8 +51,8 @@ pub struct StarlarkDispatch<'a> {
     pub delta: Option<&'a dyn executor::DeltaSink>,
     /// § A.2.1 passthrough for `md.create` births (`ctx.fields`, verbatim).
     pub fields: &'a BTreeMap<String, String>,
-    /// The workspace ring for door-committed births; `None` on the CLI entry.
-    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The host's resident create door for `md.create` births; `None` on the CLI entry.
+    pub birth_door: Option<&'a dyn executor::BirthDoor>,
     /// The caller's ambient directory for bare birth targets
     /// (md-create-ambient-paths, shape (c)); `None` on the CLI entry.
     pub ambient: Option<&'a str>,
@@ -316,7 +316,7 @@ pub fn dispatch(
                 depth: 0,
                 delta: d.delta,
                 fields: d.fields,
-                birth_seq: d.birth_seq,
+                birth_door: d.birth_door,
                 ambient: d.ambient,
             },
         )

@@ -62,7 +62,7 @@ fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispa
         delta: None,
         observations: dispatch_bash::ObservationSource::Drawer,
         fields: &TEST_EMPTY_FIELDS,
-        birth_seq: None,
+        birth_door: None,
         ambient: None,
     }
 }

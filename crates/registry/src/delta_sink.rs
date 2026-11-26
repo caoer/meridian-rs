@@ -147,3 +147,28 @@ impl DeltaSink for RingSink<'_> {
         plane.committed(&frame);
     }
 }
+
+impl run::executor::BirthDoor for RingSink<'_> {
+    fn create(
+        &self,
+        root: &fs::WorkspaceRoot,
+        args: &wire_serve::write::CreateArgs,
+    ) -> Result<wire_serve::write::CreateOutcome, Box<wire::ErrorBody>> {
+        let cache = self
+            .registry
+            .domain_cache_within(&root.0, crate::registry::DOOR_COOKIE_TIMEOUT)
+            .map_err(|e| wire_serve::write::door_memo_refusal(&e))?;
+        let plane = DoorPlane::new(self.registry, root, &self.ring, &cache);
+        let observe = || plane.observe();
+        wire_serve::write::create_with_cache(
+            root,
+            Some(&plane),
+            args,
+            &[],
+            Some(wire_serve::write::ResidentDoor {
+                cache: &cache,
+                observe: &observe,
+            }),
+        )
+    }
+}

@@ -80,8 +80,8 @@ pub struct RunSpec<'a> {
     /// to the create door). Empty on the CLI entry; the § A.8 wire arm
     /// threads the frame's optional `fields` (hello cap `run.fields`).
     pub fields: &'a BTreeMap<String, String>,
-    /// The workspace ring for door-committed births; `None` on the CLI entry.
-    pub birth_seq: Option<&'a dyn wire_serve::seq::SeqSink>,
+    /// The host's resident create door for `md.create` births; `None` on the CLI entry.
+    pub birth_door: Option<&'a dyn executor::BirthDoor>,
     /// The caller's ambient directory, workspace-relative — a bare
     /// `md.create` path births under it (md-create-ambient-paths, shape (c)).
     /// `None` on the CLI entry (the documented bare-door law: workspace-
@@ -442,8 +442,8 @@ pub fn rehearse(
                 // A rehearsal never commits, so no Delta can honestly exist.
                 delta: None,
                 fields: &EMPTY_FIELDS,
-                // A rehearsal births nothing, so no ring frame can exist.
-                birth_seq: None,
+                // A rehearsal births nothing, so no create door is needed.
+                birth_door: None,
                 // Resolution runs on the REHEARSAL's own seam below, not in
                 // the dispatcher (nothing applies here).
                 ambient: None,
@@ -545,7 +545,7 @@ fn dispatch(
                         actor: spec.actor,
                         delta: spec.delta,
                         fields: spec.fields,
-                        birth_seq: spec.birth_seq,
+                        birth_door: spec.birth_door,
                         ambient: spec.ambient,
                     },
                 )
@@ -581,7 +581,7 @@ fn dispatch(
                     delta: spec.delta,
                     observations: spec.observations,
                     fields: spec.fields,
-                    birth_seq: spec.birth_seq,
+                    birth_door: spec.birth_door,
                     ambient: spec.ambient,
                 },
                 live,
@@ -661,7 +661,7 @@ fn cascade(
                         // Cascade intents are set_field/append only (the
                         // adapter refuses the rest): no birth can arrive.
                         fields: &EMPTY_FIELDS,
-                        birth_seq: None,
+                        birth_door: None,
                         ambient: None,
                     },
                 )

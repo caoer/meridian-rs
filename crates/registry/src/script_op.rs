@@ -736,17 +736,15 @@ impl ScriptHost for LiveHost<'_> {
             Some(dry),
         );
         // Delta honesty (§ A.7 effects paragraph): a live run() mints per
-        // committed batch through the same sink seam as the § A.8 op arm.
+        // committed batch through the same sink seam as the § A.8 op arm, and
+        // routes `md.create` births through its `BirthDoor` (`DoorPlane` +
+        // `ResidentDoor`).
         let sink = crate::delta_sink::RingSink::new(self.registry, &self.ws_path);
-        // The create door's SeqSink for any `md.create` birth this run()
-        // commits — numbered frames, same as the § A.8 arm.
-        let birth_ring = self.registry.ring(&self.ws_path);
         // Observation unification (§ A.7 shares the § A.8 seam): the in-script
         // run() serves its bracket observations from the same resident memo.
         let cache = self.registry.domain_cache(&self.ws_path);
         let host = crate::run_op::RunHost {
             sink: &sink,
-            birth_seq: &*birth_ring,
             fields: &crate::run_op::EMPTY_RUN_FIELDS,
             // The script entry carries no ambient today (like `fields`): a
             // birth an in-script run() commits resolves bare-door until the

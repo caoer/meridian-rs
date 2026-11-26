@@ -274,10 +274,10 @@ impl WorkspaceRing {
     ///
     /// Every caller holds the workspace flock: [`DoorPlane`]'s `committed` —
     /// a wire door under its own, the run plane's sink (`delta_sink`) under
-    /// the executor's — and this ring's own `SeqSink::committed` (the run
-    /// plane's births, under the create door's). [`RootRing::allocate_seq`]'s
-    /// reserve remains the floor for any producer that unwinds between
-    /// allocation and this call: its number stays burned, never re-issued.
+    /// the executor's, and run-plane births (`BirthDoor` on `RingSink`) under
+    /// the create door's. [`RootRing::allocate_seq`]'s reserve remains the
+    /// floor for any producer that unwinds between allocation and this call:
+    /// its number stays burned, never re-issued.
     pub fn advance(&self, frame: DeltaFrame) {
         self.state().ring.advance(frame);
     }

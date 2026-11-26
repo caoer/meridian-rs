@@ -517,7 +517,7 @@ fn run_apply(
         // Realise addresses its own declared blocks; no birth fields ride
         // this lane and no ring is in reach.
         fields: &EMPTY_RUN_FIELDS,
-        birth_seq: None,
+        birth_door: None,
         ambient: None,
         // Realise drives the plane wherever it is hosted; it holds no resident
         // cache handle, so its observations keep the drawer instrument.
