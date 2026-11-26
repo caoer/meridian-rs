@@ -786,3 +786,91 @@ fn the_bytes_face_is_a_projection_of_the_oid_bearing_one() {
     let projected: Vec<Option<Vec<u8>>> = pairs.into_iter().map(|p| p.map(|b| b.bytes)).collect();
     assert_eq!(bytes, projected);
 }
+
+/// **Gate — no-op `filter=annex` bypass.** In a git-annex repository,
+/// `.git/info/attributes` sets `* filter=annex` at higher precedence than
+/// `.gitattributes`. For paths with `annex.largefiles=nothing` and non-pointer
+/// content, `git-annex` would reconcile the staged index under `keysdb.lck`
+/// only to return the input unchanged; `crates/git` disables `filter.annex.*`
+/// on that `hash-object` child so it never spawns `git-annex`. Paths without
+/// `annex.largefiles=nothing`, annex pointer payloads, and non-annex clean
+/// filters still run their filters.
+#[test]
+fn blob_oid_skips_annex_filter_when_largefiles_is_nothing_and_keeps_other_filters() {
+    let repo_dir = empty_repo();
+    let root = repo_dir.path();
+    fs::write(root.join(".git/info/attributes"), "* filter=annex\n").expect("info/attributes");
+    write(
+        root,
+        ".gitattributes",
+        "* annex.largefiles=largerthan=1048576\n*.md annex.largefiles=nothing\n",
+    );
+    git_in(root, &["config", "filter.annex.clean", "exit 42"]);
+    git_in(root, &["config", "filter.annex.process", "exit 42"]);
+    git_in(root, &["config", "filter.annex.required", "true"]);
+
+    write(root, "note.md", "# Title\n\nbody\n");
+    write(root, "big.bin", "binary payload\n");
+    write(
+        root,
+        "pointer.md",
+        "/annex/objects/SHA256E-s4--deadbeef.bin\n",
+    );
+
+    let repo = Repo::at(root);
+    let raw_note = git_in(root, &["hash-object", "--no-filters", "--", "note.md"]);
+
+    // Every hash-object entry point bypasses filter.annex for a normal .md.
+    assert_eq!(
+        repo.blob_oid(Path::new("note.md")).expect("blob_oid"),
+        raw_note
+    );
+    assert_eq!(
+        repo.write_blob(Path::new("note.md")).expect("write_blob"),
+        raw_note
+    );
+    assert_eq!(
+        repo.blob_oid_of_bytes(Path::new("note.md"), b"# Title\n\nbody\n", true)
+            .expect("blob_oid_of_bytes"),
+        raw_note
+    );
+    let batch = repo.blob_oids(&[Path::new("note.md")]);
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].as_ref().expect("blob_oids"), &raw_note);
+
+    // A path without `annex.largefiles=nothing` still invokes filter.annex.
+    assert!(
+        matches!(
+            repo.blob_oid(Path::new("big.bin")),
+            Err(GitFail::Refused { .. })
+        ),
+        "big.bin must still invoke filter.annex"
+    );
+    assert!(
+        matches!(
+            repo.blob_oid_of_bytes(Path::new("big.bin"), b"binary payload\n", false),
+            Err(GitFail::Refused { .. })
+        ),
+        "blob_oid_of_bytes on big.bin must still invoke filter.annex"
+    );
+
+    // An unlocked annex pointer payload still invokes filter.annex even on *.md.
+    assert!(
+        matches!(
+            repo.blob_oid(Path::new("pointer.md")),
+            Err(GitFail::Refused { .. })
+        ),
+        "pointer.md on disk must still invoke filter.annex"
+    );
+    assert!(
+        matches!(
+            repo.blob_oid_of_bytes(
+                Path::new("note.md"),
+                b"../../.git/annex/objects/ab/cd/SHA256E-s4--deadbeef.bin\n",
+                false
+            ),
+            Err(GitFail::Refused { .. })
+        ),
+        "relative annex pointer bytes must still invoke filter.annex"
+    );
+}

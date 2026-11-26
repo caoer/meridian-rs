@@ -228,3 +228,54 @@ fn a_target_changed_while_git_hashed_refuses_and_the_retry_lands() {
         Some(String::from_utf8_lossy(&landed.stdout).trim())
     );
 }
+
+/// On a git-annex root where `.git/info/attributes` sets `* filter=annex` and
+/// `.gitattributes` exempts `*.md annex.largefiles=nothing`, a pin never
+/// spawns `filter.annex` and still records git's exact blob oid.
+#[test]
+fn a_pin_skips_annex_filter_when_largefiles_is_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (name, body) in [
+        ("plan.md", PINNER),
+        ("guide.md", TARGET),
+        (".gitattributes", "*.md annex.largefiles=nothing\n"),
+    ] {
+        std::fs::write(dir.path().join(name), body).expect("fixture page");
+    }
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "pin@example.invalid"],
+        vec!["config", "user.name", "pin"],
+        vec!["config", "filter.annex.clean", "exit 42"],
+        vec!["config", "filter.annex.process", "exit 42"],
+        vec!["config", "filter.annex.required", "true"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(&args)
+            .status()
+            .expect("git runs in the test environment");
+        assert!(status.success(), "git {args:?}");
+    }
+    std::fs::write(dir.path().join(".git/info/attributes"), "* filter=annex\n")
+        .expect("info/attributes");
+    let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+
+    let ResponseBody::Splice { pin, .. } = splice(&root, None, &pin_args(), &[], None)
+        .expect("pin bypasses no-op filter.annex and lands")
+        .body
+    else {
+        panic!("splice body");
+    };
+    let landed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root.0)
+        .args(["hash-object", "--no-filters", "--", "guide.md"])
+        .output()
+        .expect("git hash-object");
+    assert_eq!(
+        pin.expect("a pin fact").blob.as_deref(),
+        Some(String::from_utf8_lossy(&landed.stdout).trim())
+    );
+}

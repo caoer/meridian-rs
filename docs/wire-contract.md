@@ -1514,6 +1514,20 @@ clean filter — a child process whose run time the engine does not own (a
 git-annex filter's grows with the staged change it finds in the index).
 `splice` holds no flock while it runs.
 
+- **No-op `filter=annex` bypass.** In a git-annex repository, `.git/info/attributes`
+  assigns `* filter=annex` at higher precedence than `.gitattributes`, so every
+  path — including markdown records exempt under `*.md annex.largefiles=nothing`
+  — would otherwise spawn `git-annex filter-process` and reconcile the staged
+  index under `.git/annex/keysdb.lck` only to pass the bytes through unchanged.
+  When `git check-attr` assigns both `filter=annex` and `annex.largefiles=nothing`
+  to the path and the bytes are not an annex pointer (`/annex/objects/...` or
+  `.../.git/annex/objects/...`), `crates/git` disables `filter.annex.*` on that
+  `hash-object` invocation (`-c filter.annex.process= -c filter.annex.clean=
+  -c filter.annex.smudge= -c filter.annex.required=false`). Every other
+  attribute and clean filter (`eol`, `core.autocrlf`, `ident`, custom
+  `filter.<name>`) still runs, so the oid remains identical to what `git add`
+  stores without ever spawning `git-annex`.
+
 - **Asked first.** Before the flock, `splice` rehearses the pin against the
   target bytes on disk and asks git for the oid of exactly the bytes the row
   will describe: the target as read, its anchor promotion included. `vibe`
