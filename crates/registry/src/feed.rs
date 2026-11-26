@@ -120,6 +120,12 @@ const RESCAN_RECORD_CAP: usize = 64;
 #[allow(clippy::duration_suboptimal_units)]
 const COOKIE_HOLDOFF: Duration = Duration::from_secs(60);
 
+/// How long [`WorkspaceFeed::start`] waits for the watcher to answer whether
+/// the root it just armed is still the root on disk. No answer loses the root:
+/// the feed then never vouches, and the registry arms a fresh one.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const ROOT_PROBE_AT_START: Duration = Duration::from_secs(5);
+
 /// Whether this platform's event stream hands events over in the order the
 /// kernel raised them (merkle-spec §6.4, the stream that can vouch). inotify
 /// does. `FSEvents` does not: `fseventsd` can deliver a sentinel's entry
@@ -230,14 +236,13 @@ pub(crate) struct WorkspaceFeed {
     /// deletion, rename, or late creation without holding a lock across IPC.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     cookie_arm: Mutex<CookieArm>,
-    /// The workspace root and its `(st_dev, st_ino)` when its recursive watch
-    /// was armed. A cookie re-arm first checks the root still carries it
-    /// ([`FeedSync::root_lost`]). An inode number freed by `rm -rf` can be
-    /// handed straight to the next `mkdir`, so the identity catches a root
-    /// renamed away (its old inode still alive); a removed root is lost by
-    /// its own `DELETE_SELF`.
+    /// The workspace root the recursive watch was armed on. A cookie re-arm
+    /// first asks the kernel whether the root watch still covers the inode
+    /// this path names (`InotifyRearmHandle::still_watched_timeout`): an
+    /// inode number freed by `rm -rf` can name the next `mkdir`, a watch
+    /// descriptor cannot ([`FeedSync::root_lost`]).
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    root: (PathBuf, (u64, u64)),
+    root: PathBuf,
     sync: Arc<FeedSync>,
     /// Serials this feed's cookie writes have minted ([`Self::cookie_barrier`]).
     /// The next write carries `fetch_add + 1`; sightings max into
@@ -309,12 +314,17 @@ struct FeedSync {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     cookie_watch_lost: AtomicBool,
     /// Flipped `true`, never back, when the workspace root itself is removed
-    /// or moved (its own `DELETE_SELF` / `MOVE_SELF`) or no longer carries
-    /// [`WorkspaceFeed::root_id`]: no watch covers the root that now stands
-    /// there, so every later barrier answers `Unproven` and never re-arms
-    /// [`COOKIE_DIR`] inside it (merkle-spec §6.4, the cookie).
+    /// or moved (its own `DELETE_SELF` / `MOVE_SELF`), or the kernel no
+    /// longer watches the inode [`WorkspaceFeed::root`] names: no watch
+    /// covers the root that now stands there, so every later barrier answers
+    /// `Unproven` and never re-arms [`COOKIE_DIR`] inside it, and the
+    /// registry retires the feed at the next borrow so a fresh one arms on
+    /// the new root (merkle-spec §6.4, the cookie).
     #[cfg(any(target_os = "linux", target_os = "android"))]
     root_lost: AtomicBool,
+    /// Test seam: drop the root's own events, as a queue overflow would.
+    #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+    drop_root_self: AtomicBool,
     /// Test seam: while armed, the watcher parks after every sighting
     /// ([`WorkspaceFeed::park_after_sightings`]).
     #[cfg(test)]
@@ -354,6 +364,10 @@ impl FeedSync {
                 EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
             )
         {
+            #[cfg(test)]
+            if self.drop_root_self.load(Ordering::Acquire) {
+                return s;
+            }
             self.lose_root(&mut s);
             return s;
         }
@@ -596,6 +610,8 @@ impl WorkspaceFeed {
             cookie_watch_lost: AtomicBool::new(false),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             root_lost: AtomicBool::new(false),
+            #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+            drop_root_self: AtomicBool::new(false),
             #[cfg(test)]
             sighting_gate: Mutex::new(None),
         });
@@ -613,6 +629,12 @@ impl WorkspaceFeed {
                 }
                 if let Ok(event) = event {
                     if event.need_rescan() {
+                        // A lost queue may have carried the cookie
+                        // directory's or the root's own removal: the next
+                        // barrier re-arms, and the re-arm asks the kernel
+                        // whether the root is still watched.
+                        #[cfg(any(target_os = "linux", target_os = "android"))]
+                        sink.cookie_watch_lost.store(true, Ordering::Release);
                         s.collapse(RescanCause::Overflow);
                         sink.cookie.notify_all();
                         return;
@@ -649,11 +671,6 @@ impl WorkspaceFeed {
         // `Unproven` and the caller keeps the extent-refresh floor.
         let cookie_dir = workspace.join(COOKIE_DIR);
         let _ = cookie_dir_ready(&cookie_dir);
-        // The root's identity is read BEFORE its watch arms: a root replaced
-        // in between leaves the watch on an inode this identity does not
-        // name, and the feed refuses to vouch rather than trust it.
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let root_id = dir_identity(workspace).map_err(notify::Error::io)?;
         watcher.watch(workspace, RecursiveMode::Recursive)?;
         #[cfg(any(target_os = "linux", target_os = "android"))]
         let (cookie_armed, rearm_handle) = {
@@ -663,7 +680,18 @@ impl WorkspaceFeed {
             } else {
                 None
             };
-            (armed, watcher.rearm_handle())
+            let handle = watcher.rearm_handle();
+            // The cookie watch was armed by path after the root's: a root
+            // replaced in between holds the cookie watch inside an
+            // unwatched root, and the steady-state barrier would trust it.
+            if !matches!(
+                handle.still_watched_timeout(workspace, ROOT_PROBE_AT_START),
+                Ok(true)
+            ) {
+                let mut s = sync.state.lock().unwrap_or_else(PoisonError::into_inner);
+                sync.lose_root(&mut s);
+            }
+            (armed, handle)
         };
         let feed = WorkspaceFeed {
             _watcher: watcher,
@@ -675,7 +703,7 @@ impl WorkspaceFeed {
                 rearming: false,
             }),
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            root: (workspace.to_path_buf(), root_id),
+            root: workspace.to_path_buf(),
             sync,
             cookie_serial: AtomicU64::new(0),
             cookie_token: token,
@@ -715,6 +743,21 @@ impl WorkspaceFeed {
         if let Some(link) = self.helper.get() {
             link.set_retry_after(wait);
         }
+    }
+
+    /// Whether this feed lost its root ([`FeedSync::root_lost`]): the
+    /// registry retires such a feed so the next borrow arms a fresh watch on
+    /// whatever root stands at the path now. Always `false` off inotify.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) fn root_lost(&self) -> bool {
+        self.sync.root_lost.load(Ordering::Acquire)
+    }
+
+    /// Off inotify a feed never loses its root this way.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[allow(clippy::unused_self)]
+    pub(crate) const fn root_lost(&self) -> bool {
+        false
     }
 
     /// Whether the helper is this feed's source: its sightings then prove
@@ -915,8 +958,8 @@ impl WorkspaceFeed {
     /// its budget, and a concurrent barrier racing recreation skips a duplicate
     /// re-arm once another barrier has already armed this inode.
     ///
-    /// A re-arm first proves the feed's root is still the directory its
-    /// watch armed ([`WorkspaceFeed::root`]). A replaced root is unwatched, and a cookie
+    /// A re-arm first asks the kernel whether the root watch still covers
+    /// [`WorkspaceFeed::root`]. A replaced root is unwatched, and a cookie
     /// armed inside it would vouch members no event reaches: the feed loses
     /// the root ([`FeedSync::root_lost`]) and the re-arm is refused.
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -943,20 +986,6 @@ impl WorkspaceFeed {
             if !lost && state.armed == Some(id) && (!created || state.arm_gen != gen_before) {
                 return Ok(());
             }
-            if self.sync.root_lost.load(Ordering::Acquire)
-                || dir_identity(&self.root.0).ok() != Some(self.root.1)
-            {
-                drop(state);
-                let mut s = self
-                    .sync
-                    .state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                self.sync.lose_root(&mut s);
-                return Err(notify::Error::io(std::io::Error::other(
-                    "workspace root replaced; its watch is gone",
-                )));
-            }
             state.rearming = true;
             let handle = state.handle.clone();
             let had_lost = self.sync.cookie_watch_lost.swap(false, Ordering::AcqRel);
@@ -968,15 +997,31 @@ impl WorkspaceFeed {
             had_lost,
             committed: false,
         };
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let res = if remaining.is_zero() {
-            Err(notify::Error::io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "barrier budget exhausted before cookie re-arm",
-            )))
-        } else {
-            handle.rearm_nonrecursive_timeout(dir, remaining)
+        let budget = || {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                Err(notify::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "barrier budget exhausted before cookie re-arm",
+                )))
+            } else {
+                Ok(remaining)
+            }
         };
+        let root_watched = !self.sync.root_lost.load(Ordering::Acquire)
+            && budget().and_then(|left| handle.still_watched_timeout(&self.root, left))?;
+        if !root_watched {
+            let mut s = self
+                .sync
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            self.sync.lose_root(&mut s);
+            return Err(notify::Error::io(std::io::Error::other(
+                "workspace root replaced; its watch is gone",
+            )));
+        }
+        let res = budget().and_then(|left| handle.rearm_nonrecursive_timeout(dir, left));
         if res.is_ok() {
             let mut state = self
                 .cookie_arm
@@ -1004,6 +1049,10 @@ impl WorkspaceFeed {
             .unwrap_or_else(PoisonError::into_inner);
         loop {
             if s.doubt.is_some() {
+                return CookieOutcome::Unproven;
+            }
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            if self.sync.root_lost.load(Ordering::Acquire) {
                 return CookieOutcome::Unproven;
             }
             if s.cookie_seen >= serial {
@@ -2685,80 +2734,70 @@ mod tests {
 
     /// A replaced workspace root is unwatched: no barrier on its feed may
     /// answer `Seen` again, before or after the collapse is taken. Covers
-    /// `rm -rf ws && mkdir ws` and `mv ws ws.old && mkdir ws` (the root's own
-    /// `DELETE_SELF` / `MOVE_SELF`), and a rename whose event never arrived
-    /// (the identity check on the cookie re-arm).
+    /// `rm -rf ws && mkdir ws` and `mv ws ws.old && mkdir ws`, each with the
+    /// root's own `DELETE_SELF` / `MOVE_SELF` delivered, and each with it
+    /// dropped as a queue overflow would (`drop_root_self`). A dropped event
+    /// leaves the kernel watch probe on the cookie re-arm to find the loss:
+    /// after `rm` the watcher holds no root watch, after `mv` it holds one on
+    /// the old inode, which the new root's path no longer names.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn inotify_replaced_root_never_vouches() {
-        fn wait_root_lost(feed: &WorkspaceFeed) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while !feed.sync.root_lost.load(Ordering::Acquire) {
-                assert!(
-                    Instant::now() < deadline,
-                    "root self event must lose the root"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
         let dir = tempfile::tempdir().unwrap();
-        for replace in ["rm", "mv", "silent"] {
-            let ws = dir.path().join(replace);
+        for (replace, dropped) in [("rm", false), ("mv", false), ("rm", true), ("mv", true)] {
+            let case = format!("{replace}{}", if dropped { "-dropped" } else { "" });
+            let ws = dir.path().join(&case);
             std::fs::create_dir_all(&ws).unwrap();
             let root = ws.canonicalize().unwrap();
             std::fs::write(root.join("old.md"), "# old\n").unwrap();
             let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("feed");
+            assert!(!feed.root_lost(), "{case}: a fresh feed holds its root");
             assert_eq!(
                 feed.cookie_barrier(&root, Duration::from_secs(5)),
                 CookieOutcome::Seen,
-                "{replace}: a live root vouches"
+                "{case}: a live root vouches"
             );
             let _ = feed.take();
+            feed.sync.drop_root_self.store(dropped, Ordering::Release);
             if replace == "rm" {
                 std::fs::remove_dir_all(&root).unwrap();
             } else {
-                std::fs::rename(&root, dir.path().join(format!("{replace}.old"))).unwrap();
+                std::fs::rename(&root, dir.path().join(format!("{case}.old"))).unwrap();
             }
             std::fs::create_dir(&root).unwrap();
             std::fs::write(root.join("new.md"), "# new\n").unwrap();
-            wait_root_lost(&feed);
-            if replace == "silent" {
-                // The root's MOVE_SELF as if never delivered: only the
-                // identity check on the cookie re-arm stands between the
-                // barrier and a re-armed cookie inside the new root.
-                feed.sync.root_lost.store(false, Ordering::Release);
-                assert_eq!(feed.take(), Pending::All(RescanCause::MissedEvent));
-            } else {
-                assert_eq!(
-                    feed.cookie_barrier(&root, Duration::from_secs(5)),
-                    CookieOutcome::Unproven,
-                    "{replace}: the open collapse answers"
-                );
-                assert_eq!(feed.take(), Pending::All(RescanCause::MissedEvent));
+            if !dropped {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !feed.root_lost() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "{case}: the root's own event loses the root"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
             let t0 = Instant::now();
             assert_eq!(
                 feed.cookie_barrier(&root, Duration::from_secs(5)),
                 CookieOutcome::Unproven,
-                "{replace}: a taken collapse must not re-arm the cookie in the new root"
+                "{case}: no cookie re-armed inside the new root"
             );
-            assert!(
-                t0.elapsed() < Duration::from_secs(1),
-                "{replace}: refused at once"
-            );
-            assert!(feed.sync.root_lost.load(Ordering::Acquire));
-            let _ = feed.take();
+            assert!(feed.root_lost(), "{case}: the root is lost");
+            assert_eq!(feed.take(), Pending::All(RescanCause::MissedEvent));
             assert_eq!(
                 feed.cookie_barrier(&root, Duration::from_secs(5)),
                 CookieOutcome::Unproven,
-                "{replace}: the loss is sticky"
+                "{case}: a taken collapse still never vouches"
             );
-            let want: &[RescanCause] = if replace == "silent" {
-                &[RescanCause::MissedEvent, RescanCause::MissedEvent]
-            } else {
-                &[RescanCause::MissedEvent]
-            };
-            assert_eq!(feed.rescan_record(), want, "{replace}");
+            assert!(
+                t0.elapsed() < Duration::from_secs(2),
+                "{case}: refused without spending the budget"
+            );
+            assert_eq!(
+                feed.rescan_record(),
+                vec![RescanCause::MissedEvent],
+                "{case}: one named loss"
+            );
         }
     }
 

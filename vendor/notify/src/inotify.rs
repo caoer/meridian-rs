@@ -64,6 +64,7 @@ enum EventLoopMsg {
         Sender<Result<()>>,
     ),
     RearmNonRecursive(PathBuf, Sender<Result<()>>),
+    StillWatched(PathBuf, Sender<Result<bool>>),
     RemoveWatch(PathBuf, Sender<Result<()>>),
     Shutdown,
     Configure(Config, BoundSender<Result<bool>>),
@@ -110,6 +111,43 @@ impl InotifyRearmHandle {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Error::io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "inotify event loop busy past re-arm timeout",
+            ))),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(Error::io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "inotify event loop stopped",
+                )))
+            }
+        }
+    }
+
+    /// Whether the watch this watcher holds for `path` is still the kernel's
+    /// watch on the inode `path` names now, waiting at most `timeout` for the
+    /// event loop to reply. `Ok(false)` when the watcher holds no watch for
+    /// `path`, `path` is gone, or `path` names another inode.
+    // meridian-rs patch: lets `WorkspaceFeed` tell a replaced workspace root
+    // from a live one by kernel watch identity, where an inode number freed
+    // by `rm -rf` may already name the next `mkdir`.
+    pub fn still_watched_timeout(
+        &self,
+        path: &Path,
+        timeout: std::time::Duration,
+    ) -> Result<bool> {
+        let (tx, rx) = unbounded();
+        self.channel
+            .send(EventLoopMsg::StillWatched(path.to_owned(), tx))
+            .map_err(|_| {
+                Error::io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "inotify event loop stopped",
+                ))
+            })?;
+        self.waker.wake().map_err(Error::io)?;
+        match rx.recv_timeout(timeout) {
+            Ok(res) => res,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Error::io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "inotify event loop busy past watch probe timeout",
             ))),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 Err(Error::io(std::io::Error::new(
@@ -261,6 +299,9 @@ impl EventLoop {
                 }
                 EventLoopMsg::RearmNonRecursive(path, tx) => {
                     let _ = tx.send(self.rearm_nonrecursive(path));
+                }
+                EventLoopMsg::StillWatched(path, tx) => {
+                    let _ = tx.send(self.still_watched(&path));
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
                     let _ = tx.send(self.remove_watch(path, false));
@@ -595,6 +636,36 @@ impl EventLoop {
     /// the same inode, keeping queued events intact), and remove the previous
     /// `wd` only if the returned `wd` differs and `self.paths` still maps it
     /// to `path`.
+    /// `inotify_add_watch` returns the existing `wd` exactly when `path`
+    /// still names the inode that `wd` watches on this instance; any other
+    /// inode gets a fresh `wd`, which is removed again at once. `MASK_ADD`
+    /// with the held mask leaves a live watch unchanged.
+    // meridian-rs patch: kernel watch identity for `still_watched_timeout`.
+    fn still_watched(&mut self, path: &Path) -> Result<bool> {
+        let Some((old_wd, mask, ..)) = self.watches.get(path).cloned() else {
+            return Ok(false);
+        };
+        let Some(ref mut inotify) = self.inotify else {
+            return Ok(false);
+        };
+        match inotify.watches().add(path, mask | WatchMask::MASK_ADD) {
+            Ok(new_wd) if new_wd == old_wd => Ok(true),
+            Ok(new_wd) => {
+                if !self.paths.contains_key(&new_wd) {
+                    let _ = inotify.watches().remove(new_wd);
+                }
+                Ok(false)
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    || e.raw_os_error() == Some(libc::ENOTDIR) =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(Error::io(e).add_path(path.to_owned())),
+        }
+    }
+
     // meridian-rs patch: idempotent single-round-trip re-arm for
     // `.meridian/cookies` so a stale `cookie_watch_lost` never drops an
     // in-flight barrier's queued sentinel event.
