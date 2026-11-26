@@ -170,7 +170,7 @@ pedantic = { level = "warn", priority = -1 }
 # plus one commit that pads a short table row with one item expanded into empty
 # cells as events (merkle-spec §6.4); fork-only, no upstream PR.
 pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2da10fed73f18e97910bb0f3477c50a92f50" }
-# notify 8.2.2 as published on crates.io (upstream 603674a8), vendored with three
+# notify 8.2.2 as published on crates.io (upstream 603674a8), vendored with five
 # changes to its inotify backend, each marked by a `meridian-rs patch` comment.
 # 1. It no longer arms IN_OPEN (`add_single_watch`). Upstream arms it on every
 #    directory watch and has no mask knob, so every file read and directory
@@ -188,6 +188,26 @@ pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2
 #    Upstream scans every watch per removed directory, so a repack pruning a
 #    few hundred object directories under 130k watches held the watcher thread
 #    for seconds, past the cookie bound (merkle-spec §6.4, watcher paragraph).
+# 4. Its recursive walk checks `DirEntry::file_type().is_dir()` (Linux d_type)
+#    instead of calling `DirEntry::metadata()` (`lstat`) on every file in the
+#    tree, passes the known `is_dir` flag into `add_single_watch` instead of
+#    issuing a second `metadata()` syscall per directory, and skips
+#    `PathNotFound`/`ENOTDIR` for vanished subdirectories (`depth > 0`) while
+#    still failing for the root (`add_watch`, `add_single_watch`, `filter_dir`).
+# 5. `Config::with_skip_dot_dirs(bool)` (off by default) prunes dot-prefixed
+#    subdirectories during the recursive `WalkDir` (`filter_entry`, depth > 0
+#    so a root under `~/.local/...` stays armed) and skips arming newly created
+#    or moved-in dot-prefixed directories (`add_watch_by_event`). Matches
+#    Meridian §12.1's structural dot-segment exclusion while `WorkspaceFeed`
+#    arms `.meridian/cookies` directly (and re-arms it idempotently on late
+#    creation, deletion, or rename via `InotifyRearmHandle::rearm_nonrecursive_timeout`
+#    — `inotify_add_watch` first so live-inode queued events stay intact,
+#    bounded by the barrier's deadline, never holding a mutex across IPC or
+#    panicking on a stopped event loop) and sets `with_follow_symlinks(false)`
+#    (flipped from notify's `true` default — links never enter the hash domain
+#    per `crates/fs/src/guard.rs`, and skipping them prevents symlink loops and
+#    duplicate-wd path map overwrites). Deterministic walk/re-arm test hooks
+#    live behind the opt-in `test-hooks` feature (dev-dependency only).
 # `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }
 # Tag `meridian-v1.20000.1-1`: duckdb-rs v1.20000.1 (upstream db918f65) plus one

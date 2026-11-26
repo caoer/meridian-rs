@@ -42,6 +42,9 @@ struct EventLoop {
     paths: HashMap<WatchDescriptor, PathBuf>,
     rename_event: Option<Event>,
     follow_links: bool,
+    // meridian-rs patch: skip dot-prefixed subdirectories during recursive
+    // watch setup and dynamic directory creation.
+    skip_dot_dirs: bool,
 }
 
 /// Watcher implementation based on inotify
@@ -53,9 +56,75 @@ pub struct INotifyWatcher {
 
 enum EventLoopMsg {
     AddWatch(PathBuf, RecursiveMode, Sender<Result<()>>),
+    #[cfg(feature = "test-hooks")]
+    AddWatchWithHook(
+        PathBuf,
+        RecursiveMode,
+        Box<dyn FnMut(&Path, usize) + Send>,
+        Sender<Result<()>>,
+    ),
+    RearmNonRecursive(PathBuf, Sender<Result<()>>),
     RemoveWatch(PathBuf, Sender<Result<()>>),
     Shutdown,
     Configure(Config, BoundSender<Result<bool>>),
+}
+
+/// Clonable handle for bounded, non-panicking non-recursive re-arming on an
+/// [`INotifyWatcher`]'s event loop.
+// meridian-rs patch: lets `WorkspaceFeed::barrier` re-arm `.meridian/cookies`
+// within its own deadline without holding a mutex across unbounded IPC or
+// panicking if the event loop thread has exited.
+#[derive(Clone, Debug)]
+pub struct InotifyRearmHandle {
+    channel: Sender<EventLoopMsg>,
+    waker: Arc<mio::Waker>,
+}
+
+impl InotifyRearmHandle {
+    /// Atomically drop any existing watch for `path` and arm a fresh
+    /// non-recursive watch on it, waiting at most `timeout` for the event loop
+    /// to reply.
+    pub fn rearm_nonrecursive_timeout(
+        &self,
+        path: &Path,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        let pb = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            let p = env::current_dir().map_err(Error::io)?;
+            p.join(path)
+        };
+        let (tx, rx) = unbounded();
+        self.channel
+            .send(EventLoopMsg::RearmNonRecursive(pb, tx))
+            .map_err(|_| {
+                Error::io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "inotify event loop stopped",
+                ))
+            })?;
+        self.waker.wake().map_err(Error::io)?;
+        match rx.recv_timeout(timeout) {
+            Ok(res) => res,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(Error::io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "inotify event loop busy past re-arm timeout",
+            ))),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(Error::io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "inotify event loop stopped",
+                )))
+            }
+        }
+    }
+}
+
+// meridian-rs patch: dot-prefixed entry name check (matches fs::domain::dot_segment).
+#[inline]
+fn is_dot_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b".")
 }
 
 #[inline]
@@ -64,8 +133,14 @@ fn add_watch_by_event(
     event: &inotify_sys::Event<&OsStr>,
     watches: &BTreeMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
     add_watches: &mut Vec<PathBuf>,
+    skip_dot_dirs: bool,
 ) {
     if event.mask.contains(EventMask::ISDIR) {
+        // meridian-rs patch: do not arm newly created or moved-in dot-prefixed
+        // directories when `skip_dot_dirs` is enabled.
+        if skip_dot_dirs && path.file_name().is_some_and(is_dot_name) {
+            return;
+        }
         if let Some(parent_path) = path.parent() {
             if let Some(&(_, _, is_recursive, _)) = watches.get(parent_path) {
                 if is_recursive {
@@ -92,6 +167,7 @@ impl EventLoop {
         inotify: Inotify,
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        skip_dot_dirs: bool,
     ) -> Result<Self> {
         let (event_loop_tx, event_loop_rx) = unbounded::<EventLoopMsg>();
         let poll = mio::Poll::new()?;
@@ -115,6 +191,7 @@ impl EventLoop {
             paths: HashMap::new(),
             rename_event: None,
             follow_links,
+            skip_dot_dirs,
         };
         Ok(event_loop)
     }
@@ -171,6 +248,19 @@ impl EventLoop {
             match msg {
                 EventLoopMsg::AddWatch(path, recursive_mode, tx) => {
                     let _ = tx.send(self.add_watch(path, recursive_mode.is_recursive(), true));
+                }
+                #[cfg(feature = "test-hooks")]
+                EventLoopMsg::AddWatchWithHook(path, recursive_mode, mut hook, tx) => {
+                    let res = self.add_watch_entries(
+                        path,
+                        recursive_mode.is_recursive(),
+                        true,
+                        |p, d| hook(p, d),
+                    );
+                    let _ = tx.send(res);
+                }
+                EventLoopMsg::RearmNonRecursive(path, tx) => {
+                    let _ = tx.send(self.rearm_nonrecursive(path));
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
                     let _ = tx.send(self.remove_watch(path, false));
@@ -272,7 +362,13 @@ impl EventLoop {
                                     .add_path(path.clone()),
                                 );
                             }
-                            add_watch_by_event(&path, &event, &self.watches, &mut add_watches);
+                            add_watch_by_event(
+                                &path,
+                                &event,
+                                &self.watches,
+                                &mut add_watches,
+                                self.skip_dot_dirs,
+                            );
                         }
                         if event.mask.contains(EventMask::MOVE_SELF) {
                             evs.push(
@@ -296,7 +392,13 @@ impl EventLoop {
                                 ))
                                 .add_path(path.clone()),
                             );
-                            add_watch_by_event(&path, &event, &self.watches, &mut add_watches);
+                            add_watch_by_event(
+                                &path,
+                                &event,
+                                &self.watches,
+                                &mut add_watches,
+                                self.skip_dot_dirs,
+                            );
                         }
                         if event.mask.contains(EventMask::DELETE) {
                             evs.push(
@@ -419,22 +521,122 @@ impl EventLoop {
         }
     }
 
-    fn add_watch(&mut self, path: PathBuf, is_recursive: bool, mut watch_self: bool) -> Result<()> {
+    fn add_watch(&mut self, path: PathBuf, is_recursive: bool, watch_self: bool) -> Result<()> {
+        self.add_watch_entries(path, is_recursive, watch_self, |_, _| {})
+    }
+
+    fn add_watch_entries<F>(
+        &mut self,
+        path: PathBuf,
+        is_recursive: bool,
+        mut watch_self: bool,
+        mut before_add: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Path, usize),
+    {
+        let root_is_dir = metadata(&path).map_err(Error::io_watch)?.is_dir();
         // If the watch is not recursive, or if we determine (by stat'ing the path to get its
         // metadata) that the watched path is not a directory, add a single path watch.
-        if !is_recursive || !metadata(&path).map_err(Error::io_watch)?.is_dir() {
-            return self.add_single_watch(path, false, true);
+        if !is_recursive || !root_is_dir {
+            before_add(&path, 0);
+            return self.add_single_watch(path, false, true, root_is_dir);
         }
 
+        // meridian-rs patch:
+        // - consult `DirEntry::file_type().is_dir()` (Linux d_type) instead of
+        //   calling `DirEntry::metadata()` (`lstat`) on every file in the tree,
+        //   and pass `is_dir = true` to `add_single_watch` so it skips a second
+        //   `metadata(&path)` syscall per directory;
+        // - when `skip_dot_dirs` is set, prune dot-prefixed subdirectories
+        //   (depth > 0 so a root under `~/.local/...` stays armed) without
+        //   descending into them;
+        // - skip `PathNotFound` (and `ENOTDIR`) for subdirectories (`depth > 0`)
+        //   that vanished between `readdir` buffering `d_type` and
+        //   `inotify_add_watch`, while still failing for the root (`depth == 0`).
+        let skip_dot_dirs = self.skip_dot_dirs;
         for entry in WalkDir::new(path)
             .follow_links(self.follow_links)
             .into_iter()
+            .filter_entry(move |e| {
+                !skip_dot_dirs
+                    || e.depth() == 0
+                    || !(e.file_type().is_dir() && is_dot_name(e.file_name()))
+            })
             .filter_map(filter_dir)
         {
-            self.add_single_watch(entry.into_path(), is_recursive, watch_self)?;
+            let depth = entry.depth();
+            let entry_path = entry.into_path();
+            before_add(&entry_path, depth);
+            match self.add_single_watch(entry_path, is_recursive, watch_self, true) {
+                Ok(()) => {}
+                Err(e)
+                    if depth > 0
+                        && (matches!(e.kind, ErrorKind::PathNotFound)
+                            || matches!(
+                                &e.kind,
+                                ErrorKind::Io(io_err)
+                                    if io_err.raw_os_error() == Some(libc::ENOTDIR)
+                            )) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
             watch_self = false;
         }
 
+        Ok(())
+    }
+
+    /// Idempotently ensure `path` has a live non-recursive watch without
+    /// dropping queued events when `path` still refers to the same inode:
+    /// call `inotify_add_watch` first (Linux returns the existing `wd` for
+    /// the same inode, keeping queued events intact), and remove the previous
+    /// `wd` only if the returned `wd` differs and `self.paths` still maps it
+    /// to `path`.
+    // meridian-rs patch: idempotent single-round-trip re-arm for
+    // `.meridian/cookies` so a stale `cookie_watch_lost` never drops an
+    // in-flight barrier's queued sentinel event.
+    fn rearm_nonrecursive(&mut self, path: PathBuf) -> Result<()> {
+        let is_dir = metadata(&path).map_err(Error::io_watch)?.is_dir();
+        let old_wd = self.watches.get(&path).map(|(w, ..)| w.clone());
+        let watchmask = WatchMask::ATTRIB
+            | WatchMask::CREATE
+            | WatchMask::DELETE
+            | WatchMask::CLOSE_WRITE
+            | WatchMask::MODIFY
+            | WatchMask::MOVED_FROM
+            | WatchMask::MOVED_TO
+            | WatchMask::DELETE_SELF
+            | WatchMask::MOVE_SELF;
+
+        if let Some(ref mut inotify) = self.inotify {
+            log::trace!("re-arming non-recursive inotify watch: {}", path.display());
+            match inotify.watches().add(&path, watchmask) {
+                Err(e) => {
+                    return Err(if e.raw_os_error() == Some(libc::ENOSPC) {
+                        Error::new(ErrorKind::MaxFilesWatch)
+                    } else if e.kind() == std::io::ErrorKind::NotFound {
+                        Error::new(ErrorKind::PathNotFound)
+                    } else {
+                        Error::io(e)
+                    }
+                    .add_path(path));
+                }
+                Ok(new_wd) => {
+                    if let Some(old_wd) = old_wd {
+                        if old_wd != new_wd && self.paths.get(&old_wd) == Some(&path) {
+                            Self::remove_single_descriptor(&mut inotify.watches(), old_wd.clone());
+                            self.paths.remove(&old_wd);
+                        }
+                    }
+                    self.watches
+                        .insert(path.clone(), (new_wd.clone(), watchmask, false, is_dir));
+                    self.paths.insert(new_wd, path);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -443,6 +645,7 @@ impl EventLoop {
         path: PathBuf,
         is_recursive: bool,
         watch_self: bool,
+        is_dir: bool,
     ) -> Result<()> {
         // meridian-rs patch: no WatchMask::OPEN, so a read queues no event
         // (workspace Cargo.toml, [patch.crates-io]).
@@ -481,7 +684,8 @@ impl EventLoop {
                 }
                 Ok(w) => {
                     watchmask.remove(WatchMask::MASK_ADD);
-                    let is_dir = metadata(&path).map_err(Error::io)?.is_dir();
+                    // meridian-rs patch: reuse caller's `is_dir` instead of a
+                    // second `metadata(&path)` syscall per directory.
                     self.watches
                         .insert(path.clone(), (w.clone(), watchmask, is_recursive, is_dir));
                     self.paths.insert(w, path);
@@ -582,24 +786,62 @@ impl EventLoop {
 }
 
 /// return `DirEntry` when it is a directory
+// meridian-rs patch: check `DirEntry::file_type().is_dir()` (d_type) instead
+// of `DirEntry::metadata()` (which forces an `lstat` on every file).
 fn filter_dir(e: walkdir::Result<walkdir::DirEntry>) -> Option<walkdir::DirEntry> {
     if let Ok(e) = e {
-        if let Ok(metadata) = e.metadata() {
-            if metadata.is_dir() {
-                return Some(e);
-            }
+        if e.file_type().is_dir() {
+            return Some(e);
         }
     }
     None
 }
 
 impl INotifyWatcher {
+    /// Return a clonable handle for bounded, non-panicking non-recursive watch
+    /// re-arming on this watcher's event loop.
+    // meridian-rs patch: used by `WorkspaceFeed::barrier` to re-arm
+    // `.meridian/cookies` within its own timeout budget.
+    pub fn rearm_handle(&self) -> InotifyRearmHandle {
+        InotifyRearmHandle {
+            channel: self.channel.clone(),
+            waker: Arc::clone(&self.waker),
+        }
+    }
+
+    /// Test seam: run [`Watcher::watch`] with a callback invoked immediately
+    /// before each `add_single_watch` call, receiving `(entry_path, depth)`.
+    // meridian-rs patch: deterministic test hook for vanished-subdir /
+    // vanished-root walk handling and bounded-IPC tests (feature-gated off in
+    // release builds).
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn watch_with_before_add_hook(
+        &mut self,
+        path: &Path,
+        recursive_mode: RecursiveMode,
+        hook: Box<dyn FnMut(&Path, usize) + Send>,
+    ) -> Result<()> {
+        let pb = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            let p = env::current_dir().map_err(Error::io)?;
+            p.join(path)
+        };
+        let (tx, rx) = unbounded();
+        let msg = EventLoopMsg::AddWatchWithHook(pb, recursive_mode, hook, tx);
+        self.channel.send(msg).unwrap();
+        self.waker.wake().unwrap();
+        rx.recv().unwrap()
+    }
+
     fn from_event_handler(
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        skip_dot_dirs: bool,
     ) -> Result<Self> {
         let inotify = Inotify::init()?;
-        let event_loop = EventLoop::new(inotify, event_handler, follow_links)?;
+        let event_loop = EventLoop::new(inotify, event_handler, follow_links, skip_dot_dirs)?;
         let channel = event_loop.event_loop_tx.clone();
         let waker = event_loop.event_loop_waker.clone();
         event_loop.run();
@@ -642,7 +884,11 @@ impl INotifyWatcher {
 impl Watcher for INotifyWatcher {
     /// Create a new watcher.
     fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
-        Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
+        Self::from_event_handler(
+            Box::new(event_handler),
+            config.follow_symlinks(),
+            config.skip_dot_dirs(),
+        )
     }
 
     fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {
