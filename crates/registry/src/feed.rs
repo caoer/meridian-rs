@@ -2585,7 +2585,13 @@ mod tests {
             feed.cookie_barrier(&root, Duration::from_secs(5)),
             CookieOutcome::Seen
         );
-        std::fs::remove_dir_all(&cookie_dir).unwrap();
+        std::fs::rename(&cookie_dir, root.join(".meridian/cookies.moved")).unwrap();
+        let lost_deadline = Instant::now() + Duration::from_secs(2);
+        while !feed.sync.cookie_watch_lost.load(Ordering::Acquire) {
+            assert!(Instant::now() < lost_deadline, "MOVE_SELF must set lost");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        feed.sync.cookie_watch_lost.store(false, Ordering::Release);
         let gen_a = feed.cookie_arm.lock().unwrap().arm_gen;
         let created_a = cookie_dir_ready(&cookie_dir).unwrap();
         assert!(created_a);
