@@ -552,7 +552,17 @@ engine-side.
   the rescan ladder below) is a missed-event: `Seen` is then illegal, and the
   barrier answers unproven at once, without spending the cookie timeout. An
   enumerated directory create opens no doubt: its children are hints in the
-  dirty set, and the watch covered the directory before the enumeration ran. The dot-prefixed cookie path is
+  dirty set, and the watch covered the directory before the enumeration ran.
+  On inotify the recursive walk prunes dot-prefixed directories, so
+  `.meridian/cookies/` carries its own direct watch, re-armed by the next
+  barrier when that directory is removed, renamed or recreated. The re-arm
+  covers the cookie directory only, never the root: a workspace root that is
+  itself removed or renamed (its own delete-self or move-self event), or whose
+  device and inode no longer match the ones the feed armed, is a root no watch
+  covers. The feed collapses as a missed-event once, and every later barrier
+  for the feed's life answers unproven at once, re-arming nothing. A cookie
+  armed inside the replaced root would return through the stream and vouch a
+  root whose member events nothing captures. The dot-prefixed cookie path is
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it
   can never move the root or break a held token; a cookie inside the hash
   domain is refused.
