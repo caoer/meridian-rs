@@ -42,6 +42,9 @@ struct EventLoop {
     paths: HashMap<WatchDescriptor, PathBuf>,
     rename_event: Option<Event>,
     follow_links: bool,
+    // meridian-rs patch: skip dot-prefixed subdirectories during recursive
+    // watch setup and dynamic directory creation.
+    skip_dot_dirs: bool,
 }
 
 /// Watcher implementation based on inotify
@@ -58,14 +61,26 @@ enum EventLoopMsg {
     Configure(Config, BoundSender<Result<bool>>),
 }
 
+// meridian-rs patch: dot-prefixed entry name check (matches fs::domain::dot_segment).
+#[inline]
+fn is_dot_name(name: &OsStr) -> bool {
+    name.as_encoded_bytes().starts_with(b".")
+}
+
 #[inline]
 fn add_watch_by_event(
     path: &PathBuf,
     event: &inotify_sys::Event<&OsStr>,
     watches: &BTreeMap<PathBuf, (WatchDescriptor, WatchMask, bool, bool)>,
     add_watches: &mut Vec<PathBuf>,
+    skip_dot_dirs: bool,
 ) {
     if event.mask.contains(EventMask::ISDIR) {
+        // meridian-rs patch: do not arm newly created or moved-in dot-prefixed
+        // directories when `skip_dot_dirs` is enabled.
+        if skip_dot_dirs && path.file_name().is_some_and(is_dot_name) {
+            return;
+        }
         if let Some(parent_path) = path.parent() {
             if let Some(&(_, _, is_recursive, _)) = watches.get(parent_path) {
                 if is_recursive {
@@ -92,6 +107,7 @@ impl EventLoop {
         inotify: Inotify,
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        skip_dot_dirs: bool,
     ) -> Result<Self> {
         let (event_loop_tx, event_loop_rx) = unbounded::<EventLoopMsg>();
         let poll = mio::Poll::new()?;
@@ -115,6 +131,7 @@ impl EventLoop {
             paths: HashMap::new(),
             rename_event: None,
             follow_links,
+            skip_dot_dirs,
         };
         Ok(event_loop)
     }
@@ -272,7 +289,13 @@ impl EventLoop {
                                     .add_path(path.clone()),
                                 );
                             }
-                            add_watch_by_event(&path, &event, &self.watches, &mut add_watches);
+                            add_watch_by_event(
+                                &path,
+                                &event,
+                                &self.watches,
+                                &mut add_watches,
+                                self.skip_dot_dirs,
+                            );
                         }
                         if event.mask.contains(EventMask::MOVE_SELF) {
                             evs.push(
@@ -296,7 +319,13 @@ impl EventLoop {
                                 ))
                                 .add_path(path.clone()),
                             );
-                            add_watch_by_event(&path, &event, &self.watches, &mut add_watches);
+                            add_watch_by_event(
+                                &path,
+                                &event,
+                                &self.watches,
+                                &mut add_watches,
+                                self.skip_dot_dirs,
+                            );
                         }
                         if event.mask.contains(EventMask::DELETE) {
                             evs.push(
@@ -420,18 +449,33 @@ impl EventLoop {
     }
 
     fn add_watch(&mut self, path: PathBuf, is_recursive: bool, mut watch_self: bool) -> Result<()> {
+        let root_is_dir = metadata(&path).map_err(Error::io_watch)?.is_dir();
         // If the watch is not recursive, or if we determine (by stat'ing the path to get its
         // metadata) that the watched path is not a directory, add a single path watch.
-        if !is_recursive || !metadata(&path).map_err(Error::io_watch)?.is_dir() {
-            return self.add_single_watch(path, false, true);
+        if !is_recursive || !root_is_dir {
+            return self.add_single_watch(path, false, true, root_is_dir);
         }
 
+        // meridian-rs patch:
+        // - consult `DirEntry::file_type().is_dir()` (Linux d_type) instead of
+        //   calling `DirEntry::metadata()` (`lstat`) on every file in the tree,
+        //   and pass `is_dir = true` to `add_single_watch` so it skips a second
+        //   `metadata(&path)` syscall per directory;
+        // - when `skip_dot_dirs` is set, prune dot-prefixed subdirectories
+        //   (depth > 0 so a root under `~/.local/...` stays armed) without
+        //   descending into them.
+        let skip_dot_dirs = self.skip_dot_dirs;
         for entry in WalkDir::new(path)
             .follow_links(self.follow_links)
             .into_iter()
+            .filter_entry(move |e| {
+                !skip_dot_dirs
+                    || e.depth() == 0
+                    || !(e.file_type().is_dir() && is_dot_name(e.file_name()))
+            })
             .filter_map(filter_dir)
         {
-            self.add_single_watch(entry.into_path(), is_recursive, watch_self)?;
+            self.add_single_watch(entry.into_path(), is_recursive, watch_self, true)?;
             watch_self = false;
         }
 
@@ -443,6 +487,7 @@ impl EventLoop {
         path: PathBuf,
         is_recursive: bool,
         watch_self: bool,
+        is_dir: bool,
     ) -> Result<()> {
         // meridian-rs patch: no WatchMask::OPEN, so a read queues no event
         // (workspace Cargo.toml, [patch.crates-io]).
@@ -481,7 +526,8 @@ impl EventLoop {
                 }
                 Ok(w) => {
                     watchmask.remove(WatchMask::MASK_ADD);
-                    let is_dir = metadata(&path).map_err(Error::io)?.is_dir();
+                    // meridian-rs patch: reuse caller's `is_dir` instead of a
+                    // second `metadata(&path)` syscall per directory.
                     self.watches
                         .insert(path.clone(), (w.clone(), watchmask, is_recursive, is_dir));
                     self.paths.insert(w, path);
@@ -582,12 +628,12 @@ impl EventLoop {
 }
 
 /// return `DirEntry` when it is a directory
+// meridian-rs patch: check `DirEntry::file_type().is_dir()` (d_type) instead
+// of `DirEntry::metadata()` (which forces an `lstat` on every file).
 fn filter_dir(e: walkdir::Result<walkdir::DirEntry>) -> Option<walkdir::DirEntry> {
     if let Ok(e) = e {
-        if let Ok(metadata) = e.metadata() {
-            if metadata.is_dir() {
-                return Some(e);
-            }
+        if e.file_type().is_dir() {
+            return Some(e);
         }
     }
     None
@@ -597,9 +643,10 @@ impl INotifyWatcher {
     fn from_event_handler(
         event_handler: Box<dyn EventHandler>,
         follow_links: bool,
+        skip_dot_dirs: bool,
     ) -> Result<Self> {
         let inotify = Inotify::init()?;
-        let event_loop = EventLoop::new(inotify, event_handler, follow_links)?;
+        let event_loop = EventLoop::new(inotify, event_handler, follow_links, skip_dot_dirs)?;
         let channel = event_loop.event_loop_tx.clone();
         let waker = event_loop.event_loop_waker.clone();
         event_loop.run();
@@ -642,7 +689,11 @@ impl INotifyWatcher {
 impl Watcher for INotifyWatcher {
     /// Create a new watcher.
     fn new<F: EventHandler>(event_handler: F, config: Config) -> Result<Self> {
-        Self::from_event_handler(Box::new(event_handler), config.follow_symlinks())
+        Self::from_event_handler(
+            Box::new(event_handler),
+            config.follow_symlinks(),
+            config.skip_dot_dirs(),
+        )
     }
 
     fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Result<()> {

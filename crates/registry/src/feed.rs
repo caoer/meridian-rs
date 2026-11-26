@@ -501,8 +501,8 @@ impl WorkspaceFeed {
         let root = workspace.to_path_buf();
         let token = cookie_token();
         let sentinel_prefix = format!("{token}-");
-        let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let mut watcher = notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
                 let mut s = sink.state.lock().unwrap_or_else(PoisonError::into_inner);
                 // One source at a time: while the helper feeds, this stream
                 // tells nothing, its errors and rescans included.
@@ -532,18 +532,26 @@ impl WorkspaceFeed {
                     s.collapse(RescanCause::MissedEvent);
                     sink.cookie.notify_all();
                 }
-            })?;
-        // The sentinels' directory must exist BEFORE the recursive watch is
-        // armed, so the initial walk covers it. notify's inotify backend
-        // arms a NEW directory only after delivering its create event —
-        // anything written into it before that arm is invisible forever
-        // (notify-8.2.0 inotify.rs, `add_watch_by_event` collects, the loop
-        // arms after the batch). A sentinel directory first created by a
-        // barrier could lose that race and leave that barrier's sentinel
-        // unseen. Best-effort: on failure (read-only root) barriers answer
+            },
+            notify::Config::default()
+                .with_follow_symlinks(false)
+                .with_skip_dot_dirs(true),
+        )?;
+        // The sentinels' directory must exist BEFORE the watch is armed, so
+        // the initial setup covers it. notify's inotify backend prunes
+        // dot-prefixed subdirectories (matching §12.1's structural dot-segment
+        // floor so `.git/`, `.obsidian/`, etc. never burn watch descriptors or
+        // lstat syscalls), so on Linux/Android `.meridian/cookies` is armed
+        // directly with a single non-recursive watch. Best-effort on creation:
+        // on a read-only root where `cookie_dir_ready` fails, barriers answer
         // `Unproven` and the caller keeps the extent-refresh floor.
-        let _ = cookie_dir_ready(&workspace.join(COOKIE_DIR));
+        let cookie_dir = workspace.join(COOKIE_DIR);
+        let _ = cookie_dir_ready(&cookie_dir);
         watcher.watch(workspace, RecursiveMode::Recursive)?;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if cookie_dir.is_dir() {
+            watcher.watch(&cookie_dir, RecursiveMode::NonRecursive)?;
+        }
         let feed = WorkspaceFeed {
             _watcher: watcher,
             sync,
@@ -1961,6 +1969,198 @@ mod tests {
         let filler = root.join(format!("fill/{}/{}/after", SPREAD - 1, FILL - 1));
         std::fs::write(&filler, "").unwrap();
         assert!(sees(&rx, &filler), "the filler stays armed");
+    }
+
+    /// `vendor/notify` with `with_skip_dot_dirs(true)` and
+    /// `with_follow_symlinks(false)` prunes dot-prefixed subtrees (initial and
+    /// dynamically created) without losing any event `WorkspaceFeed` keeps:
+    /// `.meridian/cookies` barriers still sight, workspaces nested under a
+    /// dot-prefixed ancestor (e.g. `~/.local/share/...`) still arm, regular
+    /// `.md`/`.base` events and newly created non-dot directories still arrive,
+    /// and a dot-file at the workspace root still reaches the root watch
+    /// (while §12.1's `member_candidate` filters it in `FeedState::admit`).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_skip_dot_dirs_prunes_dot_subtrees_for_feed() {
+        let dir = tempfile::tempdir().unwrap();
+        // Workspace nested inside a dot-prefixed ancestor (like ~/.local/share/...).
+        let ws = dir.path().join(".local").join("ws");
+        std::fs::create_dir_all(ws.join("visible/nested")).unwrap();
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        for i in 0..64 {
+            std::fs::create_dir_all(ws.join(format!(".git/objects/{i:02x}/nested"))).unwrap();
+        }
+        for i in 0..16 {
+            std::fs::create_dir_all(ws.join(format!("sub/.hidden/{i:02x}"))).unwrap();
+        }
+        std::fs::write(ws.join("visible/nested/a.md"), "# a\n").unwrap();
+        std::os::unix::fs::symlink(ws.join(".git"), ws.join("visible/link_to_git")).unwrap();
+        let root = ws.canonicalize().unwrap();
+
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("feed");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen,
+            ".meridian/cookies must stay armed when dot-prefixed subtrees are pruned"
+        );
+        let _ = feed.take();
+
+        let base_before = feed.base_epoch();
+        std::fs::write(root.join("visible/nested/a.md"), "# a2\n").unwrap();
+        std::fs::create_dir_all(root.join("visible/newdir")).unwrap();
+        std::fs::write(root.join("visible/newdir/b.md"), "# b\n").unwrap();
+        std::fs::write(root.join("visible/view.base"), "views: []\n").unwrap();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen
+        );
+        match feed.take() {
+            Pending::Paths(paths) => {
+                assert!(
+                    paths.contains(&PathBuf::from("visible/nested/a.md")),
+                    "existing non-dot dir event lost: {paths:?}"
+                );
+                assert!(
+                    paths.contains(&PathBuf::from("visible/newdir/b.md")),
+                    "new non-dot dir event lost: {paths:?}"
+                );
+            }
+            other => panic!("expected Pending::Paths for regular writes, got {other:?}"),
+        }
+        assert!(
+            feed.base_epoch() > base_before,
+            ".base event must still advance base_epoch"
+        );
+        assert_eq!(feed.rescan_record(), Vec::<RescanCause>::new());
+
+        // Churn inside pre-existing and newly created dot-prefixed subtrees,
+        // plus a root dot-file (§12.1 ignores dot-files at the root too).
+        let events_before = feed.stats().events;
+        let rescans_before = feed.stats().rescans;
+        std::fs::write(root.join(".git/objects/00/nested/pack"), "p").unwrap();
+        std::fs::create_dir_all(root.join(".git/objects/newdir")).unwrap();
+        std::fs::write(root.join(".git/objects/newdir/file"), "f").unwrap();
+        std::fs::write(root.join("sub/.hidden/00/x.md"), "# x\n").unwrap();
+        std::fs::create_dir_all(root.join("sub/.hidden_new/deep")).unwrap();
+        std::fs::write(root.join("sub/.hidden_new/deep/y.md"), "# y\n").unwrap();
+        std::fs::write(root.join(".root-dot.md"), "# dot\n").unwrap();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen
+        );
+        assert_eq!(feed.take(), Pending::Clean);
+        assert_eq!(feed.stats().events, events_before);
+        assert_eq!(feed.stats().rescans, rescans_before);
+        assert!(!member_candidate(Path::new(".root-dot.md")));
+    }
+
+    /// Direct watcher proof for `with_skip_dot_dirs(true)`: dot-dirs
+    /// (pre-existing, newly created, and inside a moved-in subtree) are
+    /// genuinely unwatched and emit zero raw events, while root dot-files,
+    /// non-dot moved-in subdirs, and `.meridian/cookies` DO emit raw events.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_skip_dot_dirs_raw_watcher_keeps_root_and_cookie_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join(".local").join("ws");
+        std::fs::create_dir_all(ws.join("sub/.hidden/0f")).unwrap();
+        std::fs::create_dir_all(ws.join(".git/objects/00/nested")).unwrap();
+        std::fs::create_dir_all(ws.join(".git/objects/3f/nested")).unwrap();
+        let root = ws.canonicalize().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                let _ = tx.send(event);
+            },
+            notify::Config::default()
+                .with_follow_symlinks(false)
+                .with_skip_dot_dirs(true),
+        )
+        .expect("watcher");
+        let cookie_dir = root.join(COOKIE_DIR);
+        let _ = cookie_dir_ready(&cookie_dir);
+        watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+        watcher
+            .watch(&cookie_dir, RecursiveMode::NonRecursive)
+            .unwrap();
+
+        // Move in a directory containing both a normal file and a `.git` tree,
+        // and wait for its `MOVED_TO` event so `rewatch` has armed `moved/docs`
+        // before we write into it.
+        let staging = dir.path().join("staged_tree");
+        std::fs::create_dir_all(staging.join(".git/objects/00")).unwrap();
+        std::fs::create_dir_all(staging.join("docs")).unwrap();
+        let moved = root.join("moved_tree");
+        std::fs::rename(&staging, &moved).unwrap();
+        let move_deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_moved = false;
+        while !saw_moved {
+            let Some(left) = move_deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            if let Ok(Ok(ev)) = rx.recv_timeout(left)
+                && ev.paths.iter().any(|p| p == &moved)
+            {
+                saw_moved = true;
+            }
+        }
+        assert!(
+            saw_moved,
+            "moved_tree rename event must reach the root watch"
+        );
+
+        let moved_doc = moved.join("docs/ok.md");
+        let dot_paths = [
+            moved.join(".git/objects/00/churn"),
+            root.join(".git/objects/00/nested/churn"),
+            root.join(".git/objects/3f/nested/churn"),
+            root.join("sub/.hidden/0f/churn"),
+            root.join("sub/.hidden_new2/nested/z.md"),
+        ];
+        let root_dot = root.join(".root-dot-probe.md");
+        let cookie_probe = cookie_dir.join("probe-1");
+
+        std::fs::create_dir_all(dot_paths[4].parent().unwrap()).unwrap();
+        for p in &dot_paths {
+            std::fs::write(p, "x").unwrap();
+        }
+        std::fs::write(&moved_doc, "# ok\n").unwrap();
+        std::fs::write(&root_dot, "# root dot\n").unwrap();
+        std::fs::write(&cookie_probe, "1").unwrap();
+
+        let (mut saw_root_dot, mut saw_cookie, mut saw_moved_doc) = (false, false, false);
+        let mut saw_dot_subtree = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(saw_root_dot && saw_cookie && saw_moved_doc) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match rx.recv_timeout(left) {
+                Ok(Ok(ev)) => {
+                    for p in &ev.paths {
+                        saw_root_dot |= p == &root_dot;
+                        saw_cookie |= p == &cookie_probe;
+                        saw_moved_doc |= p == &moved_doc;
+                        if dot_paths.contains(p) {
+                            saw_dot_subtree.push(p.clone());
+                        }
+                    }
+                }
+                Ok(Err(e)) => panic!("watcher error: {e}"),
+                Err(_) => break,
+            }
+        }
+        assert!(
+            saw_root_dot,
+            "root dot-file event must reach the root watch"
+        );
+        assert!(
+            saw_cookie,
+            ".meridian/cookies sentinel must reach the watch"
+        );
+        assert!(saw_moved_doc, "non-dot subdir in moved tree must be armed");
+        assert_eq!(saw_dot_subtree, Vec::<PathBuf>::new());
     }
 
     /// A `mkdir` with a member written straight into it is a hint, never a

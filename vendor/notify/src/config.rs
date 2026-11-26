@@ -44,6 +44,11 @@ pub struct Config {
     compare_contents: bool,
 
     follow_symlinks: bool,
+
+    // meridian-rs patch: skip dot-prefixed subdirectories during recursive
+    // watch setup and dynamic directory creation (inotify backend). Off by
+    // default so upstream callers keep full-tree recursion.
+    skip_dot_dirs: bool,
 }
 
 impl Config {
@@ -112,6 +117,24 @@ impl Config {
     pub fn follow_symlinks(&self) -> bool {
         self.follow_symlinks
     }
+
+    // meridian-rs patch: dot-directory pruning knob for inotify recursive watches.
+    /// For the [INotifyWatcher](crate::INotifyWatcher).
+    ///
+    /// When `true`, recursive watches prune dot-prefixed subdirectories
+    /// (`.git`, `.obsidian`, etc.) during the initial walk and do not arm
+    /// newly created or moved-in dot-prefixed directories. The watched root
+    /// itself is always armed even if one of its ancestor path segments is
+    /// dot-prefixed. Off by default.
+    pub fn with_skip_dot_dirs(mut self, skip_dot_dirs: bool) -> Self {
+        self.skip_dot_dirs = skip_dot_dirs;
+        self
+    }
+
+    /// Returns whether dot-prefixed subdirectories are skipped.
+    pub fn skip_dot_dirs(&self) -> bool {
+        self.skip_dot_dirs
+    }
 }
 
 impl Default for Config {
@@ -120,6 +143,7 @@ impl Default for Config {
             poll_interval: Some(Duration::from_secs(30)),
             compare_contents: false,
             follow_symlinks: true,
+            skip_dot_dirs: false,
         }
     }
 }
