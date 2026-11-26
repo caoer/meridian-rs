@@ -230,11 +230,14 @@ pub(crate) struct WorkspaceFeed {
     /// deletion, rename, or late creation without holding a lock across IPC.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     cookie_arm: Mutex<CookieArm>,
-    /// The workspace root's `(st_dev, st_ino)` when its recursive watch was
-    /// armed. A cookie re-arm first checks the root still carries it
-    /// ([`FeedSync::root_lost`]).
+    /// The workspace root and its `(st_dev, st_ino)` when its recursive watch
+    /// was armed. A cookie re-arm first checks the root still carries it
+    /// ([`FeedSync::root_lost`]). An inode number freed by `rm -rf` can be
+    /// handed straight to the next `mkdir`, so the identity catches a root
+    /// renamed away (its old inode still alive); a removed root is lost by
+    /// its own `DELETE_SELF`.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    root_id: (u64, u64),
+    root: (PathBuf, (u64, u64)),
     sync: Arc<FeedSync>,
     /// Serials this feed's cookie writes have minted ([`Self::cookie_barrier`]).
     /// The next write carries `fetch_add + 1`; sightings max into
@@ -672,7 +675,7 @@ impl WorkspaceFeed {
                 rearming: false,
             }),
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            root_id,
+            root: (workspace.to_path_buf(), root_id),
             sync,
             cookie_serial: AtomicU64::new(0),
             cookie_token: token,
@@ -869,9 +872,7 @@ impl WorkspaceFeed {
             .arm_gen;
         let write = cookie_dir_ready(&dir).and_then(|created| {
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            if let Err(err) =
-                self.ensure_cookie_watch(workspace, &dir, created, gen_before, deadline)
-            {
+            if let Err(err) = self.ensure_cookie_watch(&dir, created, gen_before, deadline) {
                 if doubt_on_timeout && is_timeout_err(&err) {
                     let mut s = self
                         .sync
@@ -914,14 +915,13 @@ impl WorkspaceFeed {
     /// its budget, and a concurrent barrier racing recreation skips a duplicate
     /// re-arm once another barrier has already armed this inode.
     ///
-    /// A re-arm first proves `workspace` is still the root the feed watches
-    /// ([`WorkspaceFeed::root_id`]). A replaced root is unwatched, and a cookie
+    /// A re-arm first proves the feed's root is still the directory its
+    /// watch armed ([`WorkspaceFeed::root`]). A replaced root is unwatched, and a cookie
     /// armed inside it would vouch members no event reaches: the feed loses
     /// the root ([`FeedSync::root_lost`]) and the re-arm is refused.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn ensure_cookie_watch(
         &self,
-        workspace: &Path,
         dir: &Path,
         created: bool,
         gen_before: u64,
@@ -944,7 +944,7 @@ impl WorkspaceFeed {
                 return Ok(());
             }
             if self.sync.root_lost.load(Ordering::Acquire)
-                || dir_identity(workspace).ok() != Some(self.root_id)
+                || dir_identity(&self.root.0).ok() != Some(self.root.1)
             {
                 drop(state);
                 let mut s = self
@@ -2673,7 +2673,6 @@ mod tests {
         // Barrier A reaches `ensure_cookie_watch` with stale `created_a = true`
         // and must skip re-arming because `arm_gen != gen_a`.
         feed.ensure_cookie_watch(
-            &root,
             &cookie_dir,
             created_a,
             gen_a,
@@ -2687,15 +2686,18 @@ mod tests {
     /// A replaced workspace root is unwatched: no barrier on its feed may
     /// answer `Seen` again, before or after the collapse is taken. Covers
     /// `rm -rf ws && mkdir ws` and `mv ws ws.old && mkdir ws` (the root's own
-    /// `DELETE_SELF` / `MOVE_SELF`), and a replacement whose event never
-    /// arrived (the identity check on the cookie re-arm).
+    /// `DELETE_SELF` / `MOVE_SELF`), and a rename whose event never arrived
+    /// (the identity check on the cookie re-arm).
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn inotify_replaced_root_never_vouches() {
         fn wait_root_lost(feed: &WorkspaceFeed) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while !feed.sync.root_lost.load(Ordering::Acquire) {
-                assert!(Instant::now() < deadline, "root self event must lose the root");
+                assert!(
+                    Instant::now() < deadline,
+                    "root self event must lose the root"
+                );
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
@@ -2712,8 +2714,8 @@ mod tests {
                 "{replace}: a live root vouches"
             );
             let _ = feed.take();
-            if replace == "mv" {
-                std::fs::rename(&root, dir.path().join("mv.old")).unwrap();
+            if replace != "rm" {
+                std::fs::rename(&root, dir.path().join(format!("{replace}.old"))).unwrap();
             } else {
                 std::fs::remove_dir_all(&root).unwrap();
             }
@@ -2721,9 +2723,9 @@ mod tests {
             std::fs::write(root.join("new.md"), "# new\n").unwrap();
             wait_root_lost(&feed);
             if replace == "silent" {
-                // The root event as if never delivered: only the identity
-                // check on the cookie re-arm stands between the barrier and
-                // a re-armed cookie inside the new root.
+                // The root's MOVE_SELF as if never delivered: only the
+                // identity check on the cookie re-arm stands between the
+                // barrier and a re-armed cookie inside the new root.
                 feed.sync.root_lost.store(false, Ordering::Release);
                 assert_eq!(feed.take(), Pending::All(RescanCause::MissedEvent));
             } else {
