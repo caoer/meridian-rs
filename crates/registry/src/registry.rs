@@ -7350,7 +7350,9 @@ mod engine_tests {
                 .unwrap()
         };
         let _ = refresh();
-        let lost = reg.live_feed(&canonical).expect("the first refresh starts the feed");
+        let lost = reg
+            .live_feed(&canonical)
+            .expect("the first refresh starts the feed");
 
         fs::remove_dir_all(&canonical).unwrap();
         fs::create_dir(&canonical).unwrap();
@@ -7364,7 +7366,9 @@ mod engine_tests {
         let (root, vouched) = refresh();
         assert!(!vouched, "a lost root never vouches");
         assert_eq!(root, disk(), "the floor serves the new root's bytes");
-        let retired = reg.live_feed(&canonical).is_none_or(|feed| !Arc::ptr_eq(&feed, &lost));
+        let retired = reg
+            .live_feed(&canonical)
+            .is_none_or(|feed| !Arc::ptr_eq(&feed, &lost));
         assert!(retired, "the lost feed is retired");
 
         let mut vouched = false;
