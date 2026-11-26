@@ -2714,10 +2714,10 @@ mod tests {
                 "{replace}: a live root vouches"
             );
             let _ = feed.take();
-            if replace != "rm" {
-                std::fs::rename(&root, dir.path().join(format!("{replace}.old"))).unwrap();
-            } else {
+            if replace == "rm" {
                 std::fs::remove_dir_all(&root).unwrap();
+            } else {
+                std::fs::rename(&root, dir.path().join(format!("{replace}.old"))).unwrap();
             }
             std::fs::create_dir(&root).unwrap();
             std::fs::write(root.join("new.md"), "# new\n").unwrap();
