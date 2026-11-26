@@ -190,15 +190,20 @@ pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2
 #    for seconds, past the cookie bound (merkle-spec §6.4, watcher paragraph).
 # 4. Its recursive walk checks `DirEntry::file_type().is_dir()` (Linux d_type)
 #    instead of calling `DirEntry::metadata()` (`lstat`) on every file in the
-#    tree, and passes the known `is_dir` flag into `add_single_watch` instead
-#    of issuing a second `metadata()` syscall per directory (`add_watch`,
-#    `add_single_watch`, `filter_dir`).
+#    tree, passes the known `is_dir` flag into `add_single_watch` instead of
+#    issuing a second `metadata()` syscall per directory, and skips
+#    `PathNotFound`/`ENOTDIR` for vanished subdirectories (`depth > 0`) while
+#    still failing for the root (`add_watch`, `add_single_watch`, `filter_dir`).
 # 5. `Config::with_skip_dot_dirs(bool)` (off by default) prunes dot-prefixed
 #    subdirectories during the recursive `WalkDir` (`filter_entry`, depth > 0
 #    so a root under `~/.local/...` stays armed) and skips arming newly created
 #    or moved-in dot-prefixed directories (`add_watch_by_event`). Matches
 #    Meridian §12.1's structural dot-segment exclusion while `WorkspaceFeed`
-#    arms `.meridian/cookies` directly with a single non-recursive watch.
+#    arms `.meridian/cookies` directly (and re-arms it on late creation,
+#    deletion, or rename) and sets `with_follow_symlinks(false)` (flipped from
+#    notify's `true` default — links never enter the hash domain per
+#    `crates/fs/src/guard.rs`, and skipping them prevents symlink loops and
+#    duplicate-wd path map overwrites).
 # `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }
 # Tag `meridian-v1.20000.1-1`: duckdb-rs v1.20000.1 (upstream db918f65) plus one

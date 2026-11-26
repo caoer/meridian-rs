@@ -463,7 +463,10 @@ impl EventLoop {
         //   `metadata(&path)` syscall per directory;
         // - when `skip_dot_dirs` is set, prune dot-prefixed subdirectories
         //   (depth > 0 so a root under `~/.local/...` stays armed) without
-        //   descending into them.
+        //   descending into them;
+        // - skip `PathNotFound` (and `ENOTDIR`) for subdirectories (`depth > 0`)
+        //   that vanished between `readdir` buffering `d_type` and
+        //   `inotify_add_watch`, while still failing for the root (`depth == 0`).
         let skip_dot_dirs = self.skip_dot_dirs;
         for entry in WalkDir::new(path)
             .follow_links(self.follow_links)
@@ -475,7 +478,22 @@ impl EventLoop {
             })
             .filter_map(filter_dir)
         {
-            self.add_single_watch(entry.into_path(), is_recursive, watch_self, true)?;
+            let depth = entry.depth();
+            match self.add_single_watch(entry.into_path(), is_recursive, watch_self, true) {
+                Ok(()) => {}
+                Err(e)
+                    if depth > 0
+                        && (matches!(e.kind, ErrorKind::PathNotFound)
+                            || matches!(
+                                &e.kind,
+                                ErrorKind::Io(io_err)
+                                    if io_err.raw_os_error() == Some(libc::ENOTDIR)
+                            )) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
             watch_self = false;
         }
 

@@ -79,6 +79,8 @@
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -221,7 +223,15 @@ impl RescanCause {
 /// replacement), never at reap.
 pub(crate) struct WorkspaceFeed {
     /// Keeps the kernel stream alive; the handler thread owns `sync`'s
+    /// other [`Arc`]. On Linux/Android, [`Self::barrier`] also re-arms
+    /// [`COOKIE_DIR`] through this handle whenever the directory is created
+    /// late, deleted (`git clean -fdx`, `rm -rf .meridian`), or replaced by a
+    /// rename (`mv .meridian ...`).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    watcher: Mutex<CookieWatch>,
+    /// Keeps the kernel stream alive; the handler thread owns `sync`'s
     /// other [`Arc`]. Held, never spoken to after construction.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     _watcher: notify::RecommendedWatcher,
     sync: Arc<FeedSync>,
     /// Serials this feed's cookie writes have minted ([`Self::cookie_barrier`]).
@@ -241,12 +251,27 @@ pub(crate) struct WorkspaceFeed {
     cookie_written: AtomicU64,
 }
 
+/// The watcher handle plus the `(st_dev, st_ino)` of the currently armed
+/// [`COOKIE_DIR`] on Linux/Android, so [`WorkspaceFeed::barrier`] can re-arm
+/// it synchronously after deletion, rename, or late creation without paying
+/// an `inotify_add_watch` on the steady-state hot path.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+struct CookieWatch {
+    watcher: notify::RecommendedWatcher,
+    armed: Option<(u64, u64)>,
+}
+
 /// The feed's shared state plus the §6.4 cookie condvar: barrier waiters
 /// park on `cookie`; the watcher handler notifies on every sighting of the
 /// sentinel.
 struct FeedSync {
     state: Mutex<FeedState>,
     cookie: Condvar,
+    /// Flipped `true` when the watcher sees [`COOKIE_DIR`] itself removed or
+    /// moved (`DELETE_SELF` / `MOVE_SELF`), or after a barrier timeout, so the
+    /// next barrier re-arms even if the filesystem reuses `(st_dev, st_ino)`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    cookie_watch_lost: AtomicBool,
     /// Test seam: while armed, the watcher parks after every sighting
     /// ([`WorkspaceFeed::park_after_sightings`]).
     #[cfg(test)]
@@ -280,6 +305,15 @@ impl FeedSync {
         sentinel_prefix: &str,
     ) -> std::sync::MutexGuard<'a, FeedState> {
         if let Ok(name) = rel.strip_prefix(COOKIE_DIR) {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            if name.as_os_str().is_empty()
+                && matches!(
+                    kind,
+                    EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+                )
+            {
+                self.cookie_watch_lost.store(true, Ordering::Release);
+            }
             // On the helper source only its fence vouches a barrier: a
             // sentinel written before the switch proves nothing there.
             if let Some(serial) = sighting(name, sentinel_prefix, kind).filter(|_| !s.helper) {
@@ -494,6 +528,8 @@ impl WorkspaceFeed {
                 ..FeedState::default()
             }),
             cookie: Condvar::new(),
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            cookie_watch_lost: AtomicBool::new(false),
             #[cfg(test)]
             sighting_gate: Mutex::new(None),
         });
@@ -549,10 +585,19 @@ impl WorkspaceFeed {
         let _ = cookie_dir_ready(&cookie_dir);
         watcher.watch(workspace, RecursiveMode::Recursive)?;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        if cookie_dir.is_dir() {
+        let cookie_armed = if cookie_dir.is_dir() {
             watcher.watch(&cookie_dir, RecursiveMode::NonRecursive)?;
-        }
+            dir_identity(&cookie_dir).ok()
+        } else {
+            None
+        };
         let feed = WorkspaceFeed {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            watcher: Mutex::new(CookieWatch {
+                watcher,
+                armed: cookie_armed,
+            }),
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
             _watcher: watcher,
             sync,
             cookie_serial: AtomicU64::new(0),
@@ -737,8 +782,14 @@ impl WorkspaceFeed {
         }
         let dir = workspace.join(dir);
         let sentinel = dir.join(format!("{}-{serial}", self.cookie_token));
-        let write =
-            cookie_dir_ready(&dir).and_then(|()| std::fs::write(&sentinel, serial.to_string()));
+        let write = cookie_dir_ready(&dir).and_then(|created| {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            self.ensure_cookie_watch(&dir, created)
+                .map_err(std::io::Error::other)?;
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            let _ = created;
+            std::fs::write(&sentinel, serial.to_string())
+        });
         if write.is_err() {
             let _ = std::fs::remove_file(&sentinel);
             return CookieOutcome::Unproven;
@@ -756,6 +807,28 @@ impl WorkspaceFeed {
         // removal leaves one file no feed reads again.
         let _ = std::fs::remove_file(&sentinel);
         outcome
+    }
+
+    /// Ensure [`COOKIE_DIR`]'s direct non-recursive inotify watch is armed on
+    /// the live directory inode. Steady-state barriers pay one cached `stat`
+    /// and skip the watcher IPC; late creation, deletion (`git clean -fdx`,
+    /// `rm -rf .meridian`), or parent rename (`mv .meridian ...`) synchronously
+    /// drops any stale watch entry and re-arms before the sentinel is written.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn ensure_cookie_watch(&self, dir: &Path, created: bool) -> notify::Result<()> {
+        let id = dir_identity(dir)?;
+        let mut guard = self.watcher.lock().unwrap_or_else(PoisonError::into_inner);
+        let lost = self.sync.cookie_watch_lost.swap(false, Ordering::AcqRel);
+        if !created && !lost && guard.armed == Some(id) {
+            return Ok(());
+        }
+        let _ = guard.watcher.unwatch(dir);
+        if let Err(err) = guard.watcher.watch(dir, RecursiveMode::NonRecursive) {
+            guard.armed = None;
+            return Err(err);
+        }
+        guard.armed = Some(id);
+        Ok(())
     }
 
     /// Wait (bounded) until a sighting vouches `serial` ([`Self::barrier`]).
@@ -781,6 +854,8 @@ impl WorkspaceFeed {
                 return CookieOutcome::Seen;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                self.sync.cookie_watch_lost.store(true, Ordering::Release);
                 if doubt_on_timeout {
                     s.collapse(RescanCause::CookieTimeout);
                     s.cookie_timeout_at = Some(Instant::now());
@@ -1274,14 +1349,23 @@ fn sighting(name: &Path, prefix: &str, kind: EventKind) -> Option<u64> {
 /// live sentinel, its barrier removes it, and git's stat of the listed entry
 /// fails the whole walk (`fatal: unable to stat`). The ignore file carries no
 /// token, so [`sighting`] reads an event on it as nothing; failing to write it
-/// costs git hygiene, never the barrier.
-fn cookie_dir_ready(dir: &Path) -> std::io::Result<()> {
+/// costs git hygiene, never the barrier. Returns `true` when `dir` was absent
+/// before this call.
+fn cookie_dir_ready(dir: &Path) -> std::io::Result<bool> {
+    let existed = dir.is_dir();
     std::fs::create_dir_all(dir)?;
     let ignore = dir.join(".gitignore");
     if !ignore.exists() {
         let _ = std::fs::write(ignore, "*\n");
     }
-    Ok(())
+    Ok(!existed)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn dir_identity(dir: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = std::fs::metadata(dir)?;
+    Ok((meta.dev(), meta.ino()))
 }
 
 /// A feed's sentinel-name token: the process id and a random per-feed nonce,
@@ -2161,6 +2245,224 @@ mod tests {
         );
         assert!(saw_moved_doc, "non-dot subdir in moved tree must be armed");
         assert_eq!(saw_dot_subtree, Vec::<PathBuf>::new());
+    }
+
+    /// `with_follow_symlinks(false)` never walks or watches a symlinked
+    /// directory target (links never enter the hash domain per
+    /// `crates/fs/src/guard.rs`), while events in real workspace directories
+    /// still arrive.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_follow_symlinks_false_does_not_watch_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = dir.path().join("external_target");
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::create_dir_all(ws.join("visible")).unwrap();
+        std::os::unix::fs::symlink(&ext, ws.join("visible/link_outside")).unwrap();
+        let root = ws.canonicalize().unwrap();
+        let ext = ext.canonicalize().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                let _ = tx.send(event);
+            },
+            notify::Config::default()
+                .with_follow_symlinks(false)
+                .with_skip_dot_dirs(true),
+        )
+        .expect("watcher");
+        watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+
+        let outside_file = ext.join("outside.md");
+        let via_link = root.join("visible/link_outside/outside.md");
+        let real_doc = root.join("visible/real.md");
+        std::fs::write(&outside_file, "# outside\n").unwrap();
+        std::fs::write(&real_doc, "# real\n").unwrap();
+
+        let mut saw_real = false;
+        let mut saw_symlinked = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !saw_real {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match rx.recv_timeout(left) {
+                Ok(Ok(ev)) => {
+                    for p in &ev.paths {
+                        saw_real |= p == &real_doc;
+                        if p == &outside_file || p == &via_link {
+                            saw_symlinked.push(p.clone());
+                        }
+                    }
+                }
+                Ok(Err(e)) => panic!("watcher error: {e}"),
+                Err(_) => break,
+            }
+        }
+        assert!(saw_real, "real workspace file must still deliver events");
+        assert_eq!(saw_symlinked, Vec::<PathBuf>::new());
+    }
+
+    /// M1 regression: `.meridian/cookies` is re-armed synchronously by
+    /// [`WorkspaceFeed::cookie_barrier`] after `rm -rf .meridian/cookies`
+    /// (`git clean -fdx`), `rm -rf .meridian`, `mv .meridian .meridian.old`,
+    /// or late creation on an initially read-only workspace.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_cookie_dir_rearms_after_delete_rename_and_late_create() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(ws.join("notes")).unwrap();
+        let root = ws.canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("feed");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen
+        );
+        let _ = feed.take();
+
+        // 1. Delete `.meridian/cookies` (e.g. `git clean -fdx`).
+        std::fs::remove_dir_all(root.join(COOKIE_DIR)).unwrap();
+        std::fs::write(root.join("notes/after_cookie_rm.md"), "# 1\n").unwrap();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen,
+            "barrier must re-arm after .meridian/cookies is deleted"
+        );
+        match feed.take() {
+            Pending::Paths(paths) => assert!(
+                paths.contains(&PathBuf::from("notes/after_cookie_rm.md")),
+                "regular write must still arrive after cookie re-arm: {paths:?}"
+            ),
+            other => panic!("expected Pending::Paths, got {other:?}"),
+        }
+
+        // 2. Delete `.meridian` completely.
+        std::fs::remove_dir_all(root.join(".meridian")).unwrap();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen,
+            "barrier must re-arm after .meridian is deleted"
+        );
+
+        // 3. Rename `.meridian` (old inode stays alive under `.meridian.old`).
+        std::fs::rename(root.join(".meridian"), root.join(".meridian.old")).unwrap();
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen,
+            "barrier must drop stale watch and re-arm after .meridian rename"
+        );
+        assert_eq!(feed.rescan_record(), Vec::<RescanCause>::new());
+
+        // 4. Read-only workspace at `start()`, later made writable.
+        let ro_ws = dir.path().join("ro_ws");
+        std::fs::create_dir_all(&ro_ws).unwrap();
+        let ro_root = ro_ws.canonicalize().unwrap();
+        std::fs::set_permissions(&ro_root, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let ro_enforced = std::fs::create_dir(ro_root.join(".probe")).is_err();
+        let _ = std::fs::remove_dir(ro_root.join(".probe"));
+        if ro_enforced {
+            let ro_feed =
+                WorkspaceFeed::start(&ro_root, fs::stable::FeedGen::default()).expect("ro feed");
+            assert_eq!(
+                ro_feed.cookie_barrier(&ro_root, Duration::from_secs(2)),
+                CookieOutcome::Unproven
+            );
+            std::fs::set_permissions(&ro_root, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(
+                ro_feed.cookie_barrier(&ro_root, Duration::from_secs(5)),
+                CookieOutcome::Seen,
+                "barrier must arm .meridian/cookies once root becomes writable"
+            );
+            assert_eq!(ro_feed.rescan_record(), Vec::<RescanCause>::new());
+        } else {
+            std::fs::set_permissions(&ro_root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// M2 regression: a subdirectory that vanishes between `readdir`'s
+    /// buffered `d_type` and `inotify_add_watch` is skipped (`depth > 0`)
+    /// instead of aborting the recursive walk, while a missing root still
+    /// returns `ErrorKind::PathNotFound`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_recursive_walk_skips_vanished_subdir_and_fails_missing_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::RecommendedWatcher::new(
+            move |event: notify::Result<notify::Event>| {
+                let _ = tx.send(event);
+            },
+            notify::Config::default()
+                .with_follow_symlinks(false)
+                .with_skip_dot_dirs(true),
+        )
+        .expect("watcher");
+
+        // Missing root must still fail with `PathNotFound`.
+        let missing = dir.path().join("does-not-exist");
+        let err = watcher
+            .watch(&missing, RecursiveMode::Recursive)
+            .expect_err("missing root must fail");
+        assert!(
+            matches!(err.kind, notify::ErrorKind::PathNotFound),
+            "expected PathNotFound for missing root, got {err:?}"
+        );
+
+        let walk_root = dir.path().join("walk_root");
+        std::fs::create_dir_all(walk_root.join("keep")).unwrap();
+        for i in 0..160 {
+            for j in 0..4 {
+                std::fs::create_dir_all(walk_root.join(format!("a_{i:03}/sub_{j}"))).unwrap();
+            }
+        }
+        let walk_root = walk_root.canonicalize().unwrap();
+
+        for round in 0..3 {
+            let mut doomed = Vec::with_capacity(200);
+            for i in 0..200 {
+                let p = walk_root.join(format!("b_{round}_{i:03}"));
+                std::fs::create_dir_all(&p).unwrap();
+                doomed.push(p);
+            }
+            let gate = Arc::new(std::sync::Barrier::new(2));
+            let gate_bg = Arc::clone(&gate);
+            let remover = std::thread::spawn(move || {
+                gate_bg.wait();
+                for p in doomed.into_iter().rev() {
+                    let _ = std::fs::remove_dir(&p);
+                }
+            });
+            gate.wait();
+            watcher
+                .watch(&walk_root, RecursiveMode::Recursive)
+                .expect("concurrent subdir deletion must not abort recursive walk");
+            remover.join().unwrap();
+            if round < 2 {
+                watcher.unwatch(&walk_root).unwrap();
+            }
+        }
+
+        // Surviving sibling directory must still be armed after the walk.
+        let keep_doc = walk_root.join("keep/doc.md");
+        std::fs::write(&keep_doc, "# alive\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_keep = false;
+        while !saw_keep {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            if let Ok(Ok(ev)) = rx.recv_timeout(left)
+                && ev.paths.iter().any(|p| p == &keep_doc)
+            {
+                saw_keep = true;
+            }
+        }
+        assert!(saw_keep, "surviving sibling dir must stay armed");
     }
 
     /// A `mkdir` with a member written straight into it is a hint, never a
