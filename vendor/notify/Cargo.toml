@@ -52,6 +52,9 @@ macos_kqueue = [
 ]
 serde = ["notify-types/serde"]
 serialization-compat-6 = ["notify-types/serialization-compat-6"]
+# meridian-rs patch: enables `INotifyWatcher::watch_with_before_add_hook`
+# for deterministic inotify unit tests without compiling it into release builds.
+test-hooks = []
 
 [lib]
 name = "notify"

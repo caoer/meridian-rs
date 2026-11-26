@@ -126,3 +126,5 @@ registry = { path = ".", features = ["test-support"] }
 # walk_op gates render green-pin fixtures through the one owner of the lock
 # grammar; `model`/`syntax` (already runtime deps) mint the live fingerprints.
 lock = { workspace = true }
+# Deterministic inotify walk/re-arm test hook seam (off in release builds).
+notify = { workspace = true, features = ["test-hooks"] }

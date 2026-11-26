@@ -823,8 +823,18 @@ impl WorkspaceFeed {
             .arm_gen;
         let write = cookie_dir_ready(&dir).and_then(|created| {
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            self.ensure_cookie_watch(&dir, created, gen_before, deadline)
-                .map_err(std::io::Error::other)?;
+            if let Err(err) = self.ensure_cookie_watch(&dir, created, gen_before, deadline) {
+                if doubt_on_timeout && is_timeout_err(&err) {
+                    let mut s = self
+                        .sync
+                        .state
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    s.collapse(RescanCause::CookieTimeout);
+                    s.cookie_timeout_at = Some(Instant::now());
+                }
+                return Err(std::io::Error::other(err));
+            }
             #[cfg(not(any(target_os = "linux", target_os = "android")))]
             let _ = created;
             std::fs::write(&sentinel, serial.to_string())
@@ -1444,6 +1454,14 @@ fn dir_identity(dir: &Path) -> std::io::Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::metadata(dir)?;
     Ok((meta.dev(), meta.ino()))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn is_timeout_err(err: &notify::Error) -> bool {
+    matches!(
+        &err.kind,
+        notify::ErrorKind::Io(io_err) if io_err.kind() == std::io::ErrorKind::TimedOut
+    )
 }
 
 /// A feed's sentinel-name token: the process id and a random per-feed nonce,
@@ -2433,29 +2451,35 @@ mod tests {
             CookieOutcome::Seen
         );
 
-        // 4. External recreate to a new inode (`created = false`, identity mismatch).
+        // 4. Isolated identity-mismatch branch (`created = false`, `lost = false`).
         std::fs::rename(root.join(COOKIE_DIR), root.join(".meridian/cookies.moved")).unwrap();
-        std::fs::create_dir_all(root.join(COOKIE_DIR)).unwrap();
-        assert_eq!(
-            feed.cookie_barrier(&root, Duration::from_secs(5)),
-            CookieOutcome::Seen
-        );
-
-        // 5. `DELETE_SELF` -> `cookie_watch_lost` branch (`created = false`, `lost = true`).
-        std::fs::remove_dir_all(root.join(COOKIE_DIR)).unwrap();
-        let lost_deadline = Instant::now() + Duration::from_secs(2);
+        let move_deadline = Instant::now() + Duration::from_secs(2);
         while !feed.sync.cookie_watch_lost.load(Ordering::Acquire) {
             assert!(
-                Instant::now() < lost_deadline,
-                "DELETE_SELF must set cookie_watch_lost"
+                Instant::now() < move_deadline,
+                "MOVE_SELF must set cookie_watch_lost"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
         std::fs::create_dir_all(root.join(COOKIE_DIR)).unwrap();
+        // Clear `lost` after `MOVE_SELF` landed so ONLY `(dev, ino)` mismatch triggers re-arm.
+        feed.sync.cookie_watch_lost.store(false, Ordering::Release);
+        let gen_id = feed.cookie_arm.lock().unwrap().arm_gen;
         assert_eq!(
             feed.cookie_barrier(&root, Duration::from_secs(5)),
             CookieOutcome::Seen
         );
+        assert_eq!(feed.cookie_arm.lock().unwrap().arm_gen, gen_id + 1);
+
+        // 5. Isolated `cookie_watch_lost` branch (`created = false`, same inode).
+        feed.sync.cookie_watch_lost.store(true, Ordering::Release);
+        let gen_lost = feed.cookie_arm.lock().unwrap().arm_gen;
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen
+        );
+        assert_eq!(feed.cookie_arm.lock().unwrap().arm_gen, gen_lost + 1);
+        assert!(!feed.sync.cookie_watch_lost.load(Ordering::Acquire));
         assert_eq!(feed.rescan_record(), Vec::<RescanCause>::new());
 
         // 6. Late creation: a regular file at `.meridian` blocks `create_dir_all`
@@ -2478,22 +2502,129 @@ mod tests {
         assert_eq!(late_feed.rescan_record(), Vec::<RescanCause>::new());
     }
 
-    /// New M1 & L1 regression:
-    /// - A slow/timed-out barrier never sets `cookie_watch_lost`.
-    /// - `InotifyRearmHandle::rearm_nonrecursive_timeout` stays strictly
-    ///   bounded when the event loop is busy and returns `Err` (never panics)
-    ///   after the event loop stops.
-    /// - Concurrent barriers racing `.meridian` recreation never double-rearm
-    ///   into a `CookieTimeout` collapse.
+    /// Deterministic r2 L1 & r3 L1 regression:
+    /// - `RearmNonRecursive` calls `inotify_add_watch` first and leaves an
+    ///   existing live watch descriptor (and its queued events) intact when
+    ///   the inode is unchanged, so a stale `cookie_watch_lost` never drops an
+    ///   in-flight barrier's sentinel.
+    /// - When barrier A observed `created = true` before barrier B re-armed
+    ///   the same inode, `arm_gen != gen_before` makes barrier A skip the
+    ///   duplicate re-arm deterministically.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn inotify_cookie_rearm_is_bounded_and_concurrent_recreate_never_collapses() {
+    fn inotify_rearm_is_idempotent_and_arm_gen_skips_duplicate_rearm() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        let dummy = dir.path().join("dummy");
+        std::fs::create_dir_all(ws.join(COOKIE_DIR)).unwrap();
+        std::fs::create_dir_all(&dummy).unwrap();
+        let root = ws.canonicalize().unwrap();
+        let cookie_dir = root.join(COOKIE_DIR);
+        let dummy = dummy.canonicalize().unwrap();
+
+        // 1. r3 L1: queued event on `cookie_dir` survives a live-inode re-arm.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut raw = notify::RecommendedWatcher::new(
+            move |ev| {
+                let _ = tx.send(ev);
+            },
+            notify::Config::default()
+                .with_follow_symlinks(false)
+                .with_skip_dot_dirs(true),
+        )
+        .expect("watcher");
+        raw.watch(&cookie_dir, RecursiveMode::NonRecursive).unwrap();
+        let handle = raw.rearm_handle();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let dummy_bg = dummy.clone();
+        let parker = std::thread::spawn(move || {
+            raw.watch_with_before_add_hook(
+                &dummy_bg,
+                RecursiveMode::Recursive,
+                Box::new(move |_, _| {
+                    let _ = entered_tx.send(());
+                    let _ = release_rx.recv();
+                }),
+            )
+            .unwrap();
+            raw
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let queued = cookie_dir.join("queued-sentinel");
+        std::fs::write(&queued, "1").unwrap();
+        let cd_bg = cookie_dir.clone();
+        let rearm_thread = std::thread::spawn(move || {
+            handle.rearm_nonrecursive_timeout(&cd_bg, Duration::from_secs(5))
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = release_tx.send(());
+        rearm_thread.join().unwrap().unwrap();
+        let _raw = parker.join().unwrap();
+
+        let mut saw_queued = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !saw_queued {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            if let Ok(Ok(ev)) = rx.recv_timeout(left)
+                && ev.paths.iter().any(|p| p == &queued)
+            {
+                saw_queued = true;
+            }
+        }
+        assert!(
+            saw_queued,
+            "idempotent re-arm on live inode must preserve queued sentinel event"
+        );
+
+        // 2. r2 L1: Barrier A skips duplicate re-arm after Barrier B armed same inode.
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("feed");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen
+        );
+        std::fs::remove_dir_all(&cookie_dir).unwrap();
+        let gen_a = feed.cookie_arm.lock().unwrap().arm_gen;
+        let created_a = cookie_dir_ready(&cookie_dir).unwrap();
+        assert!(created_a);
+        // Barrier B runs to completion and arms the newly created inode.
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen
+        );
+        let gen_after_b = feed.cookie_arm.lock().unwrap().arm_gen;
+        assert_eq!(gen_after_b, gen_a + 1);
+        // Barrier A reaches `ensure_cookie_watch` with stale `created_a = true`
+        // and must skip re-arming because `arm_gen != gen_a`.
+        feed.ensure_cookie_watch(
+            &cookie_dir,
+            created_a,
+            gen_a,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(feed.cookie_arm.lock().unwrap().arm_gen, gen_after_b);
+        assert_eq!(feed.rescan_record(), Vec::<RescanCause>::new());
+    }
+
+    /// Bounded re-arm IPC (r2 M1) and holdoff on re-arm timeout (r3 L2):
+    /// - `rearm_nonrecursive_timeout` returns `TimedOut` within budget when
+    ///   the event loop is busy, and `BrokenPipe` (no panic) after shutdown.
+    /// - A `cookie_barrier` whose re-arm times out starts the §6.7 holdoff
+    ///   (`cookie_timeout_at`), so a second barrier answers `Unproven`
+    ///   immediately without attempting another re-arm, while `cookie_probe`
+    ///   mints no doubt and no holdoff.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_rearm_timeout_starts_holdoff_and_bounded_ipc() {
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path().join("ws");
         std::fs::create_dir_all(&ws).unwrap();
         let root = ws.canonicalize().unwrap();
 
-        // 1. Bounded IPC on a busy event loop + no panic after shutdown.
+        // 1. Bounded IPC on a busy event loop + BrokenPipe after shutdown.
         let mut raw = notify::RecommendedWatcher::new(
             |_| {},
             notify::Config::default()
@@ -2522,21 +2653,10 @@ mod tests {
         let err = handle
             .rearm_nonrecursive_timeout(&root, Duration::from_millis(40))
             .expect_err("re-arm must time out while event loop is busy");
-        assert!(
-            t0.elapsed() < Duration::from_millis(250),
-            "re-arm blocked past timeout: {:?}",
-            t0.elapsed()
-        );
-        assert!(
-            matches!(
-                &err.kind,
-                notify::ErrorKind::Io(io_err) if io_err.kind() == std::io::ErrorKind::TimedOut
-            ),
-            "expected TimedOut, got {err:?}"
-        );
+        assert!(t0.elapsed() < Duration::from_millis(250));
+        assert!(is_timeout_err(&err), "expected TimedOut, got {err:?}");
         let _ = release_tx.send(());
-        let raw = blocker.join().unwrap();
-        drop(raw);
+        drop(blocker.join().unwrap());
         let stopped_err = handle
             .rearm_nonrecursive_timeout(&root, Duration::from_millis(200))
             .expect_err("stopped event loop must return Err, not panic");
@@ -2548,38 +2668,45 @@ mod tests {
             "expected BrokenPipe on stopped loop, got {stopped_err:?}"
         );
 
-        // 2. Concurrent barriers racing `.meridian` deletion (L1): zero collapses.
-        let feed = Arc::new(WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).unwrap());
+        // 2. r3 L2: barrier re-arm TimedOut starts §6.7 holdoff.
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("feed");
         assert_eq!(
             feed.cookie_barrier(&root, Duration::from_secs(5)),
             CookieOutcome::Seen
         );
-        std::fs::remove_dir_all(root.join(".meridian")).unwrap();
-        let start_gate = Arc::new(std::sync::Barrier::new(4));
-        let mut threads = Vec::new();
-        for _ in 0..4 {
-            let f = Arc::clone(&feed);
-            let r = root.clone();
-            let g = Arc::clone(&start_gate);
-            threads.push(std::thread::spawn(move || {
-                g.wait();
-                f.cookie_barrier(&r, Duration::from_secs(5))
-            }));
-        }
-        let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
-        assert!(
-            outcomes.contains(&CookieOutcome::Seen),
-            "at least one racing barrier must arm and succeed: {outcomes:?}"
+        feed.cookie_arm.lock().unwrap().armed = None;
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::ZERO),
+            CookieOutcome::Unproven
         );
-        assert_eq!(feed.rescan_record(), Vec::<RescanCause>::new());
-        assert!(
-            !feed.sync.cookie_watch_lost.load(Ordering::Acquire),
-            "healthy barriers must leave cookie_watch_lost false"
-        );
+        assert!(feed.sync.state.lock().unwrap().cookie_timeout_at.is_some());
+        assert_eq!(feed.rescan_record(), vec![RescanCause::CookieTimeout]);
+        let t1 = Instant::now();
         assert_eq!(
             feed.cookie_barrier(&root, Duration::from_secs(5)),
-            CookieOutcome::Seen
+            CookieOutcome::Unproven
         );
+        assert!(t1.elapsed() < Duration::from_millis(200));
+        assert!(feed.cookie_arm.lock().unwrap().armed.is_none());
+
+        // 3. `cookie_probe` (`doubt_on_timeout = false`) starts no holdoff/doubt.
+        let probe_feed =
+            WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("probe feed");
+        probe_feed.cookie_arm.lock().unwrap().armed = None;
+        assert_eq!(
+            probe_feed.cookie_probe(&root, Duration::ZERO),
+            CookieOutcome::Unproven
+        );
+        assert!(
+            probe_feed
+                .sync
+                .state
+                .lock()
+                .unwrap()
+                .cookie_timeout_at
+                .is_none()
+        );
+        assert_eq!(probe_feed.rescan_record(), Vec::<RescanCause>::new());
     }
 
     /// M2 regression (deterministic): injecting deletion (`PathNotFound`) and

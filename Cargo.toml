@@ -199,13 +199,15 @@ pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2
 #    so a root under `~/.local/...` stays armed) and skips arming newly created
 #    or moved-in dot-prefixed directories (`add_watch_by_event`). Matches
 #    Meridian §12.1's structural dot-segment exclusion while `WorkspaceFeed`
-#    arms `.meridian/cookies` directly (and re-arms it on late creation,
-#    deletion, or rename via `InotifyRearmHandle::rearm_nonrecursive_timeout`
-#    within the barrier's deadline, never holding a mutex across IPC or
+#    arms `.meridian/cookies` directly (and re-arms it idempotently on late
+#    creation, deletion, or rename via `InotifyRearmHandle::rearm_nonrecursive_timeout`
+#    — `inotify_add_watch` first so live-inode queued events stay intact,
+#    bounded by the barrier's deadline, never holding a mutex across IPC or
 #    panicking on a stopped event loop) and sets `with_follow_symlinks(false)`
 #    (flipped from notify's `true` default — links never enter the hash domain
 #    per `crates/fs/src/guard.rs`, and skipping them prevents symlink loops and
-#    duplicate-wd path map overwrites).
+#    duplicate-wd path map overwrites). Deterministic walk/re-arm test hooks
+#    live behind the opt-in `test-hooks` feature (dev-dependency only).
 # `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }
 # Tag `meridian-v1.20000.1-1`: duckdb-rs v1.20000.1 (upstream db918f65) plus one

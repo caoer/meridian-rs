@@ -56,6 +56,7 @@ pub struct INotifyWatcher {
 
 enum EventLoopMsg {
     AddWatch(PathBuf, RecursiveMode, Sender<Result<()>>),
+    #[cfg(feature = "test-hooks")]
     AddWatchWithHook(
         PathBuf,
         RecursiveMode,
@@ -248,6 +249,7 @@ impl EventLoop {
                 EventLoopMsg::AddWatch(path, recursive_mode, tx) => {
                     let _ = tx.send(self.add_watch(path, recursive_mode.is_recursive(), true));
                 }
+                #[cfg(feature = "test-hooks")]
                 EventLoopMsg::AddWatchWithHook(path, recursive_mode, mut hook, tx) => {
                     let res = self.add_watch_entries(
                         path,
@@ -258,9 +260,7 @@ impl EventLoop {
                     let _ = tx.send(res);
                 }
                 EventLoopMsg::RearmNonRecursive(path, tx) => {
-                    let _ = self.remove_watch(path.clone(), false);
-                    let res = self.add_watch(path, false, true);
-                    let _ = tx.send(res);
+                    let _ = tx.send(self.rearm_nonrecursive(path));
                 }
                 EventLoopMsg::RemoveWatch(path, tx) => {
                     let _ = tx.send(self.remove_watch(path, false));
@@ -589,6 +589,57 @@ impl EventLoop {
         Ok(())
     }
 
+    /// Idempotently ensure `path` has a live non-recursive watch without
+    /// dropping queued events when `path` still refers to the same inode:
+    /// call `inotify_add_watch` first (Linux returns the existing `wd` for
+    /// the same inode, keeping queued events intact), and remove the previous
+    /// `wd` only if the returned `wd` differs and `self.paths` still maps it
+    /// to `path`.
+    // meridian-rs patch: idempotent single-round-trip re-arm for
+    // `.meridian/cookies` so a stale `cookie_watch_lost` never drops an
+    // in-flight barrier's queued sentinel event.
+    fn rearm_nonrecursive(&mut self, path: PathBuf) -> Result<()> {
+        let is_dir = metadata(&path).map_err(Error::io_watch)?.is_dir();
+        let old_wd = self.watches.get(&path).map(|(w, ..)| w.clone());
+        let watchmask = WatchMask::ATTRIB
+            | WatchMask::CREATE
+            | WatchMask::DELETE
+            | WatchMask::CLOSE_WRITE
+            | WatchMask::MODIFY
+            | WatchMask::MOVED_FROM
+            | WatchMask::MOVED_TO
+            | WatchMask::DELETE_SELF
+            | WatchMask::MOVE_SELF;
+
+        if let Some(ref mut inotify) = self.inotify {
+            log::trace!("re-arming non-recursive inotify watch: {}", path.display());
+            match inotify.watches().add(&path, watchmask) {
+                Err(e) => {
+                    return Err(if e.raw_os_error() == Some(libc::ENOSPC) {
+                        Error::new(ErrorKind::MaxFilesWatch)
+                    } else if e.kind() == std::io::ErrorKind::NotFound {
+                        Error::new(ErrorKind::PathNotFound)
+                    } else {
+                        Error::io(e)
+                    }
+                    .add_path(path));
+                }
+                Ok(new_wd) => {
+                    if let Some(old_wd) = old_wd {
+                        if old_wd != new_wd && self.paths.get(&old_wd) == Some(&path) {
+                            Self::remove_single_descriptor(&mut inotify.watches(), old_wd.clone());
+                            self.paths.remove(&old_wd);
+                        }
+                    }
+                    self.watches
+                        .insert(path.clone(), (new_wd.clone(), watchmask, false, is_dir));
+                    self.paths.insert(new_wd, path);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn add_single_watch(
         &mut self,
         path: PathBuf,
@@ -761,7 +812,9 @@ impl INotifyWatcher {
     /// Test seam: run [`Watcher::watch`] with a callback invoked immediately
     /// before each `add_single_watch` call, receiving `(entry_path, depth)`.
     // meridian-rs patch: deterministic test hook for vanished-subdir /
-    // vanished-root walk handling and bounded-IPC tests.
+    // vanished-root walk handling and bounded-IPC tests (feature-gated off in
+    // release builds).
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn watch_with_before_add_hook(
         &mut self,
