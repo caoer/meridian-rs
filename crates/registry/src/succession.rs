@@ -486,13 +486,13 @@ impl Drop for ResumeOnPanic<'_> {
 }
 
 /// Does the successor's claimed warm set cover everything this daemon holds
-/// warm, with no drawer rebuild in flight?
+/// warm whose directory still exists on disk, with no drawer rebuild in flight?
 fn covers(registry: &Registry, claimed: &[PathBuf]) -> bool {
     registry.cold_builds_idle()
         && registry
             .warm_workspaces()
             .iter()
-            .all(|workspace| claimed.contains(workspace))
+            .all(|workspace| !workspace.is_dir() || claimed.contains(workspace))
 }
 
 /// The drain: every connection thread parks or ends, background work ends

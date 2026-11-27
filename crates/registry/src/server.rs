@@ -716,43 +716,85 @@ fn clear_earlier_stores(registry: &Registry, registry_dir: &Path) {
     }
 }
 
-/// Warm every workspace of `theirs` this daemon does not hold in `ours`, one
-/// thread each: the serving daemon answers its callers meanwhile.
-fn warm_beside(registry: &Arc<Registry>, theirs: &[PathBuf], ours: &[PathBuf]) -> io::Result<()> {
+/// Did warming `workspace` fail solely because its root directory no longer
+/// exists on disk? A vanished workspace cannot be warmed by a successor and
+/// must not abort handover; an error on a still-present directory still fails.
+fn is_vanished_workspace(workspace: &Path, err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::NotFound && !workspace.is_dir()
+}
+
+/// Warm every workspace of `theirs` this daemon does not already cover in
+/// `claimed`, one thread each: the serving daemon answers its callers
+/// meanwhile. Returns the subset of `theirs` whose root directory no longer
+/// exists on disk so the successor can still claim them against an older
+/// resident without aborting succession.
+fn warm_beside(
+    registry: &Arc<Registry>,
+    theirs: &[PathBuf],
+    claimed: &[PathBuf],
+) -> io::Result<Vec<PathBuf>> {
+    enum Step {
+        Warmed,
+        Vanished(PathBuf),
+    }
+
     let builds: Vec<_> = theirs
         .iter()
-        .filter(|workspace| !ours.contains(workspace))
+        .filter(|workspace| !claimed.contains(workspace))
         .map(|workspace| {
             let registry = Arc::clone(registry);
             let workspace = workspace.clone();
             thread::spawn(move || {
-                let outcome = registry.warm_or_build(&workspace);
-                match &outcome {
-                    Ok(outcome) => timing::say!(
-                        "registry: warm beside the serving daemon for {} ({outcome:?})",
+                if !workspace.is_dir() {
+                    timing::say!(
+                        "registry: skipping vanished workspace {} beside the serving daemon (directory is gone)",
                         workspace.display()
-                    ),
-                    Err(e) => timing::say!(
-                        "registry: cannot warm {} beside the serving daemon ({e})",
-                        workspace.display()
-                    ),
+                    );
+                    return Ok(Step::Vanished(workspace));
                 }
-                outcome.map(drop)
+                let outcome = registry.warm_or_build(&workspace);
+                match outcome {
+                    Ok(outcome) => {
+                        timing::say!(
+                            "registry: warm beside the serving daemon for {} ({outcome:?})",
+                            workspace.display()
+                        );
+                        Ok(Step::Warmed)
+                    }
+                    Err(e) if is_vanished_workspace(&workspace, &e) => {
+                        timing::say!(
+                            "registry: skipping vanished workspace {} beside the serving daemon ({e})",
+                            workspace.display()
+                        );
+                        Ok(Step::Vanished(workspace))
+                    }
+                    Err(e) => {
+                        timing::say!(
+                            "registry: cannot warm {} beside the serving daemon ({e})",
+                            workspace.display()
+                        );
+                        Err(e)
+                    }
+                }
             })
         })
         .collect();
-    let mut first = Ok(());
+    let mut first: io::Result<()> = Ok(());
+    let mut vanished = Vec::new();
     for build in builds {
         let outcome = build.join().unwrap_or_else(|_| {
             Err(io::Error::other(
                 "a warm beside the serving daemon panicked",
             ))
         });
-        if first.is_ok() {
-            first = outcome;
+        match outcome {
+            Ok(Step::Vanished(path)) => vanished.push(path),
+            Err(e) if first.is_ok() => first = Err(e),
+            Ok(Step::Warmed) | Err(_) => {}
         }
     }
-    first
+    first?;
+    Ok(vanished)
 }
 
 /// The residency host a daemon with budget `bytes` serves through
@@ -975,15 +1017,37 @@ impl RunningServer {
         let registry = load_registry(&config, &dir, false)?;
         let mut busy = 0u32;
         let mut retry = succession::BUSY_RETRY;
+        // Workspaces the resident named whose directory disappeared on disk:
+        // skipped rather than warmed, and still named in `Ask.warm` so an
+        // older resident whose `covers` checks the raw set grants handover.
+        let mut vanished: Vec<PathBuf> = Vec::new();
         loop {
             // Bring what is warm up to the disk, so the first currency pass
             // after the commit has little to fold.
             let mut warm = registry.warm_workspaces();
             for workspace in &warm {
-                registry.warm_or_build(workspace)?;
+                match registry.warm_or_build(workspace) {
+                    Ok(_) => {}
+                    Err(e) if is_vanished_workspace(workspace, &e) => {
+                        timing::say!(
+                            "registry: skipping vanished workspace {} while refreshing beside the serving daemon ({e})",
+                            workspace.display()
+                        );
+                        if !vanished.contains(workspace) {
+                            vanished.push(workspace.clone());
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             warm = registry.warm_workspaces();
-            match succession::ask(&config.socket_path, &warm)? {
+            let mut claimed = warm.clone();
+            for workspace in &vanished {
+                if !claimed.contains(workspace) {
+                    claimed.push(workspace.clone());
+                }
+            }
+            match succession::ask(&config.socket_path, &claimed)? {
                 Offer::Absent => {
                     // The serving daemon went away while this one warmed.
                     let singleton = take_singleton(&dir)?;
@@ -991,12 +1055,16 @@ impl RunningServer {
                     return Self::bind_and_serve(config, registry, singleton);
                 }
                 Offer::Warm(theirs) => {
-                    if theirs.iter().all(|workspace| warm.contains(workspace)) {
+                    if theirs.iter().all(|workspace| claimed.contains(workspace)) {
                         // Nothing new to warm: the serving daemon is building
                         // a drawer. Wait for it instead of asking in a spin.
                         thread::sleep(succession::WARM_RETRY);
                     }
-                    warm_beside(&registry, &theirs, &warm)?;
+                    for gone in warm_beside(&registry, &theirs, &claimed)? {
+                        if !vanished.contains(&gone) {
+                            vanished.push(gone);
+                        }
+                    }
                 }
                 Offer::Busy(what) => {
                     // Every `busy` held the serving daemon's callers for the
@@ -4838,6 +4906,96 @@ mod residency_activation_tests {
         assert_eq!(
             line,
             r#"{"status":"residency","report":null,"sql_escalations":null}"#
+        );
+        server.shutdown();
+    }
+
+    /// An already-running older resident (e.g. 1611e668) may advertise a
+    /// vanished directory in `warm_workspaces()` and refuse handover until
+    /// `claimed` contains it. `RunningServer::succeed` must warm the live
+    /// workspace, skip the vanished path without failing ENOENT, include the
+    /// vanished path in its next `handover` ask, and take over cleanly.
+    #[test]
+    fn succeed_skips_vanished_workspace_and_claims_it_for_legacy_resident() {
+        use super::prepare_dirs;
+        use std::io::{BufRead as _, BufReader, Write as _};
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::net::UnixListener;
+        use std::path::PathBuf;
+        use std::thread;
+
+        let tmp = TempDir::new().unwrap();
+        let cfg = config(&tmp);
+        let dir = prepare_dirs(&cfg).unwrap();
+        let live_ws = tmp.path().join("live-ws");
+        std::fs::create_dir_all(live_ws.join(".git")).unwrap();
+        std::fs::write(live_ws.join("a.md"), "# Live\n").unwrap();
+        let live_c = workspace::canonicalize(&live_ws).unwrap();
+        let gone_ws = tmp.path().join("vanished-jail");
+
+        let listener = UnixListener::bind(&cfg.socket_path).unwrap();
+        let lock = cache::DrawerLock::try_acquire(&dir)
+            .unwrap()
+            .expect("singleton lock");
+        let want_live = live_c.clone();
+        let want_gone = gone_ws.clone();
+
+        let resident = thread::spawn(move || {
+            let mut rounds = 0usize;
+            loop {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                if line.is_empty() {
+                    // `RunningServer::succeed` probes socket reachability before asking.
+                    continue;
+                }
+                rounds += 1;
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let claimed: Vec<PathBuf> = req["warm"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| PathBuf::from(v.as_str().unwrap()))
+                    .collect();
+                if claimed.contains(&want_live) && claimed.contains(&want_gone) {
+                    let answer = "{\"status\":\"handover\",\"grant\":true,\"conns\":[]}\n";
+                    crate::succession::send_with_fds(
+                        &stream,
+                        answer.as_bytes(),
+                        &[listener.as_raw_fd(), lock.held().as_raw_fd()],
+                    )
+                    .unwrap();
+                    let mut adopted = String::new();
+                    BufReader::new(&stream).read_line(&mut adopted).unwrap();
+                    assert!(adopted.contains("\"adopted\""), "{adopted}");
+                    let mut writer = &stream;
+                    writer.write_all(b"{\"released\":true}\n").unwrap();
+                    drop(lock.into_held());
+                    return rounds;
+                }
+                let refuse = serde_json::json!({
+                    "status": "handover",
+                    "grant": false,
+                    "reason": "warm",
+                    "warm": [want_live, want_gone],
+                    "conns": [],
+                });
+                let mut out = refuse.to_string();
+                out.push('\n');
+                let mut writer = &stream;
+                writer.write_all(out.as_bytes()).unwrap();
+                assert!(rounds < 5, "stuck in warm loop: claimed={claimed:?}");
+            }
+        });
+
+        let server = RunningServer::succeed(cfg).expect("successor takes over over vanished path");
+        let rounds = resident.join().unwrap();
+        assert_eq!(rounds, 2, "round 1 discovers [live, gone], round 2 grants");
+        assert_eq!(
+            server.registry.warm_workspaces(),
+            vec![live_c],
+            "only the live workspace is actually resident in the successor"
         );
         server.shutdown();
     }

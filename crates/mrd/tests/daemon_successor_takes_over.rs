@@ -24,7 +24,7 @@ mod common;
 const BUDGET: Duration = Duration::from_secs(60);
 
 struct Sandbox {
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     home: PathBuf,
     cache_home: PathBuf,
     ws: PathBuf,
@@ -47,7 +47,7 @@ impl Sandbox {
         std::fs::write(ws.join("a.md"), "# Alpha\n\nsee [[beta]]\n").expect("doc");
         let ws = std::fs::canonicalize(&ws).expect("canonical ws");
         Self {
-            _tmp: tmp,
+            tmp,
             home,
             cache_home,
             ws,
@@ -269,5 +269,121 @@ fn a_successor_with_no_daemon_serving_starts_as_the_daemon() {
         Some(0),
         "a SIGTERM ends it cleanly: {status}"
     );
+    assert_eq!(rest, "");
+}
+
+/// Warm `ws_path` on the running daemon through a fresh connection.
+fn warm_workspace(socket: &Path, ws_path: &Path) {
+    let stream = UnixStream::connect(socket).expect("socket accepts");
+    stream.set_read_timeout(Some(BUDGET)).expect("timeout");
+    let ack = ask(
+        &stream,
+        &json!({
+            "op": "hello",
+            "proto": 1,
+            "contract": "v3",
+            "workspace": ws_path.to_str().expect("utf-8 ws"),
+        }),
+    );
+    assert_eq!(ack["ok"], json!(true), "hello failed: {ack}");
+    let started = Instant::now();
+    loop {
+        let answer = toc(&stream);
+        if answer["ok"] == json!(true) {
+            return;
+        }
+        assert_eq!(answer["error"]["code"], json!("corpus_warming"), "{answer}");
+        assert!(started.elapsed() < BUDGET, "still warming: {answer}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_successor_takes_over_after_a_warmed_workspace_was_unregistered_and_deleted() {
+    let sb = Sandbox::new();
+    let mut old = sb.daemon(false);
+    wait_bound(&sb.socket());
+
+    let held = sb.dial();
+    let started = Instant::now();
+    loop {
+        let answer = toc(&held);
+        if answer["ok"] == json!(true) {
+            break;
+        }
+        assert_eq!(answer["error"]["code"], json!("corpus_warming"), "{answer}");
+        assert!(started.elapsed() < BUDGET, "still warming: {answer}");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // Reproduce `bin/rule-edit`: warm a temp jail, unregister it, delete it.
+    let jail = sb.tmp.path().join("rule-edit-jail");
+    std::fs::create_dir_all(jail.join(".git")).expect("jail git");
+    std::fs::write(jail.join("a.md"), "# Jail\n").expect("jail doc");
+    let jail = std::fs::canonicalize(&jail).expect("canonical jail");
+    warm_workspace(&sb.socket(), &jail);
+
+    let unreg = common::mrd_command(&sb.home, &sb.cache_home)
+        .env("MERIDIAN_WORKSPACE", &jail)
+        .args(["unregister", jail.to_str().expect("utf-8 jail")])
+        .output()
+        .expect("mrd unregister runs");
+    assert!(
+        unreg.status.success(),
+        "mrd unregister failed: {}",
+        String::from_utf8_lossy(&unreg.stderr)
+    );
+    std::fs::remove_dir_all(&jail).expect("delete jail");
+
+    let mut new = sb.daemon(true);
+    assert_eq!(
+        new.first_line(),
+        "serving\n",
+        "the successor takes over warm"
+    );
+    assert_eq!(old.exit().code(), Some(0));
+    assert_eq!(toc(&held)["ok"], json!(true), "carried conn stays warm");
+
+    let (status, rest) = new.stop();
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(rest, "");
+}
+
+#[test]
+fn a_successor_takes_over_when_a_warmed_workspace_vanished_without_unregister() {
+    let sb = Sandbox::new();
+    let mut old = sb.daemon(false);
+    wait_bound(&sb.socket());
+
+    let held = sb.dial();
+    let started = Instant::now();
+    loop {
+        let answer = toc(&held);
+        if answer["ok"] == json!(true) {
+            break;
+        }
+        assert_eq!(answer["error"]["code"], json!("corpus_warming"), "{answer}");
+        assert!(started.elapsed() < BUDGET, "still warming: {answer}");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let jail = sb.tmp.path().join("vanished-no-unreg");
+    std::fs::create_dir_all(jail.join(".git")).expect("jail git");
+    std::fs::write(jail.join("a.md"), "# Gone\n").expect("jail doc");
+    let jail = std::fs::canonicalize(&jail).expect("canonical jail");
+    warm_workspace(&sb.socket(), &jail);
+    std::fs::remove_dir_all(&jail).expect("delete jail without unregister");
+
+    let mut new = sb.daemon(true);
+    assert_eq!(
+        new.first_line(),
+        "serving\n",
+        "the successor takes over warm"
+    );
+    assert_eq!(old.exit().code(), Some(0));
+    assert_eq!(toc(&held)["ok"], json!(true), "carried conn stays warm");
+
+    let (status, rest) = new.stop();
+    assert_eq!(status.code(), Some(0));
     assert_eq!(rest, "");
 }
