@@ -2680,9 +2680,7 @@ impl Registry {
         feed: &Arc<feed::WorkspaceFeed>,
         cache: &Arc<Mutex<fs::DomainCache>>,
     ) {
-        let held = |slot: Option<&FeedSlot>| {
-            matches!(slot, Some(FeedSlot::Live(live)) if Arc::ptr_eq(live, feed))
-        };
+        let held = |slot: Option<&FeedSlot>| matches!(slot, Some(FeedSlot::Live(live)) if Arc::ptr_eq(live, feed));
         let save = self
             .persistence_gate
             .lock()
@@ -7372,7 +7370,10 @@ mod engine_tests {
             .expect("the first refresh starts the feed");
         reg.save_checkpoints();
         let checkpoint = crate::checkpoint::path(&reg.cache_root, &canonical);
-        assert!(checkpoint.exists(), "a checkpoint of the old root is on disk");
+        assert!(
+            checkpoint.exists(),
+            "a checkpoint of the old root is on disk"
+        );
 
         fs::remove_dir_all(&canonical).unwrap();
         fs::create_dir(&canonical).unwrap();
