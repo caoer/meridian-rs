@@ -56,7 +56,11 @@ fn setup_repo(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
     git(&ws, &["config", "user.email", "test@example.invalid"]);
     git(&ws, &["config", "user.name", "test"]);
     git(&ws, &["config", "commit.gpgsign", "false"]);
-    write(&ws, "source.md", "# Source\n\n## Rule\n\noriginal body\n");
+    write(
+        &ws,
+        "source.md",
+        "# Source\n\n## Rule\n\noriginal body\n\n## Extra\n\nv1\n",
+    );
     write(&ws, "other-source.md", "# Other\n\n## Rule\n\nother body\n");
     write(&ws, "agents/card-a/card-a.md", "# Card A\n\nnotes.\n");
     write(&ws, "agents/card-b/card-b.md", "# Card B\n\nnotes.\n");
@@ -142,7 +146,11 @@ fn scoped_commit_gate_ignores_unrelated_corpus_and_catches_own_drift() {
     // scoped gate MUST refuse (exit 1, RED on staged).
     write(&ws, "source.md", "# Source\n\n## Rule\n\nSTAGED FORGERY\n");
     git(&ws, &["add", "source.md"]);
-    write(&ws, "source.md", "# Source\n\n## Rule\n\noriginal body\n");
+    write(
+        &ws,
+        "source.md",
+        "# Source\n\n## Rule\n\noriginal body\n\n## Extra\n\nv1\n",
+    );
 
     let red = common::mrd_command(&home, &cache)
         .args([
@@ -309,16 +317,13 @@ fn historical_pin_is_anchored_via_path_history() {
         cache_home: cache.clone(),
     };
 
-    // Append an unpinned section to source.md (preserving the anchor `mrd pin`
-    // minted) and commit: HEAD:source.md now has a DIFFERENT blob SHA, while
-    // card-a's pinned section still matches and its recorded blob SHA is in
-    // the earlier commit of source.md.
+    // Edit the unpinned `## Extra` section (leaving `## Rule` byte-identical)
+    // and commit: HEAD:source.md now has a DIFFERENT blob SHA, while card-a's
+    // pinned section still matches and its recorded blob SHA is in the earlier
+    // commit of source.md.
     let existing = std::fs::read_to_string(ws.join("source.md")).expect("read source.md");
-    write(
-        &ws,
-        "source.md",
-        &format!("{existing}\n## Extra\n\nnew section\n"),
-    );
+    assert!(existing.contains("\nv1\n"), "fixture must have v1");
+    write(&ws, "source.md", &existing.replace("\nv1\n", "\nv2\n"));
     git(&ws, &["add", "source.md"]);
     git(&ws, &["commit", "-qm", "edit unpinned section"]);
 
