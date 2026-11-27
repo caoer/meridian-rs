@@ -1804,16 +1804,20 @@ impl Registry {
         Some(wire_serve::watch::PrimeSnapshot::held(members, provider))
     }
 
-    /// The workspaces with a resident engine: the set a successor daemon
-    /// must hold warm before this one hands over (wire-contract §A.3).
+    /// The workspaces with a resident engine whose directory still exists on
+    /// disk: the set a successor daemon must hold warm before this one hands
+    /// over (wire-contract §A.3).
     #[must_use]
     pub fn warm_workspaces(&self) -> Vec<PathBuf> {
-        self.engines
+        let mut keys: Vec<PathBuf> = self
+            .engines
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .keys()
             .cloned()
-            .collect()
+            .collect();
+        keys.retain(|path| path.is_dir());
+        keys
     }
 
     /// The directory of this daemon's residency store, when it has a host.
@@ -3937,7 +3941,25 @@ impl Registry {
         if removed {
             self.persist();
         }
+        // Drop the resident engine, ring, module cache and pre-warm signature
+        // along with the registration so `unregister` leaves no unreapable
+        // entry in `self.engines` (which `reap` would never visit once
+        // `self.inner` dropped the key, and `warm_workspaces` would advertise
+        // to a successor).
+        let ring = {
+            let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            rings.remove(&key)
+        };
+        let engine = {
+            let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+            engines.remove(&key)
+        };
         let (feed, cache) = self.end_resident(std::slice::from_ref(&key), true);
+        for memo in &cache {
+            memo.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unbind_stamps();
+        }
         self.checkpoints
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -3947,6 +3969,15 @@ impl Registry {
         // `sql` call instead of the cold build the removal asked for.
         let sql_store = self
             .sql_stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        let modules = self
+            .modules
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        self.prewarm_signatures
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&key);
@@ -3967,9 +3998,13 @@ impl Registry {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&key);
-        // Kernel-stream release (the feed's Drop) runs outside every map lock.
+        // Kernel-stream release (the feed's Drop) and corpus drops run outside
+        // every map lock.
         drop(feed);
         drop(cache);
+        drop(engine);
+        drop(ring);
+        drop(modules);
         drop(sql_store);
         // The census takes memo and ring locks: never under the saver's gate.
         drop(save);
@@ -5972,6 +6007,82 @@ mod engine_tests {
         assert!(
             !reg.note_dirty(&canonical, &[PathBuf::from("a.md")]),
             "a hint for an unregistered workspace is refused"
+        );
+    }
+
+    /// `unregister` must drop the resident `WorkspaceEngine` along with the
+    /// ring, module cache and pre-warm signature. Otherwise the workspace stays
+    /// in `self.engines` forever (`reap` iterates `self.inner`, which already
+    /// dropped it) and `warm_workspaces` advertises a deleted directory to any
+    /// later `--successor`.
+    #[test]
+    fn unregister_drops_the_resident_engine_ring_modules_and_prewarm_signature() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&ws).unwrap();
+        let _ = reg.ring(&canonical);
+        let _ = reg.modules(&canonical);
+        reg.prewarm_signatures
+            .lock()
+            .unwrap()
+            .insert(canonical.clone(), 1);
+        assert!(reg.engines.read().unwrap().contains_key(&canonical));
+        assert!(reg.warm_workspaces().contains(&canonical));
+
+        assert!(reg.unregister(&canonical));
+        assert!(
+            !reg.engines.read().unwrap().contains_key(&canonical),
+            "the resident engine leaves with the registration"
+        );
+        assert!(
+            reg.warm_workspaces().is_empty(),
+            "an unregistered workspace is no longer advertised to a successor"
+        );
+        assert!(
+            !reg.rings.lock().unwrap().contains_key(&canonical),
+            "the ring leaves with the registration"
+        );
+        assert!(
+            !reg.modules.lock().unwrap().contains_key(&canonical),
+            "the module cache leaves with the registration"
+        );
+        assert!(
+            !reg.prewarm_signatures
+                .lock()
+                .unwrap()
+                .contains_key(&canonical),
+            "the pre-warm signature leaves with the registration"
+        );
+    }
+
+    /// A workspace whose directory disappeared from disk without `unregister`
+    /// must not be required of a successor daemon (`warm_workspaces`).
+    #[test]
+    fn warm_workspaces_skips_vanished_directories() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let live_dir = home.path().join("live");
+        let gone_dir = home.path().join("gone");
+        fs::create_dir_all(&live_dir).unwrap();
+        fs::create_dir_all(&gone_dir).unwrap();
+        let live = write_ws(&live_dir, &[("a.md", "# Live\n")]);
+        let gone = write_ws(&gone_dir, &[("b.md", "# Gone\n")]);
+        let live_c = workspace::canonicalize(&live).unwrap();
+        let gone_c = workspace::canonicalize(&gone).unwrap();
+        reg.register(&live_c);
+        reg.register(&gone_c);
+        reg.warm_or_build(&live_c).unwrap();
+        reg.warm_or_build(&gone_c).unwrap();
+
+        fs::remove_dir_all(&gone_c).unwrap();
+        let warm = reg.warm_workspaces();
+        assert_eq!(
+            warm,
+            vec![live_c],
+            "vanished directory must not be advertised in warm_workspaces"
         );
     }
 

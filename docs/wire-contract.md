@@ -1407,8 +1407,14 @@ it is `mrd daemon`.
   workspaces it holds warm. The resident answers one line,
   `{"status":"handover","grant":<bool>,"reason":…,"warm":[…],"conns":[…]}`:
   - `grant:false, reason:"warm"` — the resident holds a workspace warm that
-    the successor does not, or is building one. `warm` is the resident's set;
-    the successor warms it and asks again.
+    the successor does not, or is building one. `warm` is the resident's set
+    of live warm workspaces (directories that still exist on disk; `unregister`
+    drops the resident engine along with the registration); the successor warms
+    each missing live workspace and asks again. A directory that vanished on
+    disk before the successor warms it (including one advertised by an older
+    resident) is skipped rather than failing succession, and still named in the
+    successor's `warm` list on the next ask so an older resident grants the
+    handover without a cold restart.
   - `grant:false, reason:"busy"` — a request, a background save or a cache
     compaction was still running 5 s after the resident stopped reading new
     requests. The resident has resumed; the successor asks again after 2 s,
