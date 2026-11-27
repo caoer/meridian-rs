@@ -716,8 +716,9 @@ mod tests {
         assert_eq!(counts(&reg, &ws), history, "the old file, whole");
     }
 
-    /// An unregister during a rebuild ends it: nothing reopens the cache of
-    /// a workspace the daemon no longer serves, though its engine stays.
+    /// An unregister during a rebuild ends it: the resident engine leaves with
+    /// the registration and nothing reopens the cache of a workspace the
+    /// daemon no longer serves.
     #[test]
     fn a_workspace_unregistered_during_its_rebuild_gets_no_handle_back() {
         let home = tempfile::tempdir().unwrap();
@@ -731,7 +732,10 @@ mod tests {
 
         look(&reg, 2);
 
-        assert!(reg.engine_snapshot(&ws).is_some(), "its engine stays");
+        assert!(
+            reg.engine_snapshot(&ws).is_none(),
+            "its engine leaves with the registration"
+        );
         assert!(reg.open_sql_store(&ws).is_none(), "no handle came back");
         assert!(!reg.sql_compaction().is_paused(&ws));
         assert!(!reg.drawer(&ws).join(COMPACT_DIR).exists());

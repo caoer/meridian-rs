@@ -24,7 +24,7 @@ mod common;
 const BUDGET: Duration = Duration::from_secs(60);
 
 struct Sandbox {
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     home: PathBuf,
     cache_home: PathBuf,
     ws: PathBuf,
@@ -47,7 +47,7 @@ impl Sandbox {
         std::fs::write(ws.join("a.md"), "# Alpha\n\nsee [[beta]]\n").expect("doc");
         let ws = std::fs::canonicalize(&ws).expect("canonical ws");
         Self {
-            _tmp: tmp,
+            tmp,
             home,
             cache_home,
             ws,
@@ -317,7 +317,7 @@ fn a_successor_takes_over_after_a_warmed_workspace_was_unregistered_and_deleted(
     }
 
     // Reproduce `bin/rule-edit`: warm a temp jail, unregister it, delete it.
-    let jail = sb._tmp.path().join("rule-edit-jail");
+    let jail = sb.tmp.path().join("rule-edit-jail");
     std::fs::create_dir_all(jail.join(".git")).expect("jail git");
     std::fs::write(jail.join("a.md"), "# Jail\n").expect("jail doc");
     let jail = std::fs::canonicalize(&jail).expect("canonical jail");
@@ -367,7 +367,7 @@ fn a_successor_takes_over_when_a_warmed_workspace_vanished_without_unregister() 
         thread::sleep(Duration::from_millis(20));
     }
 
-    let jail = sb._tmp.path().join("vanished-no-unreg");
+    let jail = sb.tmp.path().join("vanished-no-unreg");
     std::fs::create_dir_all(jail.join(".git")).expect("jail git");
     std::fs::write(jail.join("a.md"), "# Gone\n").expect("jail doc");
     let jail = std::fs::canonicalize(&jail).expect("canonical jail");
