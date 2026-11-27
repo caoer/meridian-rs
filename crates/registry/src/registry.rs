@@ -7416,6 +7416,51 @@ mod engine_tests {
         assert_eq!(root, disk(), "and the vouched root is the disk's");
     }
 
+    /// merkle-spec §6.4 the cookie, the warm path: the generation a warm
+    /// pass serves across a replaced root (`rm -rf ws && mkdir ws`, new
+    /// bytes) is the new root's — its fingerprint and leaf set equal a cold
+    /// snapshot of the disk. The pass whose borrow retires the lost feed
+    /// still owes that answer: no leaf of the old root may survive into it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_warm_pass_across_a_replaced_root_serves_the_new_roots_corpus() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("sub/b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        let (_, first) = reg.warm_generation(&canonical).unwrap();
+        let lost = reg
+            .live_feed(&canonical)
+            .expect("the first warm pass starts the feed");
+        assert_eq!(first.leaves.len(), 2);
+
+        fs::remove_dir_all(&canonical).unwrap();
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("new.md"), "# New\n").unwrap();
+        fs::create_dir(canonical.join("graph")).unwrap();
+        fs::write(canonical.join("graph/c.md"), "# C\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !lost.root_lost() {
+            assert!(Instant::now() < deadline, "DELETE_SELF loses the root");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (_, files_leaves, cold) =
+            ::fs::domain_snapshot_with_leaves(&::fs::WorkspaceRoot(canonical.clone())).unwrap();
+        let (_, served) = reg.warm_generation(&canonical).unwrap();
+        assert_eq!(
+            served.leaves, files_leaves,
+            "the served generation's leaves are the new root's, none of the old"
+        );
+        assert_eq!(
+            served.at_fingerprint, cold,
+            "the served fingerprint is a cold build's"
+        );
+        let (_, again) = reg.warm_generation(&canonical).unwrap();
+        assert_eq!(again.at_fingerprint, cold, "and it stays the cold build's");
+    }
+
     /// merkle-spec §6.7 detect row: the push plane's backstop recovers an edit
     /// the event stream lost, and it does so without a sweep of the shared
     /// memo — the finding rides in as a dirty hint and the next vouched
