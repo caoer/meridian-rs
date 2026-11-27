@@ -788,10 +788,9 @@ fn warm_beside(
             ))
         });
         match outcome {
-            Ok(Step::Warmed) => {}
             Ok(Step::Vanished(path)) => vanished.push(path),
             Err(e) if first.is_ok() => first = Err(e),
-            Err(_) => {}
+            Ok(Step::Warmed) | Err(_) => {}
         }
     }
     first?;
