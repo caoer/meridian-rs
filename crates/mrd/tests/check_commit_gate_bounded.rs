@@ -377,7 +377,7 @@ fn sighup_terminates_mrd_check() {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let mut child = Command::new(mrd_bin())
+    let child = Command::new(mrd_bin())
         .args([
             "check",
             "--commit-gate",
