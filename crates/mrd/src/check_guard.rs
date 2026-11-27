@@ -374,17 +374,14 @@ fn parse_linux_stat_ppid(stat: &str) -> Option<libc::pid_t> {
     fields.next()?.parse::<libc::pid_t>().ok()
 }
 
-/// Terminate every direct child process of this `mrd check` (e.g. a running
-/// `git` subprocess) so no helper survives an abort.
+/// Collect all live descendant PIDs of `root_pid` from Linux `/proc`.
 #[cfg(target_os = "linux")]
-fn kill_direct_children() {
-    let Ok(self_pid) = libc::pid_t::try_from(std::process::id()) else {
-        return;
-    };
+fn descendant_pids(root_pid: libc::pid_t) -> Vec<libc::pid_t> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return;
+        return Vec::new();
     };
-    let mut children = Vec::new();
+    let mut children_of: std::collections::HashMap<libc::pid_t, Vec<libc::pid_t>> =
+        std::collections::HashMap::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(text) = name.to_str() else {
@@ -393,26 +390,47 @@ fn kill_direct_children() {
         let Ok(pid) = text.parse::<libc::pid_t>() else {
             continue;
         };
-        if pid == self_pid {
-            continue;
-        }
-        if parent_pid_of(pid) == Some(self_pid) {
-            children.push(pid);
+        if let Some(ppid) = parent_pid_of(pid) {
+            children_of.entry(ppid).or_default().push(pid);
         }
     }
-    for &pid in &children {
-        // SAFETY: sending `SIGTERM` to a verified direct child of this process.
+    let mut out = Vec::new();
+    let mut stack = vec![root_pid];
+    while let Some(cur) = stack.pop() {
+        if let Some(kids) = children_of.get(&cur) {
+            for &kid in kids {
+                if kid != root_pid {
+                    out.push(kid);
+                    stack.push(kid);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Terminate every descendant process of this `mrd check` (e.g. a running `git`
+/// subprocess or shell helper) so nothing survives an abort.
+#[cfg(target_os = "linux")]
+fn kill_direct_children() {
+    let Ok(self_pid) = libc::pid_t::try_from(std::process::id()) else {
+        return;
+    };
+    let first = descendant_pids(self_pid);
+    for &pid in &first {
+        // SAFETY: sending `SIGTERM` to a verified descendant of this process.
         unsafe {
             let _ = libc::kill(pid, libc::SIGTERM);
         }
     }
-    if !children.is_empty() {
+    if !first.is_empty() {
         thread::sleep(Duration::from_millis(50));
-        for &pid in &children {
-            // SAFETY: escalate to `SIGKILL` for any direct child still alive.
-            unsafe {
-                let _ = libc::kill(pid, libc::SIGKILL);
-            }
+    }
+    // Re-scan after the grace window so any child spawned mid-abort is caught too.
+    for pid in descendant_pids(self_pid) {
+        // SAFETY: escalating to `SIGKILL` for any remaining verified descendant.
+        unsafe {
+            let _ = libc::kill(pid, libc::SIGKILL);
         }
     }
 }

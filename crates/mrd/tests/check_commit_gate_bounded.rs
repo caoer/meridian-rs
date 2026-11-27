@@ -309,14 +309,12 @@ fn historical_pin_is_anchored_via_path_history() {
         cache_home: cache.clone(),
     };
 
-    // Edit an unpinned section of source.md and commit: HEAD:source.md now
-    // has a DIFFERENT blob SHA, while card-a's pinned section still matches
-    // and its recorded blob SHA is in the earlier commit of source.md.
-    write(
-        &ws,
-        "source.md",
-        "# Source\n\n## Rule\n\noriginal body\n\n## Extra\n\nnew section\n",
-    );
+    // Append an unpinned section to source.md (preserving the anchor `mrd pin`
+    // minted) and commit: HEAD:source.md now has a DIFFERENT blob SHA, while
+    // card-a's pinned section still matches and its recorded blob SHA is in
+    // the earlier commit of source.md.
+    let existing = std::fs::read_to_string(ws.join("source.md")).expect("read source.md");
+    write(&ws, "source.md", &format!("{existing}\n## Extra\n\nnew section\n"));
     git(&ws, &["add", "source.md"]);
     git(&ws, &["commit", "-qm", "edit unpinned section"]);
 
@@ -470,7 +468,7 @@ fn wall_clock_bound_terminates_stalled_check_and_children() {
         .env("XDG_CACHE_HOME", &cache)
         .env("PATH", path_env)
         .env("MRD_CHECK_LOCK", tmp.path().join("timeout.lock"))
-        .env("MRD_CHECK_TIMEOUT_SECS", "1")
+        .env("MRD_CHECK_TIMEOUT_SECS", "2")
         .env_remove("MERIDIAN_WORKSPACE")
         .output()
         .expect("spawn mrd");
