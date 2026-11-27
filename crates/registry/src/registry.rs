@@ -2666,17 +2666,41 @@ impl Registry {
     /// the path now, so the feed can never vouch again. Feed and memo leave
     /// their maps together, as at an eviction, only while they are still the
     /// ones this borrow holds; the next borrow takes a cold entry and arms a
-    /// fresh watch on the new root. The checkpoint goes too: its journal
-    /// cursor still anchors against the live ring, which never saw the
-    /// replacement, so a restore would adopt rows no sweep re-checks. The
-    /// borrow in hand keeps its memo privately; its collapse already sent it
-    /// to the floor.
+    /// fresh watch on the new root. The borrow in hand keeps its memo
+    /// privately; its collapse already sent it to the floor.
+    ///
+    /// The checkpoint goes first, under the saver's gate, as at `unregister`:
+    /// its journal cursor still anchors against the live ring, which never saw
+    /// the replacement, so a restore would adopt rows no sweep re-checks. With
+    /// the gate held no saver commits after the discard, and with the memo
+    /// still published while the file goes no cold entry can restore it.
     fn retire_lost_feed(
         &self,
         workspace: &Path,
         feed: &Arc<feed::WorkspaceFeed>,
         cache: &Arc<Mutex<fs::DomainCache>>,
     ) {
+        let held = |slot: Option<&FeedSlot>| {
+            matches!(slot, Some(FeedSlot::Live(live)) if Arc::ptr_eq(live, feed))
+        };
+        let save = self
+            .persistence_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let live = self.feeds.lock().unwrap_or_else(PoisonError::into_inner);
+        if !held(live.get(workspace)) {
+            return;
+        }
+        drop(live);
+        self.checkpoints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(workspace);
+        crate::checkpoint::discard(&self.cache_root, workspace);
+        self.saved_observation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(workspace);
         let (slot, memo) = {
             let _entries = self
                 .cold_entries
@@ -2687,11 +2711,7 @@ impl Registry {
                 .domain_caches
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let held = matches!(
-                feeds.get(workspace),
-                Some(FeedSlot::Live(live)) if Arc::ptr_eq(live, feed)
-            );
-            if !held {
+            if !held(feeds.get(workspace)) {
                 return;
             }
             let memo = if caches.get(workspace).is_some_and(|c| Arc::ptr_eq(c, cache)) {
@@ -2701,11 +2721,7 @@ impl Registry {
             };
             (feeds.remove(workspace), memo)
         };
-        self.checkpoints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(workspace);
-        crate::checkpoint::discard(&self.cache_root, workspace);
+        drop(save);
         timing::say!(
             "feed: workspace root {} was replaced under its watch — feed retired; \
              the next borrow arms a fresh one",
@@ -7330,8 +7346,9 @@ mod engine_tests {
 
     /// merkle-spec §6.4 the cookie: a workspace root replaced under its watch
     /// (`rm -rf ws && mkdir ws`) serves the new root's bytes through the
-    /// floor, retires the lost feed, and the next borrow arms a fresh watch
-    /// that vouches again and sees the next edit in the new root.
+    /// floor, retires the lost feed with the checkpoint saved before the
+    /// replacement, and the next borrow enters cold (no restore) and arms a
+    /// fresh watch that vouches again and sees the next edit in the new root.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn a_replaced_root_retires_its_feed_and_the_next_borrow_rearms() {
@@ -7353,6 +7370,9 @@ mod engine_tests {
         let lost = reg
             .live_feed(&canonical)
             .expect("the first refresh starts the feed");
+        reg.save_checkpoints();
+        let checkpoint = crate::checkpoint::path(&reg.cache_root, &canonical);
+        assert!(checkpoint.exists(), "a checkpoint of the old root is on disk");
 
         fs::remove_dir_all(&canonical).unwrap();
         fs::create_dir(&canonical).unwrap();
@@ -7370,6 +7390,7 @@ mod engine_tests {
             .live_feed(&canonical)
             .is_none_or(|feed| !Arc::ptr_eq(&feed, &lost));
         assert!(retired, "the lost feed is retired");
+        assert!(!checkpoint.exists(), "old checkpoint discarded");
 
         let mut vouched = false;
         for _ in 0..5 {
@@ -7383,6 +7404,10 @@ mod engine_tests {
         assert!(vouched, "a fresh feed on the new root vouches again");
         let fresh = reg.live_feed(&canonical).expect("a fresh feed");
         assert!(!Arc::ptr_eq(&fresh, &lost) && !fresh.root_lost());
+        assert!(
+            reg.checkpoint_receipt(&canonical).is_none(),
+            "the fresh entry restored nothing from before the replacement"
+        );
 
         rewrite(&canonical, "b.md", "# B, written under the fresh watch\n");
         let (root, vouched) = refresh();

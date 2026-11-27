@@ -120,6 +120,21 @@ const RESCAN_RECORD_CAP: usize = 64;
 #[allow(clippy::duration_suboptimal_units)]
 const COOKIE_HOLDOFF: Duration = Duration::from_secs(60);
 
+/// Test seam for [`WorkspaceFeed::start`] on this thread: drop the root's own
+/// events from the first one (`drop_root_self`), and run `between_arms` after
+/// the root watch arms and before the cookie watch does.
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+#[derive(Default)]
+struct StartSeam {
+    drop_root_self: std::cell::Cell<bool>,
+    between_arms: std::cell::Cell<Option<Box<dyn FnOnce()>>>,
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
+thread_local! {
+    static START_SEAM: StartSeam = StartSeam::default();
+}
+
 /// How long [`WorkspaceFeed::start`] waits for the watcher to answer whether
 /// the root it just armed is still the root on disk. No answer loses the root:
 /// the feed then never vouches, and the registry arms a fresh one.
@@ -399,6 +414,17 @@ impl FeedSync {
         s
     }
 
+    /// The kernel queue overflowed: collapse, and wake every parked barrier.
+    /// The lost events may have carried the cookie directory's or the root's
+    /// own removal, so the next barrier re-arms the cookie watch, and the
+    /// re-arm asks the kernel whether the root is still watched.
+    fn overflowed(&self, s: &mut FeedState) {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        self.cookie_watch_lost.store(true, Ordering::Release);
+        s.collapse(RescanCause::Overflow);
+        self.cookie.notify_all();
+    }
+
     /// The root watch is gone ([`Self::root_lost`]): collapse once as a
     /// missed-event and wake every parked barrier. Later calls are no-ops,
     /// so the rescan record names the loss once.
@@ -611,7 +637,7 @@ impl WorkspaceFeed {
             #[cfg(any(target_os = "linux", target_os = "android"))]
             root_lost: AtomicBool::new(false),
             #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
-            drop_root_self: AtomicBool::new(false),
+            drop_root_self: AtomicBool::new(START_SEAM.with(|seam| seam.drop_root_self.get())),
             #[cfg(test)]
             sighting_gate: Mutex::new(None),
         });
@@ -629,14 +655,7 @@ impl WorkspaceFeed {
                 }
                 if let Ok(event) = event {
                     if event.need_rescan() {
-                        // A lost queue may have carried the cookie
-                        // directory's or the root's own removal: the next
-                        // barrier re-arms, and the re-arm asks the kernel
-                        // whether the root is still watched.
-                        #[cfg(any(target_os = "linux", target_os = "android"))]
-                        sink.cookie_watch_lost.store(true, Ordering::Release);
-                        s.collapse(RescanCause::Overflow);
-                        sink.cookie.notify_all();
+                        sink.overflowed(&mut s);
                         return;
                     }
                     if !relevant(event.kind) {
@@ -674,6 +693,10 @@ impl WorkspaceFeed {
         watcher.watch(workspace, RecursiveMode::Recursive)?;
         #[cfg(any(target_os = "linux", target_os = "android"))]
         let (cookie_armed, rearm_handle) = {
+            #[cfg(test)]
+            if let Some(between) = START_SEAM.with(|seam| seam.between_arms.take()) {
+                between();
+            }
             let armed = if cookie_dir.is_dir() {
                 watcher.watch(&cookie_dir, RecursiveMode::NonRecursive)?;
                 dir_identity(&cookie_dir).ok()
@@ -2799,6 +2822,141 @@ mod tests {
                 "{case}: one named loss"
             );
         }
+    }
+
+    /// Vendored notify patch 6: `still_watched_timeout` answers by kernel
+    /// watch identity. A watched, untouched directory is `Ok(true)` on every
+    /// call and keeps its mask (a read raises nothing, a write does); a path
+    /// the watcher never armed, a directory removed and made again, and a
+    /// directory replaced by a sibling renamed in are all `Ok(false)`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_still_watched_answers_by_watch_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let watched = dir.path().join("watched");
+        let sibling = dir.path().join("sibling");
+        std::fs::create_dir(&watched).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        let watched = watched.canonicalize().unwrap();
+        let sibling = sibling.canonicalize().unwrap();
+        let file = watched.join("x.md");
+        std::fs::write(&file, "# x\n").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut raw = notify::RecommendedWatcher::new(
+            move |ev| {
+                let _ = tx.send(ev);
+            },
+            notify::Config::default()
+                .with_follow_symlinks(false)
+                .with_skip_dot_dirs(true),
+        )
+        .expect("watcher");
+        raw.watch(&watched, RecursiveMode::NonRecursive).unwrap();
+        let handle = raw.rearm_handle();
+        let probe = |path: &Path| handle.still_watched_timeout(path, Duration::from_secs(5));
+
+        assert!(matches!(probe(&watched), Ok(true)), "a live watch");
+        assert!(matches!(probe(&watched), Ok(true)), "and again");
+        while rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+        assert_eq!(std::fs::read(&file).unwrap(), b"# x\n");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the probes added no read events to the mask"
+        );
+        std::fs::write(&file, "# x, again\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.checked_duration_since(Instant::now());
+            let ev = left.and_then(|left| rx.recv_timeout(left).ok());
+            match ev {
+                Some(Ok(ev)) if ev.paths.contains(&file) => break,
+                Some(_) => {}
+                None => panic!("a write still raises its event"),
+            }
+        }
+
+        assert!(matches!(probe(&sibling), Ok(false)), "never armed");
+        std::fs::remove_dir_all(&watched).unwrap();
+        std::fs::create_dir(&watched).unwrap();
+        assert!(matches!(probe(&watched), Ok(false)), "remade");
+        std::fs::remove_dir_all(&watched).unwrap();
+        std::fs::rename(sibling, &watched).unwrap();
+        assert!(matches!(probe(&watched), Ok(false)), "sibling renamed in");
+    }
+
+    /// A queue overflow forces the next barrier to re-arm the cookie watch,
+    /// and the re-arm finds a replaced root. The root's `MOVE_SELF` is dropped
+    /// (as the overflow would) and `.meridian` is carried into the new root,
+    /// so the cookie directory keeps its inode and its live watch: without
+    /// the overflow's re-arm, the steady-state barrier would vouch through
+    /// it for a root nothing watches.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_an_overflow_rearms_and_finds_a_replaced_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir(&ws).unwrap();
+        let root = ws.canonicalize().unwrap();
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default()).expect("feed");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Seen
+        );
+        let _ = feed.take();
+        feed.sync.drop_root_self.store(true, Ordering::Release);
+        let parked = dir.path().join("parked-meridian");
+        std::fs::rename(root.join(".meridian"), &parked).unwrap();
+        std::fs::rename(&root, dir.path().join("ws.old")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::rename(parked, root.join(".meridian")).unwrap();
+        assert!(!feed.root_lost());
+        assert!(!feed.sync.cookie_watch_lost.load(Ordering::Acquire));
+
+        {
+            let mut s = feed.sync.state.lock().unwrap();
+            feed.sync.overflowed(&mut s);
+        }
+        assert_eq!(feed.take(), Pending::All(RescanCause::Overflow));
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Unproven,
+            "the forced re-arm asks the kernel and refuses"
+        );
+        assert!(feed.root_lost());
+        assert_eq!(
+            feed.rescan_record(),
+            vec![RescanCause::Overflow, RescanCause::MissedEvent]
+        );
+    }
+
+    /// A root replaced after its watch arms and before the cookie watch does
+    /// leaves the cookie watch inside an unwatched root: the start probe
+    /// loses the root, so the first barrier refuses instead of vouching
+    /// through that cookie watch. The root's own `MOVE_SELF` is dropped.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn inotify_a_root_replaced_between_arms_is_lost_at_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir(&ws).unwrap();
+        let root = ws.canonicalize().unwrap();
+        let (new_root, old_root) = (root.clone(), dir.path().join("ws.old"));
+        START_SEAM.with(|seam| {
+            seam.drop_root_self.set(true);
+            seam.between_arms.set(Some(Box::new(move || {
+                std::fs::rename(&new_root, old_root).unwrap();
+                std::fs::create_dir_all(new_root.join(COOKIE_DIR)).unwrap();
+            })));
+        });
+        let feed = WorkspaceFeed::start(&root, fs::stable::FeedGen::default());
+        START_SEAM.with(|seam| seam.drop_root_self.set(false));
+        let feed = feed.expect("feed");
+        assert!(feed.root_lost(), "start probe loses the root");
+        assert_eq!(
+            feed.cookie_barrier(&root, Duration::from_secs(5)),
+            CookieOutcome::Unproven
+        );
+        assert_eq!(feed.rescan_record(), vec![RescanCause::MissedEvent]);
     }
 
     /// Bounded re-arm IPC (r2 M1) and holdoff on re-arm timeout (r3 L2):

@@ -636,36 +636,6 @@ impl EventLoop {
     /// the same inode, keeping queued events intact), and remove the previous
     /// `wd` only if the returned `wd` differs and `self.paths` still maps it
     /// to `path`.
-    /// `inotify_add_watch` returns the existing `wd` exactly when `path`
-    /// still names the inode that `wd` watches on this instance; any other
-    /// inode gets a fresh `wd`, which is removed again at once. `MASK_ADD`
-    /// with the held mask leaves a live watch unchanged.
-    // meridian-rs patch: kernel watch identity for `still_watched_timeout`.
-    fn still_watched(&mut self, path: &Path) -> Result<bool> {
-        let Some((old_wd, mask, ..)) = self.watches.get(path).cloned() else {
-            return Ok(false);
-        };
-        let Some(ref mut inotify) = self.inotify else {
-            return Ok(false);
-        };
-        match inotify.watches().add(path, mask | WatchMask::MASK_ADD) {
-            Ok(new_wd) if new_wd == old_wd => Ok(true),
-            Ok(new_wd) => {
-                if !self.paths.contains_key(&new_wd) {
-                    let _ = inotify.watches().remove(new_wd);
-                }
-                Ok(false)
-            }
-            Err(e)
-                if e.kind() == std::io::ErrorKind::NotFound
-                    || e.raw_os_error() == Some(libc::ENOTDIR) =>
-            {
-                Ok(false)
-            }
-            Err(e) => Err(Error::io(e).add_path(path.to_owned())),
-        }
-    }
-
     // meridian-rs patch: idempotent single-round-trip re-arm for
     // `.meridian/cookies` so a stale `cookie_watch_lost` never drops an
     // in-flight barrier's queued sentinel event.
@@ -709,6 +679,38 @@ impl EventLoop {
             }
         }
         Ok(())
+    }
+
+    /// `inotify_add_watch` returns the existing `wd` exactly when `path`
+    /// still names the inode that `wd` watches on this instance; any other
+    /// inode gets a fresh `wd`, which is removed again at once. `MASK_ADD`
+    /// with the held mask leaves a live watch unchanged. `ENOSPC` can only
+    /// come from a new watch, so it too means another inode.
+    // meridian-rs patch: kernel watch identity for `still_watched_timeout`.
+    fn still_watched(&mut self, path: &Path) -> Result<bool> {
+        let Some((old_wd, mask, ..)) = self.watches.get(path).cloned() else {
+            return Ok(false);
+        };
+        let Some(ref mut inotify) = self.inotify else {
+            return Ok(false);
+        };
+        match inotify.watches().add(path, mask | WatchMask::MASK_ADD) {
+            Ok(new_wd) if new_wd == old_wd => Ok(true),
+            Ok(new_wd) => {
+                if !self.paths.contains_key(&new_wd) {
+                    let _ = inotify.watches().remove(new_wd);
+                }
+                Ok(false)
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    || e.raw_os_error() == Some(libc::ENOTDIR)
+                    || e.raw_os_error() == Some(libc::ENOSPC) =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(Error::io(e).add_path(path.to_owned())),
+        }
     }
 
     fn add_single_watch(
