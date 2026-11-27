@@ -2063,6 +2063,12 @@ impl Registry {
         // and was left without a generation.
         let mut waited_at: Vec<model::MerkleRoot> = Vec::new();
 
+        // Arm first: on a workspace with no published memo this borrow runs
+        // the cold entry — the checkpoint restore and the feed — so the
+        // currency pass below finds a live feed and can vouch instead of
+        // flooring as `no_feed` over a memo the restore already proved. The
+        // handle is dropped, never read: the rebuild reads the pass's memo.
+        drop(self.domain_cache(&canonical));
         loop {
             // Cheap half (no parse, and no re-read of anything that did not
             // move): the workspace's current content hash at the §6.7 vouched
