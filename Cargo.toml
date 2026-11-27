@@ -170,7 +170,7 @@ pedantic = { level = "warn", priority = -1 }
 # plus one commit that pads a short table row with one item expanded into empty
 # cells as events (merkle-spec §6.4); fork-only, no upstream PR.
 pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2da10fed73f18e97910bb0f3477c50a92f50" }
-# notify 8.2.2 as published on crates.io (upstream 603674a8), vendored with five
+# notify 8.2.2 as published on crates.io (upstream 603674a8), vendored with six
 # changes to its inotify backend, each marked by a `meridian-rs patch` comment.
 # 1. It no longer arms IN_OPEN (`add_single_watch`). Upstream arms it on every
 #    directory watch and has no mask knob, so every file read and directory
@@ -208,6 +208,13 @@ pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "164b2
 #    per `crates/fs/src/guard.rs`, and skipping them prevents symlink loops and
 #    duplicate-wd path map overwrites). Deterministic walk/re-arm test hooks
 #    live behind the opt-in `test-hooks` feature (dev-dependency only).
+# 6. `InotifyRearmHandle::still_watched_timeout` asks the event loop whether
+#    the watch it holds for a path is still the kernel's watch on the inode
+#    the path names now: `inotify_add_watch` with the held mask and `MASK_ADD`
+#    returns the same descriptor exactly then (`still_watched`). `WorkspaceFeed`
+#    uses it to tell a replaced workspace root from a live one where an inode
+#    number freed by `rm -rf` may already name the next `mkdir` (merkle-spec
+#    §6.4, the cookie).
 # `diff -r` against the crates.io source shows these hunks alone.
 notify = { path = "vendor/notify" }
 # Tag `meridian-v1.20000.1-1`: duckdb-rs v1.20000.1 (upstream db918f65) plus one

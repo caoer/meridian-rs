@@ -552,7 +552,26 @@ engine-side.
   the rescan ladder below) is a missed-event: `Seen` is then illegal, and the
   barrier answers unproven at once, without spending the cookie timeout. An
   enumerated directory create opens no doubt: its children are hints in the
-  dirty set, and the watch covered the directory before the enumeration ran. The dot-prefixed cookie path is
+  dirty set, and the watch covered the directory before the enumeration ran.
+  On inotify the recursive walk prunes dot-prefixed directories, so
+  `.meridian/cookies/` carries its own direct watch, re-armed by the next
+  barrier when that directory is removed, renamed or recreated, and after a
+  queue overflow, which may have dropped that removal. The re-arm covers the
+  cookie directory only, never the root. A workspace root that is itself
+  removed or renamed is a root no watch covers: its own delete-self or
+  move-self event says so, and when that event is lost, the re-arm finds it
+  first by asking the kernel whether the root's watch still covers the inode
+  the root's path names now (a re-added watch returns the same descriptor
+  exactly then; an inode number freed by `rm -rf` can name the next `mkdir`,
+  a descriptor cannot). A root replaced between arming the root watch and
+  arming the cookie watch is caught the same way when the feed starts. The
+  feed then collapses as a missed-event once, and every later barrier on it,
+  a waiting one included, answers unproven at once and re-arms nothing. A
+  cookie armed inside the replaced root would return through the stream and
+  vouch a root whose member events nothing captures. The registry retires
+  that feed at the next borrow, with the workspace's memo and checkpoint (the
+  journal never saw the replacement), so the borrow after it takes the cold
+  entry and arms a fresh watch on the root now at the path. The dot-prefixed cookie path is
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it
   can never move the root or break a held token; a cookie inside the hash
   domain is refused.
