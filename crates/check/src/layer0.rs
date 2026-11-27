@@ -505,18 +505,44 @@ fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> 
         .map(|(o, p)| (o.blob_sha.as_str(), p.as_path()))
         .collect();
     let at_head = repo.anchored_at_head(&asks).map_err(asked)?;
-    let reachable = if at_head.iter().all(|hit| *hit) {
-        None
-    } else {
-        Some(repo.reachable_objects().map_err(asked)?)
-    };
+    // Settle remaining pins against their own path history across anchoring
+    // refs before paying for a repository-wide reachability walk.
+    let unsettled_indices: Vec<usize> = at_head
+        .iter()
+        .enumerate()
+        .filter_map(|(i, hit)| (!*hit).then_some(i))
+        .collect();
+    let mut anchored = at_head;
+    if !unsettled_indices.is_empty() {
+        let unsettled_asks: Vec<(&str, &Path)> =
+            unsettled_indices.iter().map(|&i| asks[i]).collect();
+        if let Ok(in_history) = repo.anchored_in_path_history(&unsettled_asks) {
+            for (idx, hit) in unsettled_indices.iter().zip(in_history) {
+                if hit {
+                    anchored[*idx] = true;
+                }
+            }
+        }
+    }
     let oids: Vec<&str> = objects.iter().map(|o| o.blob_sha.as_str()).collect();
     let info = repo.object_info(&oids).map_err(asked)?;
+    // Only ask the repository-wide reachable set when an unsettled blob could
+    // still be reachable under another path: present in the local ODB, or in a
+    // partial clone where a reachable blob may be omitted from the local ODB.
+    let need_full_reach = anchored
+        .iter()
+        .zip(&info)
+        .any(|(hit, present)| !*hit && (present.is_some() || repo.is_partial_clone()));
+    let reachable = if need_full_reach {
+        Some(repo.reachable_objects().map_err(asked)?)
+    } else {
+        None
+    };
 
     // Classify first, so the orphan check below hashes every non-anchored
     // file in ONE git call.
     let mut unanchored: Vec<(&ObjectRef, ObjectAnchor)> = Vec::new();
-    for ((object, present), hit) in objects.iter().zip(info).zip(at_head) {
+    for ((object, present), hit) in objects.iter().zip(info).zip(anchored) {
         let facts = ObjectAnchorFacts {
             object_present: present.is_some(),
             reachable_from_commit: hit

@@ -1120,6 +1120,33 @@ armed query fires, or whose staged interval diverges from the worktree,
 builds the corpus in its own process, as does any `check` on a workspace no
 daemon serves.
 
+**Path-scoped `--commit-gate -- PATH…` stays bounded.** When `--commit-gate`
+names one or more non-root workspace paths (`-- PATH…`), `check` never reads,
+parses, or walks the whole corpus or mounted corpora, and never enters the
+`.build` gate — whether a daemon is warm, warming, or absent. It reads only
+the holder markdown file(s) under `PATH…`, checks staged divergence only for
+those holders and their direct pin targets, parses only those holders and the
+direct target pages they pin (ambient and bound mounted roots), and scopes both
+the pin findings and the git blob-anchoring questions to holders under `PATH…`.
+On the anchoring plane, `HEAD:<path>` (`git ls-tree -r -z HEAD -- <paths>` when
+small) and the path's own history across anchoring refs (`git log --all` minus
+annex refs, `--raw --no-abbrev -z -- <paths>`) settle committed blobs before a
+whole-repository `rev-list --objects` is ever asked.
+
+**One-at-a-time slot and session-lifetime guard.** `mrd check` takes a
+non-blocking exclusive `flock` before doing corpus or git work, so two checks
+never run at once on one host: `MRD_CHECK_LOCK` when set; else
+`$HOME/.local/share/ucc/work/fleet-mutex/mrd-nyc1.lock` when that file exists
+on disk; else `<socket-stem>.check.lock` beside the daemon socket (per cache
+root, so every host gets a slot automatically). When another process holds the
+slot, `check` refuses `busy` (exit 2) and exits immediately without queuing.
+`mrd check` never detaches (`setsid`/`nohup`): it dies with its caller — on
+`SIGHUP`/`SIGTERM`/`SIGINT`, parent death (`PR_SET_PDEATHSIG`), parent-shell
+reparenting to PID 1 (an orphaned remote `ssh … bash -s`), stdout pipe hangup,
+or its wall-clock bound (`MRD_CHECK_TIMEOUT_SECS`, default 60 s for a
+path-scoped check and 300 s for an unscoped check) — terminating any child
+processes it spawned before exit.
+
 **Write history is not assessed: the engine keeps no memory.** History is pinned
 to git at lock, and anything between locks is not history. So chain continuity
 and last-receipt-vs-live are **not checked here at all: not grey, NOT

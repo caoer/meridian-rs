@@ -203,14 +203,25 @@ impl Repo {
             names.iter().map(|n| (n.as_bytes(), n.as_str())).collect();
 
         // Both listings are relative to the root and confined to it.
+        // Narrow by pathspec for small batches so one-card checks never scan a
+        // 100k-entry index.
+        let narrow = names.len() <= 64;
         let mut cmd = self.command();
         cmd.args(["diff-files", "--relative", "--name-only", "-z"]);
+        if narrow {
+            cmd.arg("--");
+            cmd.args(names);
+        }
         for changed in self.run(cmd, "diff-files").ok()?.split(|b| *b == 0) {
             wanted.remove(changed);
         }
 
         let mut cmd = self.command();
         cmd.args(["ls-files", "-s", "-v", "-z"]);
+        if narrow {
+            cmd.arg("--");
+            cmd.args(names);
+        }
         let stdout = self.run(cmd, "ls-files -s -v").ok()?;
         let mut out = HashMap::new();
         // An entry is `<tag> <mode> <oid> <stage>\t<path>`, NUL-terminated.
@@ -439,8 +450,17 @@ impl Repo {
             paths.iter().map(|p| (p.as_bytes(), &b""[..])).collect();
 
         // From a nested root git lists the paths under it, relative to it.
+        // For small batches pass the asked paths directly so a one-card check
+        // does not enumerate every tree entry in a 100k-file repository.
         let mut cmd = self.command();
         cmd.args(["ls-tree", "-r", "-z", "HEAD"]);
+        if asks.len() <= 64 {
+            let mut unique: Vec<&str> = paths.iter().map(String::as_str).collect();
+            unique.sort_unstable();
+            unique.dedup();
+            cmd.arg("--");
+            cmd.args(unique);
+        }
         let stdout = self.run(cmd, WHAT)?;
         // An entry is `<mode> <type> <oid>\t<path>`, NUL-terminated.
         for entry in stdout.split(|b| *b == 0) {
@@ -461,6 +481,102 @@ impl Repo {
                 is_oid(oid) && at_head[path.as_bytes()].eq_ignore_ascii_case(oid.as_bytes())
             })
             .collect())
+    }
+
+    /// For each `(oid, path)`, whether `oid` appears as a blob at `path` in any
+    /// commit reachable from an anchoring ref (every ref except git-annex's).
+    ///
+    /// Runs ONE path-scoped `git log --raw --no-abbrev -z --format= -- <paths>`
+    /// so a historical pin on a single file is proved reachable without walking
+    /// every object in the repository (`rev-list --objects --all`). A `true`
+    /// settles reachability; a `false` means the blob was not seen at that path
+    /// (it may be uncommitted or committed at another path).
+    ///
+    /// # Errors
+    /// As [`Repo::reachable_objects`].
+    pub fn anchored_in_path_history(&self, asks: &[(&str, &Path)]) -> Result<Vec<bool>, GitFail> {
+        const WHAT: &str = "log --raw";
+        if asks.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_repo()?;
+        // Avoid invoking `git log --all` when no anchoring ref exists at all
+        // (empty / unborn repository).
+        let mut tip_cmd = self.command();
+        tip_cmd.arg("rev-parse");
+        for pattern in reach::ANNEX_REFS {
+            tip_cmd.arg(format!("--exclude={pattern}"));
+        }
+        tip_cmd.arg("--all");
+        let tip_out = self.run(tip_cmd, "rev-parse --all")?;
+        if tip_out.iter().all(u8::is_ascii_whitespace) {
+            return Ok(vec![false; asks.len()]);
+        }
+
+        let mut unique: Vec<String> = asks
+            .iter()
+            .map(|(_, path)| path.to_string_lossy().into_owned())
+            .collect();
+        unique.sort();
+        unique.dedup();
+        if unique.len() > 64 {
+            return Ok(vec![false; asks.len()]);
+        }
+
+        let mut cmd = self.command();
+        cmd.arg("log");
+        for pattern in reach::ANNEX_REFS {
+            cmd.arg(format!("--exclude={pattern}"));
+        }
+        cmd.args(["--all", "--raw", "--no-abbrev", "-z", "--format=", "--"]);
+        cmd.args(&unique);
+        let stdout = self.run(cmd, WHAT)?;
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for record in stdout.split(|b| *b == 0) {
+            let trimmed = record
+                .iter()
+                .position(|b| *b != b'\n' && *b != b'\r')
+                .map_or(&b""[..], |start| &record[start..]);
+            let Some(rest) = trimmed.strip_prefix(b":") else {
+                continue;
+            };
+            let Ok(text) = std::str::from_utf8(rest) else {
+                continue;
+            };
+            let mut fields = text.split(' ');
+            let (Some(old_mode), Some(new_mode), Some(old_oid), Some(new_oid)) = (
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+            ) else {
+                continue;
+            };
+            let is_blob_mode = |m: &str| m.starts_with("100") || m == "120000";
+            let non_zero = |o: &str| is_oid(o) && !o.bytes().all(|b| b == b'0');
+            if is_blob_mode(old_mode) && non_zero(old_oid) {
+                seen.insert(old_oid.to_ascii_lowercase());
+            }
+            if is_blob_mode(new_mode) && non_zero(new_oid) {
+                seen.insert(new_oid.to_ascii_lowercase());
+            }
+        }
+        Ok(asks
+            .iter()
+            .map(|(oid, _)| is_oid(oid) && seen.contains(&oid.to_ascii_lowercase()))
+            .collect())
+    }
+
+    /// Whether this repository configures a promisor remote (partial clone), in
+    /// which an object absent from the local ODB can still be reachable from a
+    /// commit.
+    #[must_use]
+    pub fn is_partial_clone(&self) -> bool {
+        let mut cmd = self.command();
+        cmd.args(["config", "--get-regexp", "^remote\\..*\\.promisor$"]);
+        cmd.output()
+            .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
     }
 
     /// Type and size for each of `oids`, in input order — `None` where the
@@ -748,6 +864,27 @@ impl Repo {
     /// # Errors
     /// As [`Repo::blob_oid`].
     pub fn staged_divergence(&self) -> Result<Vec<StagedPath>, GitFail> {
+        self.staged_divergence_inner(None)
+    }
+
+    /// [`Repo::staged_divergence`] narrowed to `paths` (workspace-relative
+    /// paths under [`Repo::root`]): git inspects only those pathspecs and reads
+    /// blobs only for diverged paths under them, so unrelated worktree edits on
+    /// a busy checkout are never touched.
+    ///
+    /// # Errors
+    /// As [`Repo::staged_divergence`].
+    pub fn staged_divergence_paths(&self, paths: &[String]) -> Result<Vec<StagedPath>, GitFail> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.staged_divergence_inner(Some(paths))
+    }
+
+    fn staged_divergence_inner(
+        &self,
+        scope: Option<&[String]>,
+    ) -> Result<Vec<StagedPath>, GitFail> {
         self.require_repo()?;
 
         // git answers repo-relative; this handle may be rooted below the top
@@ -757,22 +894,29 @@ impl Repo {
         let mut candidates: Vec<String> = Vec::new();
         // Worktree-vs-index: every path whose worktree bytes are not the index's,
         // including one deleted from the worktree while the index still carries it.
-        candidates.extend(self.nul_paths(&["diff-files", "-z", "--name-only"], "diff-files")?);
+        let mut diff_files: Vec<&str> = vec!["diff-files", "-z", "--name-only"];
+        if let Some(paths) = scope {
+            diff_files.push("--");
+            diff_files.extend(paths.iter().map(String::as_str));
+        }
+        candidates.extend(self.nul_paths(&diff_files, "diff-files")?);
         // Index-vs-HEAD deletions: a path this commit REMOVES. `diff-files` cannot
         // see it — once the entry leaves the index the worktree copy is untracked,
         // so nothing compares it against anything.
         if self.head_exists()? {
-            candidates.extend(self.nul_paths(
-                &[
-                    "diff-index",
-                    "--cached",
-                    "-z",
-                    "--diff-filter=D",
-                    "--name-only",
-                    "HEAD",
-                ],
-                "diff-index --cached",
-            )?);
+            let mut diff_index: Vec<&str> = vec![
+                "diff-index",
+                "--cached",
+                "-z",
+                "--diff-filter=D",
+                "--name-only",
+                "HEAD",
+            ];
+            if let Some(paths) = scope {
+                diff_index.push("--");
+                diff_index.extend(paths.iter().map(String::as_str));
+            }
+            candidates.extend(self.nul_paths(&diff_index, "diff-index --cached")?);
         }
         candidates.sort();
         candidates.dedup();

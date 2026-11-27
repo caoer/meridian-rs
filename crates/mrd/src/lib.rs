@@ -10,6 +10,7 @@ mod build_gate;
 mod cache_cmd;
 mod check_armed;
 mod check_cmd;
+mod check_guard;
 mod config_cmd;
 mod corpus_tier;
 mod daemon;
