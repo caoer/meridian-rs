@@ -526,23 +526,50 @@ fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> 
     }
     let oids: Vec<&str> = objects.iter().map(|o| o.blob_sha.as_str()).collect();
     let info = repo.object_info(&oids).map_err(asked)?;
-    // Only ask the repository-wide reachable set when an unsettled blob could
-    // still be reachable under another path: present in the local ODB, or in a
-    // partial clone where a reachable blob may be omitted from the local ODB.
-    let need_full_reach = anchored
+
+    // Hash live files for the remaining unsettled entries FIRST: if a file on
+    // disk still hashes to the pinned blob (the normal state of a staged re-pin
+    // before commit), committing it anchors it and it can NEVER be an orphan.
+    // Avoiding `reachable_objects()` here prevents a 2.5 GB repo-wide
+    // `rev-list --objects --all` on every staged target edit.
+    let still_unsettled: Vec<usize> = anchored
         .iter()
-        .zip(&info)
-        .any(|(hit, present)| !*hit && (present.is_some() || repo.is_partial_clone()));
+        .enumerate()
+        .filter_map(|(i, hit)| (!*hit).then_some(i))
+        .collect();
+    let mut live_hashes: Vec<Option<Result<String, git::GitFail>>> =
+        (0..objects.len()).map(|_| None).collect();
+    if !still_unsettled.is_empty() {
+        let live_files: Vec<&Path> = still_unsettled
+            .iter()
+            .map(|&i| paths[i].as_path())
+            .collect();
+        for (idx, live) in still_unsettled.into_iter().zip(repo.blob_oids(&live_files)) {
+            live_hashes[idx] = Some(live);
+        }
+    }
+
+    // Only ask the repository-wide reachable set when an unsettled blob could
+    // actually be an orphan (its live file no longer hashes to it) AND could
+    // still be reachable under another path (present in the local ODB, or in a
+    // partial clone where a reachable blob may be omitted from the local ODB).
+    let need_full_reach = anchored.iter().enumerate().any(|(i, hit)| {
+        if *hit {
+            return false;
+        }
+        let live_matches = live_hashes[i]
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .is_some_and(|oid| oid.eq_ignore_ascii_case(&objects[i].blob_sha));
+        !live_matches && (info[i].is_some() || repo.is_partial_clone())
+    });
     let reachable = if need_full_reach {
         Some(repo.reachable_objects().map_err(asked)?)
     } else {
         None
     };
 
-    // Classify first, so the orphan check below hashes every non-anchored
-    // file in ONE git call.
-    let mut unanchored: Vec<(&ObjectRef, ObjectAnchor)> = Vec::new();
-    for ((object, present), hit) in objects.iter().zip(info).zip(anchored) {
+    for (i, ((object, present), hit)) in objects.iter().zip(info).zip(anchored).enumerate() {
         let facts = ObjectAnchorFacts {
             object_present: present.is_some(),
             reachable_from_commit: hit
@@ -559,23 +586,13 @@ fn ask_store(store_root: &Path, objects: &[ObjectRef], plane: &mut PinPlane) -> 
             ObjectAnchor::PendingAnchor => plane.pending += 1,
             ObjectAnchor::NeverAnchored => plane.never += 1,
         }
-        unanchored.push((object, state));
-    }
-
-    // If the file still hashes to this blob, committing it anchors it — a
-    // lifecycle moment, not a defect. `rel` is the object's path half
-    // without `.md`, so the extension goes back on before git is asked —
-    // relative to the store that owns the row, never the ambient root.
-    let files: Vec<PathBuf> = unanchored
-        .iter()
-        .map(|(o, _)| PathBuf::from(format!("{}.md", o.rel)))
-        .collect();
-    let files: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
-    for ((object, state), live) in unanchored.into_iter().zip(repo.blob_oids(&files)) {
-        let live = match live {
-            Ok(oid) if oid.eq_ignore_ascii_case(&object.blob_sha) => continue,
-            Ok(oid) => oid,
-            Err(e) => format!("the file could not be hashed ({e})"),
+        // If the file still hashes to this blob, committing it anchors it — a
+        // lifecycle moment, not a defect.
+        let live = match live_hashes[i].take() {
+            Some(Ok(oid)) if oid.eq_ignore_ascii_case(&object.blob_sha) => continue,
+            Some(Ok(oid)) => oid,
+            Some(Err(e)) => format!("the file could not be hashed ({e})"),
+            None => continue,
         };
         plane.orphaned.push(OrphanedBlob {
             src_path: object.src_path.clone(),

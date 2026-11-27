@@ -103,16 +103,35 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let paths = workspace_paths(&canonical, &cwd, &parsed.paths)?;
 
     // One-at-a-time non-blocking slot lock + session-lifetime/wall-clock guard
-    // (`docs/status.md` § `mrd check`): refuse `busy` immediately when another
-    // check holds the slot, and die with the caller or wall-clock bound.
+    // (`docs/status.md` § `mrd check`): refuse `busy` (exit 75) immediately when
+    // another unrelated check holds the slot, and die with the caller or
+    // wall-clock bound.
     let _slot = crate::check_guard::acquire_slot(parsed.format, &canonical)?;
-    let scoped_gate =
-        parsed.commit_gate && !paths.is_empty() && !paths.iter().any(String::is_empty);
-    let _watchdog =
-        crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(!paths.is_empty()));
+    let scoped_gate = is_scoped_gate(parsed.commit_gate, &paths);
 
-    let (interval, mut worktree, staged, armed) = if scoped_gate {
-        let built = assess_scoped(&root, &domain, &paths)?;
+    let (_watchdog, scoped_built) = if scoped_gate {
+        let scoped_wd =
+            crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(true));
+        match assess_scoped(&root, &domain, &paths)? {
+            ScopedOutcome::Built(built) => (scoped_wd, Some(*built)),
+            ScopedOutcome::Fallback => {
+                // Falling back to the full lane (e.g. a non-exact target
+                // spelling or >64 holders): relax the 60 s scoped bound to the
+                // unscoped default before running the full lane.
+                drop(scoped_wd);
+                let full_wd =
+                    crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(false));
+                (full_wd, None)
+            }
+        }
+    } else {
+        (
+            crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(false)),
+            None,
+        )
+    };
+
+    let (interval, mut worktree, staged, armed) = if let Some(built) = scoped_built {
         (built.interval, built.worktree, built.staged, None)
     } else {
         // The second interval, only when asked for: absent divergence the two intervals
@@ -214,6 +233,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
 
     worst_of_exit(&worktree.report, staged.as_ref(), &armed_findings)
+}
+
+/// Whether this invocation qualifies for the bounded path-scoped `--commit-gate`
+/// fast path (non-empty `paths`, none naming the workspace root `""`).
+fn is_scoped_gate(commit_gate: bool, paths: &[String]) -> bool {
+    commit_gate && !paths.is_empty() && !paths.iter().any(String::is_empty)
 }
 
 /// The `-- PATH…` operands as workspace-relative paths. Absolute or relative to
@@ -721,6 +746,16 @@ struct Built {
     armed: Option<crate::check_armed::ArmedPlane>,
 }
 
+/// Result of the bounded path-scoped `--commit-gate -- PATH…` fast path.
+enum ScopedOutcome {
+    /// Answered within bounded scope.
+    Built(Box<Built>),
+    /// A target used a non-exact spelling (basename, subdir tail, alias, case
+    /// fold) or `PATH…` expanded past the small-batch threshold; fall back to
+    /// the standard daemon-or-in-process lane for exact resolution parity.
+    Fallback,
+}
+
 /// Bounded path-scoped `--commit-gate -- PATH…`: reads only the markdown
 /// holders under `paths` and the direct targets their `meridian-lock` blocks
 /// pin (ambient and bound mounted roots), without scanning or parsing the whole
@@ -730,11 +765,17 @@ fn assess_scoped(
     root: &fs::WorkspaceRoot,
     domain: &fs::domain::Domain,
     paths: &[String],
-) -> Result<Built, Fail> {
+) -> Result<ScopedOutcome, Fail> {
+    const MAX_SCOPED_HOLDERS: usize = 64;
+
     let scoped_phase = timing::phase("check.scoped");
     let mut worktree_holder_paths = BTreeSet::new();
     for rel in paths {
         collect_md_under(&root.0, rel, &mut worktree_holder_paths);
+        if worktree_holder_paths.len() > MAX_SCOPED_HOLDERS {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback);
+        }
     }
 
     let repo = git::Repo::at(&root.0);
@@ -753,15 +794,21 @@ fn assess_scoped(
     let mut unserved: BTreeMap<String, String> = BTreeMap::new();
     let mut worktree_in_domain: model::Docs = BTreeMap::new();
     let mut excluded_holders: model::Docs = BTreeMap::new();
+    let mut declined_holders: Vec<String> = Vec::new();
     for rel in &worktree_holder_paths {
         let Ok(bytes) = std::fs::read(root.0.join(rel)) else {
             continue;
         };
         if domain.contains(Path::new(rel)) {
             parse_scoped_doc(rel, bytes, &mut worktree_in_domain, &mut unserved);
-        } else if let Ok(text) = String::from_utf8(bytes) {
-            let doc = model::build(text.clone(), syntax::parse(&text));
-            excluded_holders.insert(rel.clone(), std::sync::Arc::new(doc));
+        } else {
+            if domain.exclusion(Path::new(rel)) == Some(fs::domain::ExclusionReason::CustomIgnore) {
+                declined_holders.push(rel.clone());
+            }
+            if let Ok(text) = String::from_utf8(bytes) {
+                let doc = model::build(text.clone(), syntax::parse(&text));
+                excluded_holders.insert(rel.clone(), std::sync::Arc::new(doc));
+            }
         }
     }
 
@@ -778,6 +825,10 @@ fn assess_scoped(
                 staged_in_domain.remove(rel);
             }
         }
+    }
+    if staged_in_domain.len() > MAX_SCOPED_HOLDERS {
+        scoped_phase.stop();
+        return Ok(ScopedOutcome::Fallback);
     }
 
     let (mount_set, bound_roots) = bind_mount_table_headers();
@@ -823,6 +874,41 @@ fn assess_scoped(
         }
     }
 
+    // Verify every direct pin target resolves by exact path (in worktree or
+    // staged index). Any non-exact spelling — basename, subdir-qualified tail,
+    // alias, case-folded path, or `notes.md` → `notes.md.md` — falls back to
+    // the full lane so `resolve_ref` parity is preserved.
+    for rel in &ambient_targets {
+        let on_disk = root.0.join(rel).is_file();
+        let in_staged = div_map.contains_key(rel);
+        if !on_disk && !in_staged {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback);
+        }
+        if on_disk && !domain.contains(Path::new(rel)) && !rel.contains('/') {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback);
+        }
+    }
+    for (name, targets) in &mounted_targets {
+        let mount_root = &bound_roots[name];
+        let mount_ws = fs::WorkspaceRoot(mount_root.clone());
+        let Ok(mount_domain) = fs::domain::Domain::load(&mount_ws) else {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback);
+        };
+        for rel in targets {
+            if !mount_root.join(rel).is_file() {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback);
+            }
+            if !mount_domain.contains(Path::new(rel)) && !rel.contains('/') {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback);
+            }
+        }
+    }
+
     let diverged_paths: Vec<String> = div_map
         .keys()
         .filter(|rel| domain.contains(Path::new(rel)))
@@ -849,6 +935,7 @@ fn assess_scoped(
             parse_scoped_doc(rel, bytes, &mut worktree_docs, &mut unserved);
         }
     }
+    crate::voice_excluded_note(&declined_holders);
     crate::voice_unserved(&unserved);
 
     let staged_docs = matches!(interval, Interval::Diverges(_)).then(|| {
@@ -943,12 +1030,12 @@ fn assess_scoped(
         _ => None,
     };
     scoped_phase.stop();
-    Ok(Built {
+    Ok(ScopedOutcome::Built(Box::new(Built {
         interval,
         worktree,
         staged,
         armed: None,
-    })
+    })))
 }
 
 fn is_md_path(rel: &str) -> bool {
@@ -959,13 +1046,19 @@ fn is_md_path(rel: &str) -> bool {
 
 fn collect_md_under(root: &Path, rel: &str, out: &mut BTreeSet<String>) {
     let full = root.join(rel);
-    if full.is_file() {
+    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+        return;
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    if meta.is_file() {
         if is_md_path(rel) {
             out.insert(rel.to_owned());
         }
         return;
     }
-    if !full.is_dir() {
+    if !meta.is_dir() {
         return;
     }
     let mut stack = vec![full];
@@ -974,14 +1067,24 @@ fn collect_md_under(root: &Path, rel: &str, out: &mut BTreeSet<String>) {
             continue;
         };
         for entry in entries.flatten() {
-            let path = entry.path();
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
             let name = entry.file_name();
             if name == ".git" {
                 continue;
             }
-            if path.is_dir() {
+            let path = entry.path();
+            if ft.is_dir() {
+                // Skip nested git checkouts / submodules under a directory PATH.
+                if path.join(".git").exists() {
+                    continue;
+                }
                 stack.push(path);
-            } else if path.is_file()
+            } else if ft.is_file()
                 && let Ok(stripped) = path.strip_prefix(root)
                 && let Some(text) = stripped.to_str()
                 && is_md_path(text)
@@ -1768,6 +1871,18 @@ mod tests {
              worktree, because an unstaged governed write is the ordinary state of \
              every working repository"
         );
+    }
+
+    #[test]
+    fn scoped_gate_predicate_excludes_non_gate_and_root_paths() {
+        assert!(is_scoped_gate(true, &["agents/x/x.md".to_string()]));
+        assert!(!is_scoped_gate(false, &["agents/x/x.md".to_string()]));
+        assert!(!is_scoped_gate(true, &[String::new()]));
+        assert!(!is_scoped_gate(true, &[]));
+        assert!(!is_scoped_gate(
+            true,
+            &["agents/x/x.md".to_string(), String::new()]
+        ));
     }
 
     #[test]

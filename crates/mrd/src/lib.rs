@@ -572,7 +572,7 @@ usage:
                            true). Grey pin / unaskable object store fails
                            CLOSED either way. Exits: 0 green / 1
                            finding|grey|no-pin-coverage under --require-pins /
-                           2 bad invocation.
+                           2 bad invocation / 75 busy (slot held; retry).
   mrd skill hook           EMIT the commit-fence contract to stdout
                            only: the markdown IS the contract (doors;
                            fence body runs mrd check --commit-gate;

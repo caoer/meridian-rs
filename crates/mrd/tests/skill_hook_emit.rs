@@ -225,6 +225,12 @@ fn the_body_asks_the_commit_question_and_not_the_whole_tree_one() {
         body.contains("does not carry --commit-gate"),
         "the skew teaching names the flag whose absence causes the 2 it is explaining"
     );
+    // Busy (exit 75) must be handled distinctly from exit 2 (bad invocation /
+    // version skew) and advise retrying rather than blaming PATH.
+    assert!(
+        body.contains("-eq 75") && body.contains("busy:") && body.contains("retry"),
+        "the fence must distinguish busy (exit 75) from bad invocation (exit 2) and advise retry:\n{body}"
+    );
 }
 
 /// The extracted block is a shell program, parsed by a shell: a grep-only

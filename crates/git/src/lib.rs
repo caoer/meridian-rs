@@ -55,6 +55,18 @@ use std::process::{Command, Output, Stdio};
 
 mod reach;
 
+#[cfg(target_os = "linux")]
+mod linux_sys {
+    use std::ffi::c_int;
+
+    unsafe extern "C" {
+        pub(super) fn getpid() -> c_int;
+        pub(super) fn getppid() -> c_int;
+        pub(super) fn prctl(option: c_int, ...) -> c_int;
+        pub(super) fn _exit(status: c_int) -> !;
+    }
+}
+
 /// The default git program — resolved through `PATH` like any other caller.
 const GIT: &str = "git";
 
@@ -209,6 +221,7 @@ impl Repo {
         let mut cmd = self.command();
         cmd.args(["diff-files", "--relative", "--name-only", "-z"]);
         if narrow {
+            cmd.env("GIT_LITERAL_PATHSPECS", "1");
             cmd.arg("--");
             cmd.args(names);
         }
@@ -219,6 +232,7 @@ impl Repo {
         let mut cmd = self.command();
         cmd.args(["ls-files", "-s", "-v", "-z"]);
         if narrow {
+            cmd.env("GIT_LITERAL_PATHSPECS", "1");
             cmd.arg("--");
             cmd.args(names);
         }
@@ -455,6 +469,7 @@ impl Repo {
         let mut cmd = self.command();
         cmd.args(["ls-tree", "-r", "-z", "HEAD"]);
         if asks.len() <= 64 {
+            cmd.env("GIT_LITERAL_PATHSPECS", "1");
             let mut unique: Vec<&str> = paths.iter().map(String::as_str).collect();
             unique.sort_unstable();
             unique.dedup();
@@ -524,6 +539,7 @@ impl Repo {
         }
 
         let mut cmd = self.command();
+        cmd.env("GIT_LITERAL_PATHSPECS", "1");
         cmd.arg("log");
         for pattern in reach::ANNEX_REFS {
             cmd.arg(format!("--exclude={pattern}"));
@@ -565,13 +581,17 @@ impl Repo {
             .collect())
     }
 
-    /// Whether this repository configures a promisor remote (partial clone), in
-    /// which an object absent from the local ODB can still be reachable from a
-    /// commit.
+    /// Whether this repository configures a promisor remote or partial-clone
+    /// extension, in which an object absent from the local ODB can still be
+    /// reachable from a commit.
     #[must_use]
     pub fn is_partial_clone(&self) -> bool {
         let mut cmd = self.command();
-        cmd.args(["config", "--get-regexp", "^remote\\..*\\.promisor$"]);
+        cmd.args([
+            "config",
+            "--get-regexp",
+            r"^(remote\..*\.promisor|extensions\.partialclone)$",
+        ]);
         cmd.output()
             .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
     }
@@ -958,7 +978,7 @@ impl Repo {
         let mut cmd = self.command();
         cmd.args(["ls-files", "-s", "-z", "--"]);
         for path in paths {
-            cmd.arg(format!(":(top){path}"));
+            cmd.arg(format!(":(top,literal){path}"));
         }
         let stdout = self.run(cmd, "ls-files -s")?;
         let mut out = Vec::new();
@@ -1008,6 +1028,7 @@ impl Repo {
     /// path matches no index entry.
     fn nul_paths(&self, args: &[&str], what: &str) -> Result<Vec<String>, GitFail> {
         let mut cmd = self.command();
+        cmd.env("GIT_LITERAL_PATHSPECS", "1");
         cmd.args(args);
         let stdout = self.run(cmd, what)?;
         Ok(stdout
@@ -1122,10 +1143,30 @@ impl Repo {
     }
 
     /// `git -C <root>` with a C locale, so a fatal's wording is the one
-    /// [`NOT_A_REPO`] matches on any operator's machine.
+    /// [`NOT_A_REPO`] matches on any operator's machine. On Linux, sets
+    /// `PR_SET_PDEATHSIG` to `SIGTERM` in `pre_exec` so child `git` processes
+    /// never outlive a `SIGKILL`ed / OOM-killed parent.
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.arg("-C").arg(&self.root).env("LC_ALL", "C");
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt as _;
+            // SAFETY: `getpid`/`getppid`/`prctl`/`_exit` are async-signal-safe
+            // syscalls on Linux; `parent_pid` is captured before `fork`.
+            let parent_pid = unsafe { linux_sys::getpid() };
+            unsafe {
+                cmd.pre_exec(move || {
+                    const PR_SET_PDEATHSIG: std::ffi::c_int = 1;
+                    const SIGTERM: std::ffi::c_int = 15;
+                    let _ = linux_sys::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+                    if linux_sys::getppid() != parent_pid {
+                        linux_sys::_exit(128 + SIGTERM);
+                    }
+                    Ok(())
+                });
+            }
+        }
         cmd
     }
 

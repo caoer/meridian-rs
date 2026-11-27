@@ -1126,26 +1126,46 @@ parses, or walks the whole corpus or mounted corpora, and never enters the
 `.build` gate — whether a daemon is warm, warming, or absent. It reads only
 the holder markdown file(s) under `PATH…`, checks staged divergence only for
 those holders and their direct pin targets, parses only those holders and the
-direct target pages they pin (ambient and bound mounted roots), and scopes both
-the pin findings and the git blob-anchoring questions to holders under `PATH…`.
+direct target pages they pin (ambient and bound mounted roots), voices the
+enumerator-clause note for any declined out-of-domain holders under `PATH…`,
+and scopes both the pin findings and the git blob-anchoring questions to
+holders under `PATH…` (matching how `-- PATH…` scopes pin rows across every
+lane). When a holder's pin target does not match an exact workspace or mount
+path (e.g. a basename, subdir-qualified tail, alias, or case-folded spelling),
+or when `PATH…` expands to more than 64 holders, the scoped lane falls back to
+the standard daemon-or-in-process lane so target resolution and verdicts match
+identically. The unscoped commit fence (`mrd check --commit-gate` with no
+`-- PATH…`) stays whole-commit and is not bounded by this fast path.
 On the anchoring plane, `HEAD:<path>` (`git ls-tree -r -z HEAD -- <paths>` when
-small) and the path's own history across anchoring refs (`git log --all` minus
-annex refs, `--raw --no-abbrev -z -- <paths>`) settle committed blobs before a
-whole-repository `rev-list --objects` is ever asked.
+small), the path's own history across anchoring refs (`git log --all` minus
+annex refs, `--raw --no-abbrev -z -- <paths>`), and live-file blob hashing
+(`git hash-object` / unchanged index oids) settle committed and
+staged-at-live-file blobs before a whole-repository `rev-list --objects` is
+ever asked.
 
 **One-at-a-time slot and session-lifetime guard.** `mrd check` takes a
 non-blocking exclusive `flock` before doing corpus or git work, so two checks
 never run at once on one host: `MRD_CHECK_LOCK` when set; else
 `$HOME/.local/share/ucc/work/fleet-mutex/mrd-nyc1.lock` when that file exists
-on disk; else `<socket-stem>.check.lock` beside the daemon socket (per cache
-root, so every host gets a slot automatically). When another process holds the
-slot, `check` refuses `busy` (exit 2) and exits immediately without queuing.
+on disk and neither `XDG_CACHE_HOME` nor `MERIDIAN_CACHE_ROOT` overrides the
+cache root; else `<socket-stem>.check.lock` beside the daemon socket (per cache
+root, so every host and isolated sandbox gets its own slot automatically). When
+a caller wrapper already holds that lock for `mrd check` (e.g. `flock <lock>
+mrd check …` — detected via an inherited locked fd or an ancestor PID in
+`/proc/locks`, or `MRD_CHECK_SLOT_HELD=1` on non-Linux hosts), `check`
+proceeds without conflicting on its own caller's slot. When another unrelated
+process holds the slot, `check` refuses `busy` (exit **75**, `EX_TEMPFAIL` —
+distinct from exit 2 bad invocation) and exits immediately without queuing.
 `mrd check` never detaches (`setsid`/`nohup`): it dies with its caller — on
-`SIGHUP`/`SIGTERM`/`SIGINT`, parent death (`PR_SET_PDEATHSIG`), parent-shell
-reparenting to PID 1 (an orphaned remote `ssh … bash -s`), stdout pipe hangup,
-or its wall-clock bound (`MRD_CHECK_TIMEOUT_SECS`, default 60 s for a
-path-scoped check and 300 s for an unscoped check) — terminating any child
-processes it spawned before exit.
+`SIGHUP`/`SIGTERM`/`SIGINT`, parent or ancestor-chain death up to the session
+leader (including `ssh … bash -s` wrapped in `timeout`, `flock`, or subshells),
+stdout pipe hangup, or its wall-clock bound (`MRD_CHECK_TIMEOUT_SECS`; default
+60 s for the bounded `--commit-gate -- PATH…` lane only, unbounded by default
+for unscoped or non-gate checks, and `0` disables the bound) — terminating any
+descendant processes it spawned before exit. Deliberately backgrounded callers
+(such as an asynchronous `pre-push` hook) opt out of the ancestor/pipe check
+explicitly with `MRD_CHECK_ALLOW_DETACH=1` or by detaching with `setsid` before
+invoking `mrd check`.
 
 **Write history is not assessed: the engine keeps no memory.** History is pinned
 to git at lock, and anything between locks is not history. So chain continuity
