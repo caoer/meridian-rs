@@ -571,7 +571,14 @@ engine-side.
   vouch a root whose member events nothing captures. The registry retires
   that feed at the next borrow, with the workspace's memo and checkpoint (the
   journal never saw the replacement), so the borrow after it takes the cold
-  entry and arms a fresh watch on the root now at the path. The dot-prefixed cookie path is
+  entry and arms a fresh watch on the root now at the path. The borrow that
+  retires keeps the retired memo privately, so memo state that goes with a
+  served root is read from the memo that root's currency pass refreshed: the
+  warm rebuild takes its leaf delta and minted root from that memo, never
+  from one it borrowed apart from the pass, which can be the retired memo
+  still carrying the old root's leaves. The resident engine stays as the
+  incremental prior; a leaf delta against the new root's leaf set re-parses
+  every member that differs. The dot-prefixed cookie path is
   outside the hash domain by the standing `wire-contract.md` §12.1 floor, so it
   can never move the root or break a held token; a cookie inside the hash
   domain is refused.

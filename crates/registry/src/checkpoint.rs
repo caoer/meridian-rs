@@ -788,6 +788,49 @@ mod tests {
         );
     }
 
+    /// The first warm pass after a restart walks no more than the cold entry
+    /// alone: the pass's currency check finds the feed that entry armed and
+    /// vouches over the restored memo, never flooring as `no_feed` into a
+    /// second full sweep. Two restarts over one checkpoint: one only enters,
+    /// one warms; their memos must have swept the same number of times.
+    #[test]
+    fn the_first_warm_after_a_restart_sweeps_no_more_than_the_cold_entry() {
+        let home = tempfile::tempdir().unwrap();
+        let (ws, cache_root) = workspace(home.path());
+        let ws = std::fs::canonicalize(&ws).unwrap();
+        let state = || StateStore::new(home.path().join("state.json"));
+
+        let reg = Registry::new(state(), cache_root.clone(), Vec::new());
+        reg.register(&ws);
+        reg.domain_cache(&ws)
+            .lock()
+            .unwrap()
+            .root(&fs::WorkspaceRoot(ws.clone()))
+            .unwrap();
+        reg.save_checkpoints();
+        drop(reg);
+
+        let sweeps = |reg: &Registry| reg.domain_cache(&ws).lock().unwrap().sweeps();
+        let entered = Registry::new(state(), cache_root.clone(), Vec::new());
+        entered.register(&ws);
+        let entry_only = sweeps(&entered);
+        assert!(
+            entered.checkpoint_receipt(&ws).is_some(),
+            "the cold entry adopted the checkpoint"
+        );
+        drop(entered);
+
+        let warmed = Registry::new(state(), cache_root.clone(), Vec::new());
+        warmed.register(&ws);
+        warmed.warm_or_build(&ws).unwrap();
+        assert!(warmed.checkpoint_receipt(&ws).is_some());
+        assert_eq!(
+            sweeps(&warmed),
+            entry_only,
+            "the first warm adds no sweep to the cold entry's"
+        );
+    }
+
     /// A SQL salt or package bump moves the version segment: the next start
     /// looks in a fresh SQL drawer and the old one is unreachable. The
     /// checkpoint lives outside that segment, so the restart is WARM — the

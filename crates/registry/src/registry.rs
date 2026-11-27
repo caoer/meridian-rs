@@ -2063,7 +2063,12 @@ impl Registry {
         // and was left without a generation.
         let mut waited_at: Vec<model::MerkleRoot> = Vec::new();
 
-        let cache = self.domain_cache(&canonical);
+        // Arm first: on a workspace with no published memo this borrow runs
+        // the cold entry — the checkpoint restore and the feed — so the
+        // currency pass below finds a live feed and can vouch instead of
+        // flooring as `no_feed` over a memo the restore already proved. The
+        // handle is dropped, never read: the rebuild reads the pass's memo.
+        drop(self.domain_cache(&canonical));
         loop {
             // Cheap half (no parse, and no re-read of anything that did not
             // move): the workspace's current content hash at the §6.7 vouched
@@ -2082,7 +2087,15 @@ impl Registry {
             // `warm_or_build`. Surfacing it at this one call site instead would
             // undercount the floor by exactly the passes that never touch a
             // dispatch frame.
-            let (fingerprint, _vouched) = self.currency_refresh(&canonical, DOOR_COOKIE_TIMEOUT)?;
+            //
+            // The rebuild below reads THE memo this pass refreshed, never one
+            // borrowed apart from it: a borrow that retires a root-lost feed
+            // (merkle-spec §6.4 the cookie) keeps the retired memo privately,
+            // and a borrow taken before the pass can be that memo, unswept —
+            // its leaves are the old root's, and a delta read from it builds
+            // the old corpus under the new root's name.
+            let (fingerprint, _vouched, (), cache) =
+                self.currency_pass(&canonical, DOOR_COOKIE_TIMEOUT, |_| ())?;
 
             // Warm + unchanged → done. Nothing is copied out of the memo on
             // this path: it is the hot one, and a 20k-entry clone per currency
@@ -2954,6 +2967,21 @@ impl Registry {
         timeout: Duration,
         then: impl FnOnce(&mut fs::DomainCache) -> R,
     ) -> io::Result<(model::MerkleRoot, bool, R)> {
+        self.currency_pass(workspace, timeout, then)
+            .map(|(root, vouched, answer, _)| (root, vouched, answer))
+    }
+
+    /// [`Self::currency_refresh_with`], also handing back the memo the pass
+    /// refreshed — the one its root describes. After a §6.4 retire that memo
+    /// is no longer the published one, so a caller that reads memo state to
+    /// go with the root (the warm rebuild's leaf delta) takes it from here,
+    /// never from a borrow of its own.
+    fn currency_pass<R>(
+        &self,
+        workspace: &Path,
+        timeout: Duration,
+        then: impl FnOnce(&mut fs::DomainCache) -> R,
+    ) -> io::Result<(model::MerkleRoot, bool, R, Arc<Mutex<fs::DomainCache>>)> {
         // Both arms are timed FROM ENTRY, because the floor's cost includes
         // everything the vouched path also pays (barrier, take-and-apply,
         // memo borrow) plus the sweep — two spans that started anywhere else
@@ -2994,7 +3022,8 @@ impl Registry {
             Ok(root) => {
                 vouched_span.stop();
                 let answer = then(&mut memo);
-                return Ok((root, true, answer));
+                drop(memo);
+                return Ok((root, true, answer, cache));
             }
             Err(trigger) => trigger,
         };
@@ -3009,7 +3038,8 @@ impl Registry {
             Ok(root) => {
                 floor_span.stop_as(completed);
                 let answer = then(&mut memo);
-                Ok((root, false, answer))
+                drop(memo);
+                Ok((root, false, answer, cache))
             }
             Err(e) => {
                 floor_span.stop_as(refused);
@@ -7414,6 +7444,51 @@ mod engine_tests {
         let (root, vouched) = refresh();
         assert!(vouched, "the fresh watch carries the new root's events");
         assert_eq!(root, disk(), "and the vouched root is the disk's");
+    }
+
+    /// merkle-spec §6.4 the cookie, the warm path: the generation a warm
+    /// pass serves across a replaced root (`rm -rf ws && mkdir ws`, new
+    /// bytes) is the new root's — its fingerprint and leaf set equal a cold
+    /// snapshot of the disk. The pass whose borrow retires the lost feed
+    /// still owes that answer: no leaf of the old root may survive into it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_warm_pass_across_a_replaced_root_serves_the_new_roots_corpus() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("a.md", "# A\n"), ("sub/b.md", "# B\n")]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        let (_, first) = reg.warm_generation(&canonical).unwrap();
+        let lost = reg
+            .live_feed(&canonical)
+            .expect("the first warm pass starts the feed");
+        assert_eq!(first.leaves.len(), 2);
+
+        fs::remove_dir_all(&canonical).unwrap();
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("new.md"), "# New\n").unwrap();
+        fs::create_dir(canonical.join("graph")).unwrap();
+        fs::write(canonical.join("graph/c.md"), "# C\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !lost.root_lost() {
+            assert!(Instant::now() < deadline, "DELETE_SELF loses the root");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (_, files_leaves, cold) =
+            ::fs::domain_snapshot_with_leaves(&::fs::WorkspaceRoot(canonical.clone())).unwrap();
+        let (_, served) = reg.warm_generation(&canonical).unwrap();
+        assert_eq!(
+            served.leaves, files_leaves,
+            "the served generation's leaves are the new root's, none of the old"
+        );
+        assert_eq!(
+            served.at_fingerprint, cold,
+            "the served fingerprint is a cold build's"
+        );
+        let (_, again) = reg.warm_generation(&canonical).unwrap();
+        assert_eq!(again.at_fingerprint, cold, "and it stays the cold build's");
     }
 
     /// merkle-spec §6.7 detect row: the push plane's backstop recovers an edit
