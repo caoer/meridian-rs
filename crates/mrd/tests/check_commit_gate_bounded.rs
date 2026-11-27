@@ -314,7 +314,11 @@ fn historical_pin_is_anchored_via_path_history() {
     // card-a's pinned section still matches and its recorded blob SHA is in
     // the earlier commit of source.md.
     let existing = std::fs::read_to_string(ws.join("source.md")).expect("read source.md");
-    write(&ws, "source.md", &format!("{existing}\n## Extra\n\nnew section\n"));
+    write(
+        &ws,
+        "source.md",
+        &format!("{existing}\n## Extra\n\nnew section\n"),
+    );
     git(&ws, &["add", "source.md"]);
     git(&ws, &["commit", "-qm", "edit unpinned section"]);
 
