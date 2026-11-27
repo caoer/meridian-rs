@@ -10,6 +10,7 @@
 //!    - `<socket-stem>.check.lock` beside the daemon socket (per cache root, so
 //!      every other host and every isolated test sandbox gets a slot without
 //!      setup).
+//!
 //!    When another holder owns the lock, `check` refuses `busy` (exit 2) and
 //!    exits immediately — it never queues.
 //! 2. **Session-lifetime & wall-clock watchdog (`Watchdog`)** — `mrd check`
@@ -180,7 +181,7 @@ impl Watchdog {
 
         // SAFETY: `getppid(2)` has no preconditions.
         let initial_ppid = unsafe { libc::getppid() };
-        let initial_gppid = parent_pid_of(initial_ppid);
+        let grandparent_pid = parent_pid_of(initial_ppid);
         let stdout_is_stream = fd_is_pipe_or_socket(libc::STDOUT_FILENO);
 
         install_signal_handlers();
@@ -199,7 +200,7 @@ impl Watchdog {
                     &stop_bg,
                     &done_bg,
                     initial_ppid,
-                    initial_gppid,
+                    grandparent_pid,
                     stdout_is_stream,
                     deadline,
                     timeout,
@@ -259,7 +260,7 @@ fn watchdog_loop(
     stop: &(Mutex<bool>, Condvar),
     done: &AtomicBool,
     initial_ppid: libc::pid_t,
-    initial_gppid: Option<libc::pid_t>,
+    grandparent_pid: Option<libc::pid_t>,
     stdout_is_stream: bool,
     deadline: Instant,
     timeout: Duration,
@@ -286,7 +287,7 @@ fn watchdog_loop(
         }
         // Remote `ssh … bash -s` shape: `sshd` exits first, reparenting `bash -s`
         // to PID 1 while `bash -s` waits on us. Detect that transition directly.
-        if let Some(gppid) = initial_gppid
+        if let Some(gppid) = grandparent_pid
             && gppid > 1
             && matches!(parent_pid_of(initial_ppid), Some(1) | None)
         {

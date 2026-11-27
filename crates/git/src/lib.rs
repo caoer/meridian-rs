@@ -545,12 +545,9 @@ impl Repo {
                 continue;
             };
             let mut fields = text.split(' ');
-            let (Some(old_mode), Some(new_mode), Some(old_oid), Some(new_oid)) = (
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-            ) else {
+            let (Some(old_mode), Some(new_mode), Some(old_oid), Some(new_oid)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
                 continue;
             };
             let is_blob_mode = |m: &str| m.starts_with("100") || m == "120000";

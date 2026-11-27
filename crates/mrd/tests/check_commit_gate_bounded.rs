@@ -211,11 +211,12 @@ fn concurrent_mrd_check_refuses_busy_without_queuing() {
     let elapsed = started.elapsed();
     let text = said(&out);
 
-    assert_eq!(out.status.code(), Some(2), "busy must refuse exit 2: {text}");
-    assert!(
-        text.contains("busy"),
-        "refusal must state `busy`: {text}"
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "busy must refuse exit 2: {text}"
     );
+    assert!(text.contains("busy"), "refusal must state `busy`: {text}");
     assert!(
         elapsed.as_secs() < 5,
         "must exit immediately without queuing (took {elapsed:?})"
@@ -284,7 +285,11 @@ fn nyc1_slot_lock_is_auto_discovered_when_present_under_home() {
         .output()
         .expect("spawn mrd check");
     let text = said(&out);
-    assert_eq!(out.status.code(), Some(2), "nyc1 lock busy must refuse: {text}");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "nyc1 lock busy must refuse: {text}"
+    );
     assert!(
         text.contains("busy") && text.contains("mrd-nyc1.lock"),
         "must name busy and mrd-nyc1.lock: {text}"
@@ -365,8 +370,7 @@ fn sighup_terminates_mrd_check() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod");
+        std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
     let path_env = format!(
         "{}:{}",
@@ -445,8 +449,7 @@ fn wall_clock_bound_terminates_stalled_check_and_children() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod");
+        std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
     let path_env = format!(
         "{}:{}",
@@ -473,7 +476,11 @@ fn wall_clock_bound_terminates_stalled_check_and_children() {
         .expect("spawn mrd");
     let elapsed = started.elapsed();
     let text = said(&out);
-    assert_eq!(out.status.code(), Some(124), "timeout must exit 124: {text}");
+    assert_eq!(
+        out.status.code(),
+        Some(124),
+        "timeout must exit 124: {text}"
+    );
     assert!(text.contains("wall-clock bound"), "{text}");
     assert!(elapsed.as_secs() < 10, "took too long: {elapsed:?}");
     if let Ok(raw) = std::fs::read_to_string(&pid_file)

@@ -80,6 +80,7 @@ const EXIT_FINDING: u8 = 1;
 /// Run `mrd check [--core] [--json]`: resolve the workspace and run the layer-0 core, printing
 /// the verdict. Errors [`Fail`] exit 2 on a bad invocation or an unreadable workspace/journal;
 /// exit 1 when the core reddens (chain break or foreign edit).
+#[allow(clippy::too_many_lines)] // top-level verb dispatch: resolve, guard, assess, emit, exit
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Check::parse(args)?;
     let cwd = current_dir()?;
@@ -105,12 +106,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // (`docs/status.md` § `mrd check`): refuse `busy` immediately when another
     // check holds the slot, and die with the caller or wall-clock bound.
     let _slot = crate::check_guard::acquire_slot(parsed.format, &canonical)?;
-    let scoped_gate = parsed.commit_gate
-        && !paths.is_empty()
-        && !paths.iter().any(String::is_empty);
-    let _watchdog = crate::check_guard::Watchdog::arm(
-        crate::check_guard::wall_clock_bound(!paths.is_empty()),
-    );
+    let scoped_gate =
+        parsed.commit_gate && !paths.is_empty() && !paths.iter().any(String::is_empty);
+    let _watchdog =
+        crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(!paths.is_empty()));
 
     let (interval, mut worktree, staged, armed) = if scoped_gate {
         let built = assess_scoped(&root, &domain, &paths)?;
@@ -726,6 +725,7 @@ struct Built {
 /// holders under `paths` and the direct targets their `meridian-lock` blocks
 /// pin (ambient and bound mounted roots), without scanning or parsing the whole
 /// corpus or entering the `.build` gate.
+#[allow(clippy::too_many_lines)] // linear staged+worktree assembly over bounded paths
 fn assess_scoped(
     root: &fs::WorkspaceRoot,
     domain: &fs::domain::Domain,
@@ -868,7 +868,8 @@ fn assess_scoped(
                     }
                 }
             } else if let Some(doc) = worktree_docs.get(rel) {
-                docs.entry(rel.clone()).or_insert_with(|| std::sync::Arc::clone(doc));
+                docs.entry(rel.clone())
+                    .or_insert_with(|| std::sync::Arc::clone(doc));
             }
         }
         docs
