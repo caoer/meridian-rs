@@ -393,15 +393,7 @@ impl SqlEscalation {
                         .raise_memory_limit(rung, reservation)
                         .and_then(|mut raised| append(&mut raised)),
                 );
-                if let Some(state) = store.take_retire_log() {
-                    timing::say!(
-                        "sql-cache: retiring {} reason={:?} outstanding_reads={} {}",
-                        store.file().display(),
-                        state.reason,
-                        state.outstanding_handles,
-                        state.format_reads(),
-                    );
-                }
+                log_retirement(store);
             }
         }
         let first = first.unwrap_or_else(|| append(store));
@@ -454,15 +446,7 @@ impl SqlEscalation {
             let attempt = store
                 .raise_memory_limit(limit, reservation)
                 .and_then(|mut raised| append(&mut raised));
-            if let Some(state) = store.take_retire_log() {
-                timing::say!(
-                    "sql-cache: retiring {} reason={:?} outstanding_reads={} {}",
-                    store.file().display(),
-                    state.reason,
-                    state.outstanding_handles,
-                    state.format_reads(),
-                );
-            }
+            log_retirement(store);
             error = match attempt {
                 Ok(done) => {
                     store.set_rung(Some(limit));
@@ -498,6 +482,18 @@ impl SqlEscalation {
             last_unix_secs: (last != 0).then_some(last),
             refused: self.refused.load(Ordering::Relaxed),
         }
+    }
+}
+
+fn log_retirement(store: &view::store::SqlStore) {
+    if let Some(state) = store.take_retire_log() {
+        timing::say!(
+            "sql-cache: retiring {} reason={:?} outstanding_reads={} {}",
+            store.file().display(),
+            state.reason,
+            state.outstanding_handles,
+            state.format_reads(),
+        );
     }
 }
 
