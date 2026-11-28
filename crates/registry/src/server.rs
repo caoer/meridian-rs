@@ -5733,10 +5733,7 @@ mod residency_activation_tests {
         use std::io::{BufRead as _, BufReader, Write as _};
         use std::os::fd::AsRawFd as _;
         use std::os::unix::net::UnixListener;
-        use std::path::PathBuf;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::thread;
+        use std::sync::{Arc, atomic::AtomicBool};
 
         let tmp = TempDir::new().unwrap();
         let cfg = config(&tmp);
@@ -5745,21 +5742,16 @@ mod residency_activation_tests {
         std::fs::create_dir_all(ws.join(".git")).unwrap();
         std::fs::write(ws.join("a.md"), "# A\n\nv1\n").unwrap();
         let ws_c = workspace::canonicalize(&ws).unwrap();
-        // A stale baseline root that disk has already moved past (`DiskMoved`).
         let stale_root = "b3a:0000000000000000000000000000000000000000000000000000000000000000";
 
         let listener = UnixListener::bind(&cfg.socket_path).unwrap();
-        let lock = cache::DrawerLock::try_acquire(&dir)
-            .unwrap()
-            .expect("singleton lock");
-        let want_ws = ws_c.clone();
+        let lock = cache::DrawerLock::try_acquire(&dir).unwrap().unwrap();
+        let want_ws = ws_c;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_res = Arc::clone(&stop);
 
-        let resident = thread::spawn(move || {
-            let mut grants = 0u32;
-            let mut aborts = 0u32;
-            let mut adopted = false;
+        let resident = std::thread::spawn(move || {
+            let (mut grants, mut aborts) = (0u32, 0u32);
             loop {
                 let (stream, _) = listener.accept().unwrap();
                 let mut line = String::new();
@@ -5768,35 +5760,24 @@ mod residency_activation_tests {
                     continue;
                 }
                 let req: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let primed: Vec<PathBuf> = req["primed"]
+                let has_primed = req["primed"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter_map(|v| v.as_str().map(PathBuf::from))
-                    .collect();
-                if !primed.contains(&want_ws) {
-                    let mut out = serde_json::json!({
-                        "status": "handover",
-                        "grant": false,
-                        "reason": "warm",
-                        "warm": [&want_ws],
-                        "subscribed": [{"workspace": &want_ws, "root": stale_root}],
-                        "conns": [],
-                    })
-                    .to_string();
-                    out.push('\n');
+                    .any(|v| v.as_str() == want_ws.to_str());
+                if !has_primed {
+                    let out = format!(
+                        "{}\n",
+                        serde_json::json!({"status":"handover","grant":false,"reason":"warm","warm":[&want_ws],"subscribed":[{"workspace":&want_ws,"root":stale_root}],"conns":[]})
+                    );
                     (&stream).write_all(out.as_bytes()).unwrap();
                     continue;
                 }
                 grants += 1;
-                let mut out = serde_json::json!({
-                    "status": "handover",
-                    "grant": true,
-                    "subscribed": [{"workspace": &want_ws, "root": stale_root}],
-                    "conns": [],
-                })
-                .to_string();
-                out.push('\n');
+                let out = format!(
+                    "{}\n",
+                    serde_json::json!({"status":"handover","grant":true,"subscribed":[{"workspace":&want_ws,"root":stale_root}],"conns":[]})
+                );
                 crate::succession::send_with_fds(
                     &stream,
                     out.as_bytes(),
@@ -5806,19 +5787,15 @@ mod residency_activation_tests {
                 let mut reply = String::new();
                 let _ = BufReader::new(&stream).read_line(&mut reply);
                 if reply.contains("\"adopted\"") {
-                    adopted = true;
                     (&stream).write_all(b"{\"released\":true}\n").unwrap();
                     drop(lock.into_held());
-                    return (grants, aborts, adopted);
+                    return (grants, aborts, true);
                 }
                 aborts += 1;
                 let _ = (&stream).write_all(b"{\"aborted\":true}\n");
                 if grants > MAX_ADOPT_RESYNCS {
-                    // Exhausted MAX_ADOPT_RESYNCS without silently adopting:
-                    // raise `stop` so the Busy sleep interrupts immediately
-                    // while this resident keeps serving.
-                    stop_res.store(true, Ordering::SeqCst);
-                    return (grants, aborts, adopted);
+                    stop_res.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return (grants, aborts, false);
                 }
             }
         });
@@ -5830,13 +5807,8 @@ mod residency_activation_tests {
         }
         assert!(
             !adopted,
-            "successor must NEVER silently adopt a DiskMoved baseline after MAX_ADOPT_RESYNCS (grants={grants}, aborts={aborts})"
+            "must never silently adopt DiskMoved baseline after MAX_ADOPT_RESYNCS (grants={grants}, aborts={aborts})"
         );
-        assert_eq!(
-            aborts,
-            MAX_ADOPT_RESYNCS + 1,
-            "expected all {} resync tries plus the exhaustion try to abort cleanly",
-            MAX_ADOPT_RESYNCS + 1
-        );
+        assert_eq!(aborts, MAX_ADOPT_RESYNCS + 1);
     }
 }
