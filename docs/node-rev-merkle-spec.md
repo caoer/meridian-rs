@@ -1380,10 +1380,18 @@ checksum. `fs` receives a byte-source capability; it does not acquire registry
 or cache dependencies. Publish a handle only after its complete record can
 be read and checked. Keep a segment while any serving descriptor, baseline or
 operation references it; reclaim obsolete segments, compacting live records
-in bounded chunks without invalidating live handles. The daemon's host keeps
-its store under `<cache-root>/registry/backing/`; holding the singleton lock
-at start, it removes every store directory an earlier process left there
-before it creates its own.
+in bounded chunks without invalidating live handles. The daemon's host keeps its store under `<cache-root>/registry/backing/` as a
+process-scoped directory (`raw-<pid>-<time>-<serial>`) held under an exclusive
+advisory directory lock (`DrawerLock`); holding the singleton lock at start, it
+removes every store directory an earlier process left there before it creates
+its own. A successor warming beside a serving daemon does not hold the
+singleton lock: at start it sweeps only `raw-<pid>-*` directories whose owning
+process is confirmed dead (`ESRCH`) and unlocked, leaving any live process's
+store (including an older resident without a per-store lock) untouched; if
+interrupted or failed before handover commit it closes its store against
+further writes and removes its own directory immediately. The serving daemon's
+reaper sweeps dead-process, unlocked `raw-<pid>-*` directories on each reap
+pass so `SIGKILL` or crash debris is reclaimed without restarting the resident.
 
 The raw-store primitive (`crates/registry/src/raw_store.rs`) retains identity,
 length and a relocatable record handle, never a second in-memory body. Its
