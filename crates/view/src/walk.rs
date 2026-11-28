@@ -511,6 +511,30 @@ pub fn lock_pin_colors_rooted_with_sources(
     out
 }
 
+/// Colour ONLY the lock rows of `holders` against `corpus` — the bounded
+/// path-scoped twin of [`lock_pin_colors_rooted_with_sources`].
+///
+/// Targets present in `corpus` are resolved and fingerprinted without colouring
+/// those targets' own outgoing pins, so a scoped check of one page pays only
+/// for that page and its direct targets.
+#[must_use]
+pub fn lock_pin_colors_for_holders<'a>(
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+    holders: impl IntoIterator<Item = (&'a str, &'a model::Document)>,
+) -> Vec<PinColor> {
+    let index = corpus_index(corpus.ambient_docs());
+    let mut out = Vec::new();
+    for (path, doc) in holders {
+        let items = page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts);
+        match holder_pin_colors(corpus, path, items, &mut out) {
+            Ok(()) => {}
+            Err(never) => match never {},
+        }
+    }
+    out
+}
+
 /// [`lock_pin_colors_rooted_with_sources`] over a generation whose bodies are
 /// leased (merkle-spec §6.8): the same rows in the same order. Only the lock
 /// holders `locks` names are read for their pins, and a pin's target is
