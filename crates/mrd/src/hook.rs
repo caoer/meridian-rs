@@ -21,7 +21,7 @@ pub const HOOK_MARKER: &str = "mrd-hook-fence";
 /// by. Bump it whenever the emitted body changes behaviour, or a stale fence reports as current.
 /// `crates/mrd/tests/skill_hook_emit.rs` holds this number and the document's own
 /// `mrd-hook-fence <n>` line to each other.
-pub const FENCE_VERSION: u32 = 4;
+pub const FENCE_VERSION: u32 = 5;
 
 /// Every door git offers a veto on for a commit it builds from a prepared index. Each is
 /// veto-capable and fires with the index already holding what would be committed, so one body

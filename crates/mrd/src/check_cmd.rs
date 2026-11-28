@@ -80,6 +80,7 @@ const EXIT_FINDING: u8 = 1;
 /// Run `mrd check [--core] [--json]`: resolve the workspace and run the layer-0 core, printing
 /// the verdict. Errors [`Fail`] exit 2 on a bad invocation or an unreadable workspace/journal;
 /// exit 1 when the core reddens (chain break or foreign edit).
+#[allow(clippy::too_many_lines)] // top-level verb dispatch: resolve, guard, assess, emit, exit
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Check::parse(args)?;
     let cwd = current_dir()?;
@@ -101,49 +102,88 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
     let paths = workspace_paths(&canonical, &cwd, &parsed.paths)?;
 
-    // The second interval, only when asked for: absent divergence the two intervals
-    // coincide and one pass answers both.
-    let probe = if parsed.staged {
-        probe_staged(&root, &domain)
+    // One-at-a-time non-blocking slot lock + session-lifetime/wall-clock guard
+    // (`docs/status.md` § `mrd check`): refuse `busy` (exit 75) immediately when
+    // another unrelated check holds the slot, and die with the caller or
+    // wall-clock bound.
+    let _slot = crate::check_guard::acquire_slot(parsed.format, &canonical)?;
+    let scoped_gate = is_scoped_gate(parsed.commit_gate, &paths);
+
+    let (_watchdog, scoped_built) = if scoped_gate {
+        let bound = crate::check_guard::wall_clock_bound(true);
+        let scoped_wd = crate::check_guard::Watchdog::arm(bound);
+        match assess_scoped(&root, &domain, &paths)? {
+            ScopedOutcome::Built(built) => (scoped_wd, Some(*built)),
+            ScopedOutcome::Fallback(reason) => {
+                // Keep the scoped wall-clock bound armed across the fallback
+                // so a single-card `--commit-gate -- PATH…` never falls back
+                // into an unbounded whole-corpus build. Callers that want no
+                // bound can pass `MRD_CHECK_TIMEOUT_SECS=0`.
+                let bound_note = match bound {
+                    Some(d) => format!("keeping {}s wall-clock bound", d.as_secs()),
+                    None => "wall-clock bound disabled (MRD_CHECK_TIMEOUT_SECS=0)".to_owned(),
+                };
+                eprintln!(
+                    "mrd check: scoped commit-gate fell back to full lane ({reason}); \
+                     {bound_note} (override with MRD_CHECK_TIMEOUT_SECS)"
+                );
+                (scoped_wd, None)
+            }
+        }
     } else {
-        StagedProbe::Settled(Interval::NotAsked)
-    };
-    // The armed plane — red rows and armed queries. The commit gate stays the pin
-    // plane alone, so it runs no query.
-    let settled_armed = if parsed.commit_gate {
-        Some(None)
-    } else {
-        crate::check_armed::settled_without_corpus(&root).map(Some)
+        (
+            crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(false)),
+            None,
+        )
     };
 
-    // Two readings need this process to hold the corpus: a staged interval whose
-    // index bytes diverge from the worktree, and an armed query. Every other check
-    // takes its pin rows from the resident daemon (`wire-contract.md` § A.13).
-    let served = match (&probe, &settled_armed) {
-        (StagedProbe::Settled(_), Some(_)) => {
-            let served = crate::pins_lane::from_daemon(&canonical, parsed.format)?;
-            if served.is_none() {
-                crate::engine::voice_degrade(&crate::engine::EngineSource::Ephemeral);
+    let (interval, mut worktree, staged, armed) = if let Some(built) = scoped_built {
+        (built.interval, built.worktree, built.staged, None)
+    } else {
+        // The second interval, only when asked for: absent divergence the two intervals
+        // coincide and one pass answers both.
+        let probe = if parsed.staged {
+            probe_staged(&root, &domain)
+        } else {
+            StagedProbe::Settled(Interval::NotAsked)
+        };
+        // The armed plane — red rows and armed queries. The commit gate stays the pin
+        // plane alone, so it runs no query.
+        let settled_armed = if parsed.commit_gate {
+            Some(None)
+        } else {
+            crate::check_armed::settled_without_corpus(&root).map(Some)
+        };
+
+        // Two readings need this process to hold the corpus: a staged interval whose
+        // index bytes diverge from the worktree, and an armed query. Every other check
+        // takes its pin rows from the resident daemon (`wire-contract.md` § A.13).
+        let served = match (&probe, &settled_armed) {
+            (StagedProbe::Settled(_), Some(_)) => {
+                let served = crate::pins_lane::from_daemon(&canonical, parsed.format)?;
+                if served.is_none() {
+                    crate::engine::voice_degrade(&crate::engine::EngineSource::Ephemeral);
+                }
+                served
             }
-            served
-        }
-        _ => None,
-    };
-    let (interval, mut worktree, staged, armed) = match (served, probe, settled_armed) {
-        (Some(plane), StagedProbe::Settled(interval), Some(armed)) => {
-            crate::voice_excluded_note(&plane.excluded);
-            let worktree = assess_rows(
-                &root,
-                &domain,
-                &plane.rows,
-                &mounted_stores(&plane.rows),
-                &paths,
-            )?;
-            (interval, worktree, None, armed)
-        }
-        (_, probe, _) => {
-            let built = assess_in_process(&root, &domain, probe, &paths, parsed.commit_gate)?;
-            (built.interval, built.worktree, built.staged, built.armed)
+            _ => None,
+        };
+        match (served, probe, settled_armed) {
+            (Some(plane), StagedProbe::Settled(interval), Some(armed)) => {
+                crate::voice_excluded_note(&plane.excluded);
+                let worktree = assess_rows(
+                    &root,
+                    &domain,
+                    &plane.rows,
+                    &mounted_stores(&plane.rows),
+                    &paths,
+                )?;
+                (interval, worktree, None, armed)
+            }
+            (_, probe, _) => {
+                let built = assess_in_process(&root, &domain, probe, &paths, parsed.commit_gate)?;
+                (built.interval, built.worktree, built.staged, built.armed)
+            }
         }
     };
     // The run ledger is engine state outside every interval (wire-contract
@@ -199,6 +239,12 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
 
     worst_of_exit(&worktree.report, staged.as_ref(), &armed_findings)
+}
+
+/// Whether this invocation qualifies for the bounded path-scoped `--commit-gate`
+/// fast path (non-empty `paths`, none naming the workspace root `""`).
+fn is_scoped_gate(commit_gate: bool, paths: &[String]) -> bool {
+    commit_gate && !paths.is_empty() && !paths.iter().any(String::is_empty)
 }
 
 /// The `-- PATH…` operands as workspace-relative paths. Absolute or relative to
@@ -706,6 +752,551 @@ struct Built {
     armed: Option<crate::check_armed::ArmedPlane>,
 }
 
+/// Result of the bounded path-scoped `--commit-gate -- PATH…` fast path.
+enum ScopedOutcome {
+    /// Answered within bounded scope.
+    Built(Box<Built>),
+    /// Could not settle within bounded scope (e.g. an unresolved bare spelling
+    /// that may be a frontmatter alias, or `PATH…` expanding past the
+    /// small-batch threshold); fall back to the standard daemon-or-in-process
+    /// lane while keeping the scoped wall-clock bound armed.
+    Fallback(String),
+}
+
+/// Bounded path-scoped `--commit-gate -- PATH…`: reads only the markdown
+/// holders under `paths` and the direct targets their `meridian-lock` blocks
+/// pin (ambient and bound mounted roots), without scanning or parsing the whole
+/// corpus or entering the `.build` gate.
+#[allow(clippy::too_many_lines)] // linear staged+worktree assembly over bounded paths
+fn assess_scoped(
+    root: &fs::WorkspaceRoot,
+    domain: &fs::domain::Domain,
+    paths: &[String],
+) -> Result<ScopedOutcome, Fail> {
+    const MAX_SCOPED_HOLDERS: usize = 64;
+    const MAX_INDEX_MATCHES_PER_TARGET: usize = 16;
+
+    let scoped_phase = timing::phase("check.scoped");
+    let mut worktree_holder_paths = BTreeSet::new();
+    for rel in paths {
+        collect_md_under(&root.0, rel, &mut worktree_holder_paths);
+        if worktree_holder_paths.len() > MAX_SCOPED_HOLDERS {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback(format!(
+                "more than {MAX_SCOPED_HOLDERS} holders under PATH"
+            )));
+        }
+    }
+
+    let repo = git::Repo::at(&root.0);
+    let mut div_map: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
+    let mut git_status: Option<Interval> = None;
+    match repo.staged_divergence_paths(paths) {
+        Ok(entries) => {
+            for (rel, bytes) in entries {
+                div_map.insert(rel, bytes);
+            }
+        }
+        Err(git::GitFail::NotARepo { .. }) => git_status = Some(Interval::NoRepository),
+        Err(other) => git_status = Some(Interval::CannotAsk(other.to_string())),
+    }
+
+    let mut unserved: BTreeMap<String, String> = BTreeMap::new();
+    let mut worktree_in_domain: model::Docs = BTreeMap::new();
+    let mut excluded_holders: model::Docs = BTreeMap::new();
+    let mut declined_holders: Vec<String> = Vec::new();
+    for rel in &worktree_holder_paths {
+        let Ok(bytes) = std::fs::read(root.0.join(rel)) else {
+            continue;
+        };
+        if domain.contains(Path::new(rel)) {
+            parse_scoped_doc(rel, bytes, &mut worktree_in_domain, &mut unserved);
+        } else {
+            if domain.exclusion(Path::new(rel)) == Some(fs::domain::ExclusionReason::CustomIgnore) {
+                declined_holders.push(rel.clone());
+            }
+            if let Ok(text) = String::from_utf8(bytes) {
+                let doc = model::build(text.clone(), syntax::parse(&text));
+                excluded_holders.insert(rel.clone(), std::sync::Arc::new(doc));
+            }
+        }
+    }
+
+    let mut staged_in_domain: model::Docs = worktree_in_domain.clone();
+    for (rel, opt_bytes) in &div_map {
+        if !is_md_path(rel) || !domain.contains(Path::new(rel)) {
+            continue;
+        }
+        match opt_bytes {
+            Some(bytes) => {
+                parse_scoped_doc(rel, bytes.clone(), &mut staged_in_domain, &mut unserved);
+            }
+            None => {
+                staged_in_domain.remove(rel);
+            }
+        }
+    }
+    if staged_in_domain.len() > MAX_SCOPED_HOLDERS {
+        scoped_phase.stop();
+        return Ok(ScopedOutcome::Fallback(format!(
+            "more than {MAX_SCOPED_HOLDERS} staged holders under PATH"
+        )));
+    }
+
+    let (mount_set, bound_roots) = bind_mount_table_headers();
+    let mut ambient_targets: BTreeSet<String> = BTreeSet::new();
+    let mut mounted_targets: BTreeMap<addr::MountName, BTreeSet<String>> = BTreeMap::new();
+    for doc in worktree_in_domain
+        .values()
+        .chain(staged_in_domain.values())
+        .chain(excluded_holders.values())
+    {
+        for item in view::read_face::page_lock_items(doc) {
+            if item.lock_refusal.is_some() {
+                continue;
+            }
+            let Ok(parsed_addr) = addr::Addr::parse(&item.to_path) else {
+                continue;
+            };
+            match parsed_addr.root() {
+                None => {
+                    ambient_targets.insert(item.to_path);
+                }
+                Some(mount_name) => {
+                    if bound_roots.contains_key(mount_name) {
+                        mounted_targets
+                            .entry(mount_name.clone())
+                            .or_default()
+                            .insert(parsed_addr.path().to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    if git_status.is_none() && !ambient_targets.is_empty() {
+        let target_list: Vec<String> = ambient_targets.iter().cloned().collect();
+        match repo.staged_divergence_paths(&target_list) {
+            Ok(entries) => {
+                for (rel, bytes) in entries {
+                    div_map.entry(rel).or_insert(bytes);
+                }
+            }
+            Err(other) => git_status = Some(Interval::CannotAsk(other.to_string())),
+        }
+    }
+
+    // Resolve non-exact ambient targets cheaply (`.md` doubling + git index
+    // case-insensitive exact/whole-segment tail lookup) before ever falling
+    // back to the full corpus:
+    // - subdir-qualified tails and case-folded spellings load directly in
+    //   bounded scope;
+    // - deleted path-qualified targets (`rel.contains('/')` with zero index
+    //   matches) stay in the bounded lane and color `red target-missing`
+    //   instead of triggering a whole-corpus build;
+    // - only unresolved bare spellings (which could name a frontmatter
+    //   `aliases:` entry), out-of-domain bare spellings, >16 matches, or
+    //   non-git workspaces fall back (still under the scoped wall-clock bound).
+    let mut missing_ambient: Vec<String> = Vec::new();
+    let mut extra_ambient: BTreeSet<String> = BTreeSet::new();
+    for rel in &ambient_targets {
+        let on_disk = root.0.join(rel).is_file();
+        let in_staged = div_map.contains_key(rel);
+        if on_disk && !domain.contains(Path::new(rel)) && !rel.contains('/') {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback(format!(
+                "out-of-domain bare target `{rel}`"
+            )));
+        }
+        if !on_disk && !in_staged {
+            let double_md = format!("{rel}.md");
+            if root.0.join(&double_md).is_file() {
+                extra_ambient.insert(double_md);
+            } else {
+                missing_ambient.push(rel.clone());
+            }
+        }
+    }
+    if !missing_ambient.is_empty() {
+        if git_status.is_some() {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback(format!(
+                "unresolved target `{}` without git index",
+                missing_ambient[0]
+            )));
+        }
+        let matches = match repo.find_icase_tail_paths(&missing_ambient) {
+            Ok(matches) => matches,
+            Err(e) => {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "git index lookup failed for unresolved target: {e}"
+                )));
+            }
+        };
+        for rel in &missing_ambient {
+            let hits: Vec<&String> = matches
+                .iter()
+                .filter(|cand| matches_icase_tail(cand, rel))
+                .collect();
+            if hits.len() > MAX_INDEX_MATCHES_PER_TARGET {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "ambiguous target `{rel}` ({} index matches)",
+                    hits.len()
+                )));
+            }
+            if !hits.is_empty() {
+                for hit in hits {
+                    extra_ambient.insert(hit.clone());
+                }
+            } else if !rel.contains('/') {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "unresolved bare target `{rel}` (may be an alias)"
+                )));
+            }
+            // Path-qualified target with zero disk/index/tail matches: genuinely
+            // deleted/missing — stay in the bounded lane so it colors red
+            // `target-missing` without walking the corpus.
+        }
+    }
+    if !extra_ambient.is_empty() {
+        let extra_list: Vec<String> = extra_ambient.iter().cloned().collect();
+        if git_status.is_none() {
+            match repo.staged_divergence_paths(&extra_list) {
+                Ok(entries) => {
+                    for (rel, bytes) in entries {
+                        div_map.entry(rel).or_insert(bytes);
+                    }
+                }
+                Err(other) => git_status = Some(Interval::CannotAsk(other.to_string())),
+            }
+        }
+        ambient_targets.extend(extra_ambient);
+    }
+
+    for (name, targets) in &mut mounted_targets {
+        let mount_root = &bound_roots[name];
+        let mount_ws = fs::WorkspaceRoot(mount_root.clone());
+        let Ok(mount_domain) = fs::domain::Domain::load(&mount_ws) else {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback(format!(
+                "cannot read domain for mounted root `{name}`"
+            )));
+        };
+        let mut missing_mounted: Vec<String> = Vec::new();
+        let mut extra_mounted: BTreeSet<String> = BTreeSet::new();
+        for rel in targets.iter() {
+            let on_disk = mount_root.join(rel).is_file();
+            if on_disk && !mount_domain.contains(Path::new(rel)) && !rel.contains('/') {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "out-of-domain bare mounted target `{name}:{rel}`"
+                )));
+            }
+            if !on_disk {
+                let double_md = format!("{rel}.md");
+                if mount_root.join(&double_md).is_file() {
+                    extra_mounted.insert(double_md);
+                } else {
+                    missing_mounted.push(rel.clone());
+                }
+            }
+        }
+        if !missing_mounted.is_empty() {
+            let mount_repo = git::Repo::at(mount_root);
+            let Ok(matches) = mount_repo.find_icase_tail_paths(&missing_mounted) else {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "unresolved mounted target `{name}:{}`",
+                    missing_mounted[0]
+                )));
+            };
+            for rel in &missing_mounted {
+                let hits: Vec<&String> = matches
+                    .iter()
+                    .filter(|cand| matches_icase_tail(cand, rel))
+                    .collect();
+                if hits.len() > MAX_INDEX_MATCHES_PER_TARGET {
+                    scoped_phase.stop();
+                    return Ok(ScopedOutcome::Fallback(format!(
+                        "ambiguous mounted target `{name}:{rel}` ({} index matches)",
+                        hits.len()
+                    )));
+                }
+                if !hits.is_empty() {
+                    for hit in hits {
+                        extra_mounted.insert(hit.clone());
+                    }
+                } else if !rel.contains('/') {
+                    scoped_phase.stop();
+                    return Ok(ScopedOutcome::Fallback(format!(
+                        "unresolved bare mounted target `{name}:{rel}` (may be an alias)"
+                    )));
+                }
+            }
+        }
+        targets.extend(extra_mounted);
+    }
+
+    let diverged_paths: Vec<String> = div_map
+        .keys()
+        .filter(|rel| domain.contains(Path::new(rel)))
+        .cloned()
+        .collect();
+    let interval = match git_status {
+        Some(settled) => settled,
+        None if diverged_paths.is_empty() => Interval::Coincides,
+        None => Interval::Diverges(StagedBytes {
+            paths: diverged_paths.clone(),
+            files: fs::DomainFiles::default(),
+        }),
+    };
+
+    let mut worktree_docs = worktree_in_domain.clone();
+    for rel in &ambient_targets {
+        if worktree_docs.contains_key(rel) || !domain.contains(Path::new(rel)) {
+            continue;
+        }
+        let full = root.0.join(rel);
+        if full.is_file()
+            && let Ok(bytes) = std::fs::read(&full)
+        {
+            parse_scoped_doc(rel, bytes, &mut worktree_docs, &mut unserved);
+        }
+    }
+    crate::voice_excluded_note(&declined_holders);
+    crate::voice_unserved(&unserved);
+
+    let staged_docs = matches!(interval, Interval::Diverges(_)).then(|| {
+        let mut docs = staged_in_domain.clone();
+        for rel in &ambient_targets {
+            if !domain.contains(Path::new(rel)) {
+                continue;
+            }
+            if let Some(opt_bytes) = div_map.get(rel) {
+                match opt_bytes {
+                    Some(bytes) => {
+                        let mut staged_unserved = BTreeMap::new();
+                        parse_scoped_doc(rel, bytes.clone(), &mut docs, &mut staged_unserved);
+                    }
+                    None => {
+                        docs.remove(rel);
+                    }
+                }
+            } else if let Some(doc) = worktree_docs.get(rel) {
+                docs.entry(rel.clone())
+                    .or_insert_with(|| std::sync::Arc::clone(doc));
+            }
+        }
+        docs
+    });
+
+    let mut mounted_docs: BTreeMap<addr::MountName, model::Docs> = BTreeMap::new();
+    let mut mounted_stores: BTreeMap<addr::MountName, PathBuf> = BTreeMap::new();
+    for (name, targets) in &mounted_targets {
+        let mount_root = &bound_roots[name];
+        mounted_stores.insert(name.clone(), mount_root.clone());
+        let mount_ws = fs::WorkspaceRoot(mount_root.clone());
+        let Ok(mount_domain) = fs::domain::Domain::load(&mount_ws) else {
+            continue;
+        };
+        let mut docs: model::Docs = BTreeMap::new();
+        let mut mount_unserved = BTreeMap::new();
+        for rel in targets {
+            if !mount_domain.contains(Path::new(rel)) {
+                continue;
+            }
+            let full = mount_root.join(rel);
+            if full.is_file()
+                && let Ok(bytes) = std::fs::read(&full)
+            {
+                parse_scoped_doc(rel, bytes, &mut docs, &mut mount_unserved);
+            }
+        }
+        crate::voice_unserved(&mount_unserved);
+        mounted_docs.insert(name.clone(), docs);
+    }
+
+    let rows_for = |docs: &model::Docs, holders: &model::Docs| {
+        let mut corpus = model::RootedCorpus::ambient(docs)
+            .with_hash_domain(domain)
+            .with_ambient_disk(root);
+        for (name, mdocs) in &mounted_docs {
+            corpus = corpus.with_root(name.clone(), mdocs);
+        }
+        let colouring = timing::phase("check.pins");
+        let colors = view::walk::lock_pin_colors_for_holders(
+            &corpus,
+            &mount_set,
+            holders
+                .iter()
+                .chain(excluded_holders.iter())
+                .map(|(p, d)| (p.as_str(), d.as_ref())),
+        );
+        colouring.stop();
+        crate::pins_lane::rows(colors)
+    };
+
+    let worktree = assess_rows(
+        root,
+        domain,
+        &rows_for(&worktree_docs, &worktree_in_domain),
+        &mounted_stores,
+        paths,
+    )?;
+    let staged = match (&interval, &staged_docs) {
+        (Interval::Diverges(_), Some(docs)) => Some(Assessed {
+            paths: diverged_paths,
+            report: assess_rows(
+                root,
+                domain,
+                &rows_for(docs, &staged_in_domain),
+                &mounted_stores,
+                paths,
+            )?
+            .report,
+        }),
+        _ => None,
+    };
+    scoped_phase.stop();
+    Ok(ScopedOutcome::Built(Box::new(Built {
+        interval,
+        worktree,
+        staged,
+        armed: None,
+    })))
+}
+
+fn is_md_path(rel: &str) -> bool {
+    Path::new(rel)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+/// Case-insensitive whole-segment tail match: `candidate` equals `rel` or ends
+/// with `/{rel}` (ASCII case-insensitive), matching `model::matches_qualified_path`.
+fn matches_icase_tail(candidate: &str, rel: &str) -> bool {
+    let rel = rel.trim_start_matches('/');
+    if candidate.eq_ignore_ascii_case(rel) {
+        return true;
+    }
+    if candidate.len() <= rel.len() {
+        return false;
+    }
+    let split = candidate.len() - rel.len();
+    candidate.is_char_boundary(split)
+        && candidate.as_bytes()[split - 1] == b'/'
+        && candidate[split..].eq_ignore_ascii_case(rel)
+}
+
+fn collect_md_under(root: &Path, rel: &str, out: &mut BTreeSet<String>) {
+    let full = root.join(rel);
+    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+        return;
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    if meta.is_file() {
+        if is_md_path(rel) {
+            out.insert(rel.to_owned());
+        }
+        return;
+    }
+    if !meta.is_dir() {
+        return;
+    }
+    let mut stack = vec![full];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            if ft.is_dir() {
+                // Skip nested git checkouts / submodules under a directory PATH.
+                if path.join(".git").exists() {
+                    continue;
+                }
+                stack.push(path);
+            } else if ft.is_file()
+                && let Ok(stripped) = path.strip_prefix(root)
+                && let Some(text) = stripped.to_str()
+                && is_md_path(text)
+            {
+                out.insert(text.to_owned());
+            }
+        }
+    }
+}
+
+fn parse_scoped_doc(
+    rel: &str,
+    bytes: Vec<u8>,
+    docs: &mut model::Docs,
+    unserved: &mut BTreeMap<String, String>,
+) {
+    match String::from_utf8(bytes) {
+        Ok(text) => {
+            let doc = model::build(text.clone(), syntax::parse(&text));
+            docs.insert(rel.to_owned(), std::sync::Arc::new(doc));
+        }
+        Err(_) => {
+            unserved.insert(rel.to_owned(), "is not valid UTF-8".to_owned());
+        }
+    }
+}
+
+/// Bind `MERIDIAN.md`'s mount table into `(MountSet, bound_roots)` without
+/// reading or parsing any mounted root's corpus.
+fn bind_mount_table_headers() -> (addr::MountSet, BTreeMap<addr::MountName, PathBuf>) {
+    let env = config::Env::from_process();
+    let Ok(resolution) = config::resolve(&env) else {
+        return (addr::MountSet::default(), BTreeMap::new());
+    };
+    let Ok(table) = resolution.bind(&env) else {
+        return (addr::MountSet::default(), BTreeMap::new());
+    };
+    let mut bound = Vec::new();
+    let mut unreachable = Vec::new();
+    let mut roots = BTreeMap::new();
+    for mount in table.mounts() {
+        let Ok(name) = addr::MountName::parse(mount.name()) else {
+            continue;
+        };
+        if mount.state().refuses() {
+            let detail = match mount.state() {
+                config::mount::MountState::PathUnseeable { detail } => detail.clone(),
+                other => other.detail(),
+            };
+            unreachable.push((name, mount.declared_path().to_owned(), detail));
+            continue;
+        }
+        let Some(path) = mount.canonical_path() else {
+            continue;
+        };
+        bound.push(name.clone());
+        roots.insert(name, path.to_path_buf());
+    }
+    let mut set = addr::MountSet::new(bound);
+    for (name, path, detail) in unreachable {
+        set = set.with_unreachable(name, path, detail);
+    }
+    (set, roots)
+}
+
 /// The in-process lane: one read of the worktree, whose bytes feed the fold, the
 /// corpus, every interval's pin rows and the armed queries.
 fn assess_in_process(
@@ -822,10 +1413,15 @@ fn assess_rows(
             label: crate::pins_lane::label(row),
         });
     }
-    // The anchoring questions are asked for the hashed corpus's holders.
+    // The anchoring questions are asked for the hashed corpus's holders under
+    // `paths` only — matching the pin rows above so `-- PATH…` never scans git
+    // history for unrelated cards across the corpus.
     let objects: Vec<check::LockObject> = rows
         .iter()
-        .filter(|row| crate::pins_lane::holder_in_domain(domain, row))
+        .filter(|row| {
+            crate::check_armed::under(paths, &row.holder)
+                && crate::pins_lane::holder_in_domain(domain, row)
+        })
         .filter_map(|row| {
             Some(check::LockObject {
                 src_path: row.holder.clone(),
@@ -1422,6 +2018,32 @@ mod tests {
              worktree, because an unstaged governed write is the ordinary state of \
              every working repository"
         );
+    }
+
+    #[test]
+    fn scoped_gate_predicate_excludes_non_gate_and_root_paths() {
+        assert!(is_scoped_gate(true, &["agents/x/x.md".to_string()]));
+        assert!(!is_scoped_gate(false, &["agents/x/x.md".to_string()]));
+        assert!(!is_scoped_gate(true, &[String::new()]));
+        assert!(!is_scoped_gate(true, &[]));
+        assert!(!is_scoped_gate(
+            true,
+            &["agents/x/x.md".to_string(), String::new()]
+        ));
+    }
+
+    #[test]
+    fn icase_tail_matches_whole_segments_only() {
+        assert!(matches_icase_tail("Root.md", "root.md"));
+        assert!(matches_icase_tail(
+            "deep/nested/Target.md",
+            "nested/target.md"
+        ));
+        assert!(!matches_icase_tail(
+            "deep/xnested/Target.md",
+            "nested/target.md"
+        ));
+        assert!(!matches_icase_tail("short.md", "nested/short.md"));
     }
 
     #[test]

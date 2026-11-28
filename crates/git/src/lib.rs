@@ -52,8 +52,41 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod reach;
+
+/// When enabled (e.g. by `mrd check`), Linux `git` children install
+/// `PR_SET_PDEATHSIG` in `pre_exec` so they die if their parent is `SIGKILL`ed
+/// or OOM-killed. Off by default so long-lived multi-GiB processes (the
+/// resident daemon) keep Rust `std`'s `posix_spawn` fast path and avoid
+/// `fork()` page-table copies on every git call.
+static CHILD_PDEATHSIG: AtomicBool = AtomicBool::new(false);
+
+/// Opt into (or out of) Linux `PR_SET_PDEATHSIG` on child `git` processes
+/// spawned by [`Repo`] in this process.
+pub fn set_child_pdeathsig(enabled: bool) {
+    CHILD_PDEATHSIG.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether [`Repo`] currently installs `PR_SET_PDEATHSIG` on child `git`
+/// processes.
+#[must_use]
+pub fn child_pdeathsig_enabled() -> bool {
+    CHILD_PDEATHSIG.load(Ordering::Relaxed)
+}
+
+#[cfg(target_os = "linux")]
+mod linux_sys {
+    use std::ffi::c_int;
+
+    unsafe extern "C" {
+        pub(super) fn getpid() -> c_int;
+        pub(super) fn getppid() -> c_int;
+        pub(super) fn prctl(option: c_int, ...) -> c_int;
+        pub(super) fn _exit(status: c_int) -> !;
+    }
+}
 
 /// The default git program — resolved through `PATH` like any other caller.
 const GIT: &str = "git";
@@ -203,14 +236,27 @@ impl Repo {
             names.iter().map(|n| (n.as_bytes(), n.as_str())).collect();
 
         // Both listings are relative to the root and confined to it.
+        // Narrow by pathspec for small batches so one-card checks never scan a
+        // 100k-entry index.
+        let narrow = names.len() <= 64;
         let mut cmd = self.command();
         cmd.args(["diff-files", "--relative", "--name-only", "-z"]);
+        if narrow {
+            cmd.env("GIT_LITERAL_PATHSPECS", "1");
+            cmd.arg("--");
+            cmd.args(names);
+        }
         for changed in self.run(cmd, "diff-files").ok()?.split(|b| *b == 0) {
             wanted.remove(changed);
         }
 
         let mut cmd = self.command();
         cmd.args(["ls-files", "-s", "-v", "-z"]);
+        if narrow {
+            cmd.env("GIT_LITERAL_PATHSPECS", "1");
+            cmd.arg("--");
+            cmd.args(names);
+        }
         let stdout = self.run(cmd, "ls-files -s -v").ok()?;
         let mut out = HashMap::new();
         // An entry is `<tag> <mode> <oid> <stage>\t<path>`, NUL-terminated.
@@ -439,8 +485,18 @@ impl Repo {
             paths.iter().map(|p| (p.as_bytes(), &b""[..])).collect();
 
         // From a nested root git lists the paths under it, relative to it.
+        // For small batches pass the asked paths directly so a one-card check
+        // does not enumerate every tree entry in a 100k-file repository.
         let mut cmd = self.command();
         cmd.args(["ls-tree", "-r", "-z", "HEAD"]);
+        if asks.len() <= 64 {
+            cmd.env("GIT_LITERAL_PATHSPECS", "1");
+            let mut unique: Vec<&str> = paths.iter().map(String::as_str).collect();
+            unique.sort_unstable();
+            unique.dedup();
+            cmd.arg("--");
+            cmd.args(unique);
+        }
         let stdout = self.run(cmd, WHAT)?;
         // An entry is `<mode> <type> <oid>\t<path>`, NUL-terminated.
         for entry in stdout.split(|b| *b == 0) {
@@ -461,6 +517,104 @@ impl Repo {
                 is_oid(oid) && at_head[path.as_bytes()].eq_ignore_ascii_case(oid.as_bytes())
             })
             .collect())
+    }
+
+    /// For each `(oid, path)`, whether `oid` appears as a blob at `path` in any
+    /// commit reachable from an anchoring ref (every ref except git-annex's).
+    ///
+    /// Runs ONE path-scoped `git log --raw --no-abbrev -z --format= -- <paths>`
+    /// so a historical pin on a single file is proved reachable without walking
+    /// every object in the repository (`rev-list --objects --all`). A `true`
+    /// settles reachability; a `false` means the blob was not seen at that path
+    /// (it may be uncommitted or committed at another path).
+    ///
+    /// # Errors
+    /// As [`Repo::reachable_objects`].
+    pub fn anchored_in_path_history(&self, asks: &[(&str, &Path)]) -> Result<Vec<bool>, GitFail> {
+        const WHAT: &str = "log --raw";
+        if asks.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_repo()?;
+        // Avoid invoking `git log --all` when no anchoring ref exists at all
+        // (empty / unborn repository).
+        let mut tip_cmd = self.command();
+        tip_cmd.arg("rev-parse");
+        for pattern in reach::ANNEX_REFS {
+            tip_cmd.arg(format!("--exclude={pattern}"));
+        }
+        tip_cmd.arg("--all");
+        let tip_out = self.run(tip_cmd, "rev-parse --all")?;
+        if tip_out.iter().all(u8::is_ascii_whitespace) {
+            return Ok(vec![false; asks.len()]);
+        }
+
+        let mut unique: Vec<String> = asks
+            .iter()
+            .map(|(_, path)| path.to_string_lossy().into_owned())
+            .collect();
+        unique.sort();
+        unique.dedup();
+        if unique.len() > 64 {
+            return Ok(vec![false; asks.len()]);
+        }
+
+        let mut cmd = self.command();
+        cmd.env("GIT_LITERAL_PATHSPECS", "1");
+        cmd.arg("log");
+        for pattern in reach::ANNEX_REFS {
+            cmd.arg(format!("--exclude={pattern}"));
+        }
+        cmd.args(["--all", "--raw", "--no-abbrev", "-z", "--format=", "--"]);
+        cmd.args(&unique);
+        let stdout = self.run(cmd, WHAT)?;
+
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for record in stdout.split(|b| *b == 0) {
+            let trimmed = record
+                .iter()
+                .position(|b| *b != b'\n' && *b != b'\r')
+                .map_or(&b""[..], |start| &record[start..]);
+            let Some(rest) = trimmed.strip_prefix(b":") else {
+                continue;
+            };
+            let Ok(text) = std::str::from_utf8(rest) else {
+                continue;
+            };
+            let mut fields = text.split(' ');
+            let (Some(old_mode), Some(new_mode), Some(old_oid), Some(new_oid)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let is_blob_mode = |m: &str| m.starts_with("100") || m == "120000";
+            let non_zero = |o: &str| is_oid(o) && !o.bytes().all(|b| b == b'0');
+            if is_blob_mode(old_mode) && non_zero(old_oid) {
+                seen.insert(old_oid.to_ascii_lowercase());
+            }
+            if is_blob_mode(new_mode) && non_zero(new_oid) {
+                seen.insert(new_oid.to_ascii_lowercase());
+            }
+        }
+        Ok(asks
+            .iter()
+            .map(|(oid, _)| is_oid(oid) && seen.contains(&oid.to_ascii_lowercase()))
+            .collect())
+    }
+
+    /// Whether this repository configures a promisor remote or partial-clone
+    /// extension, in which an object absent from the local ODB can still be
+    /// reachable from a commit.
+    #[must_use]
+    pub fn is_partial_clone(&self) -> bool {
+        let mut cmd = self.command();
+        cmd.args([
+            "config",
+            "--get-regexp",
+            r"^(remote\..*\.promisor|extensions\.partialclone)$",
+        ]);
+        cmd.output()
+            .is_ok_and(|out| out.status.success() && !out.stdout.is_empty())
     }
 
     /// Type and size for each of `oids`, in input order — `None` where the
@@ -748,6 +902,27 @@ impl Repo {
     /// # Errors
     /// As [`Repo::blob_oid`].
     pub fn staged_divergence(&self) -> Result<Vec<StagedPath>, GitFail> {
+        self.staged_divergence_inner(None)
+    }
+
+    /// [`Repo::staged_divergence`] narrowed to `paths` (workspace-relative
+    /// paths under [`Repo::root`]): git inspects only those pathspecs and reads
+    /// blobs only for diverged paths under them, so unrelated worktree edits on
+    /// a busy checkout are never touched.
+    ///
+    /// # Errors
+    /// As [`Repo::staged_divergence`].
+    pub fn staged_divergence_paths(&self, paths: &[String]) -> Result<Vec<StagedPath>, GitFail> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.staged_divergence_inner(Some(paths))
+    }
+
+    fn staged_divergence_inner(
+        &self,
+        scope: Option<&[String]>,
+    ) -> Result<Vec<StagedPath>, GitFail> {
         self.require_repo()?;
 
         // git answers repo-relative; this handle may be rooted below the top
@@ -757,22 +932,29 @@ impl Repo {
         let mut candidates: Vec<String> = Vec::new();
         // Worktree-vs-index: every path whose worktree bytes are not the index's,
         // including one deleted from the worktree while the index still carries it.
-        candidates.extend(self.nul_paths(&["diff-files", "-z", "--name-only"], "diff-files")?);
+        let mut diff_files: Vec<&str> = vec!["diff-files", "-z", "--name-only"];
+        if let Some(paths) = scope {
+            diff_files.push("--");
+            diff_files.extend(paths.iter().map(String::as_str));
+        }
+        candidates.extend(self.nul_paths(&diff_files, "diff-files")?);
         // Index-vs-HEAD deletions: a path this commit REMOVES. `diff-files` cannot
         // see it — once the entry leaves the index the worktree copy is untracked,
         // so nothing compares it against anything.
         if self.head_exists()? {
-            candidates.extend(self.nul_paths(
-                &[
-                    "diff-index",
-                    "--cached",
-                    "-z",
-                    "--diff-filter=D",
-                    "--name-only",
-                    "HEAD",
-                ],
-                "diff-index --cached",
-            )?);
+            let mut diff_index: Vec<&str> = vec![
+                "diff-index",
+                "--cached",
+                "-z",
+                "--diff-filter=D",
+                "--name-only",
+                "HEAD",
+            ];
+            if let Some(paths) = scope {
+                diff_index.push("--");
+                diff_index.extend(paths.iter().map(String::as_str));
+            }
+            candidates.extend(self.nul_paths(&diff_index, "diff-index --cached")?);
         }
         candidates.sort();
         candidates.dedup();
@@ -817,7 +999,7 @@ impl Repo {
         let mut cmd = self.command();
         cmd.args(["ls-files", "-s", "-z", "--"]);
         for path in paths {
-            cmd.arg(format!(":(top){path}"));
+            cmd.arg(format!(":(top,literal){path}"));
         }
         let stdout = self.run(cmd, "ls-files -s")?;
         let mut out = Vec::new();
@@ -867,6 +1049,7 @@ impl Repo {
     /// path matches no index entry.
     fn nul_paths(&self, args: &[&str], what: &str) -> Result<Vec<String>, GitFail> {
         let mut cmd = self.command();
+        cmd.env("GIT_LITERAL_PATHSPECS", "1");
         cmd.args(args);
         let stdout = self.run(cmd, what)?;
         Ok(stdout
@@ -980,11 +1163,76 @@ impl Repo {
         }
     }
 
+    /// Look up tracked/staged index paths matching any of `targets` either
+    /// case-insensitively at the workspace root (`:(icase,literal)<rel>`) or as
+    /// a whole-segment case-insensitive suffix (`:(icase,glob)**/<escaped>`).
+    ///
+    /// Reads only the git index (never walks the working tree or reads blobs),
+    /// so `mrd check --commit-gate -- PATH…` can tell a deleted target from a
+    /// subdir-qualified or case-folded spelling without falling back to a
+    /// whole-corpus build.
+    ///
+    /// # Errors
+    /// [`GitFail::NotARepo`], [`GitFail::Spawn`], or [`GitFail::Refused`].
+    pub fn find_icase_tail_paths(&self, targets: &[String]) -> Result<Vec<String>, GitFail> {
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_repo()?;
+        let mut cmd = self.command();
+        cmd.env_remove("GIT_LITERAL_PATHSPECS");
+        cmd.args(["ls-files", "-z", "--"]);
+        let mut added = false;
+        for rel in targets {
+            let trimmed = rel.trim_start_matches('/');
+            if trimmed.is_empty() {
+                continue;
+            }
+            added = true;
+            cmd.arg(format!(":(icase,literal){trimmed}"));
+            cmd.arg(format!(":(icase,glob)**/{}", escape_git_glob(trimmed)));
+        }
+        if !added {
+            return Ok(Vec::new());
+        }
+        let stdout = self.run(cmd, "ls-files icase-tail")?;
+        let mut out: Vec<String> = stdout
+            .split(|b| *b == 0)
+            .filter(|r| !r.is_empty())
+            .map(|r| String::from_utf8_lossy(r).into_owned())
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
     /// `git -C <root>` with a C locale, so a fatal's wording is the one
-    /// [`NOT_A_REPO`] matches on any operator's machine.
+    /// [`NOT_A_REPO`] matches on any operator's machine. On Linux, when
+    /// [`set_child_pdeathsig`] is enabled (by `mrd check`), sets
+    /// `PR_SET_PDEATHSIG` to `SIGTERM` in `pre_exec` so child `git` processes
+    /// never outlive a `SIGKILL`ed / OOM-killed check. Off by default so the
+    /// resident daemon keeps `posix_spawn`.
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.arg("-C").arg(&self.root).env("LC_ALL", "C");
+        #[cfg(target_os = "linux")]
+        if CHILD_PDEATHSIG.load(Ordering::Relaxed) {
+            use std::os::unix::process::CommandExt as _;
+            // SAFETY: `getpid`/`getppid`/`prctl`/`_exit` are async-signal-safe
+            // syscalls on Linux; `parent_pid` is captured before `fork`.
+            let parent_pid = unsafe { linux_sys::getpid() };
+            unsafe {
+                cmd.pre_exec(move || {
+                    const PR_SET_PDEATHSIG: std::ffi::c_int = 1;
+                    const SIGTERM: std::ffi::c_int = 15;
+                    let _ = linux_sys::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+                    if linux_sys::getppid() != parent_pid {
+                        linux_sys::_exit(128 + SIGTERM);
+                    }
+                    Ok(())
+                });
+            }
+        }
         cmd
     }
 
@@ -1822,6 +2070,19 @@ fn parse_check_attr_flags(stdout: &[u8], expected: usize) -> Option<Vec<bool>> {
     Some(out)
 }
 
+/// Escape git pathspec glob metacharacters (`\`, `*`, `?`, `[`) so a literal
+/// suffix path can be matched via `:(icase,glob)**/<escaped>`.
+fn escape_git_glob(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if matches!(ch, '\\' | '*' | '?' | '[') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// The git program a bare [`Repo::at`] handle runs, for a caller that wants to
 /// name it in a diagnostic.
 #[must_use]
@@ -1943,5 +2204,124 @@ mod tests {
         assert!(annex_config_log_overrides(
             b"1788344999s annex.gitaddtoannex false\n"
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_pdeathsig_is_off_by_default_and_scoped_to_opt_in() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::time::{Duration, Instant};
+
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_child_pdeathsig(false);
+            }
+        }
+        let _reset = Reset;
+
+        assert!(
+            !child_pdeathsig_enabled(),
+            "child PDEATHSIG must be off by default so resident daemon keeps posix_spawn"
+        );
+
+        let tmp =
+            std::env::temp_dir().join(format!("mrd-git-pdeathsig-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("mkdir tmp");
+        let sleeper = tmp.join("sleep-git.sh");
+        fs::write(&sleeper, "#!/bin/sh\nexec sleep 10\n").expect("write sleeper");
+        fs::set_permissions(&sleeper, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        // Spawn `repo.command()` from a short-lived worker thread that exits
+        // right away: Linux delivers `PR_SET_PDEATHSIG` (SIGTERM) when the
+        // spawning thread exits. Off by default -> child stays alive past
+        // 250ms; opted in -> child exits promptly via SIGTERM (15).
+        let spawn_from_exiting_thread = |enabled: bool| -> Option<i32> {
+            set_child_pdeathsig(enabled);
+            let dir = tmp.clone();
+            let prog = sleeper.clone();
+            let mut child = std::thread::spawn(move || {
+                let repo = Repo::at_with_program(&dir, &prog);
+                let mut cmd = repo.command();
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                cmd.spawn().expect("spawn sleeper")
+            })
+            .join()
+            .expect("join spawner");
+
+            let wait_ms = if enabled { 1500 } else { 250 };
+            let deadline = Instant::now() + Duration::from_millis(wait_ms);
+            while Instant::now() < deadline {
+                if let Some(status) = child.try_wait().expect("try_wait") {
+                    return status.signal();
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        };
+
+        assert_eq!(
+            spawn_from_exiting_thread(false),
+            None,
+            "default Repo::command must NOT install PR_SET_PDEATHSIG pre_exec"
+        );
+        assert_eq!(
+            spawn_from_exiting_thread(true),
+            Some(15),
+            "opted-in Repo::command must install PR_SET_PDEATHSIG=SIGTERM (15)"
+        );
+        assert_eq!(
+            spawn_from_exiting_thread(false),
+            None,
+            "disabling child PDEATHSIG must stop installing PR_SET_PDEATHSIG"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_icase_tail_paths_matches_case_and_subdir_tails() {
+        let tmp =
+            std::env::temp_dir().join(format!("mrd-git-icase-tail-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("deep/nested")).expect("mkdir");
+        fs::write(tmp.join("deep/nested/Target.md"), "# T\n").expect("write");
+        fs::write(tmp.join("RootFile.md"), "# R\n").expect("write");
+
+        let run_git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&tmp)
+                .args(args)
+                .env("LC_ALL", "C")
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}");
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["add", "-A"]);
+
+        let repo = Repo::at(&tmp);
+        assert_eq!(
+            repo.find_icase_tail_paths(&["nested/target.md".to_owned()])
+                .expect("tail"),
+            vec!["deep/nested/Target.md".to_owned()]
+        );
+        assert_eq!(
+            repo.find_icase_tail_paths(&["rootfile.md".to_owned()])
+                .expect("root"),
+            vec!["RootFile.md".to_owned()]
+        );
+        assert_eq!(
+            repo.find_icase_tail_paths(&["nested/deleted.md".to_owned()])
+                .expect("missing"),
+            Vec::<String>::new()
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

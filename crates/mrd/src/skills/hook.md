@@ -73,7 +73,7 @@ Exactly one fenced block follows, and it is the file.
 
 ```sh
 #!/bin/sh
-# mrd-hook-fence 4 — the meridian commit fence.
+# mrd-hook-fence 5 — the meridian commit fence.
 #
 # Emitted by `mrd skill hook`; placed by the reader of that document. Removed by
 # deleting this file. This file is an ADAPTER over the engine: it holds ZERO
@@ -172,6 +172,14 @@ if [ "$mrd_status" -eq 2 ]; then
 		"    mrd check                                     (its fence: line reports this door's generation)" \
 		"  a version skew is fixed by putting the current engine first on PATH, or re-placing this file" \
 		"  from \`mrd skill hook\` run through THAT engine." \
+		"  escape:  MRD_HOOK_FORCE=1 git commit ...   (or: git commit --no-verify)" \
+		'  remove:  rm "$0"   (this file, and its sibling doors)' >&2
+	exit 1
+fi
+if [ "$mrd_status" -eq 75 ]; then
+	printf '%s\n' \
+		"meridian fence: refusing — \`mrd check --commit-gate\` exited 75 (busy: another \`mrd check\` holds the slot)." \
+		"  the fence fails CLOSED: retry the commit once the other check finishes." \
 		"  escape:  MRD_HOOK_FORCE=1 git commit ...   (or: git commit --no-verify)" \
 		'  remove:  rm "$0"   (this file, and its sibling doors)' >&2
 	exit 1

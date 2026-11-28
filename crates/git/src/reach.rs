@@ -17,7 +17,7 @@ use crate::{GitFail, ReachableSet, Repo, is_oid};
 
 /// Refs that never anchor a pinned file: git-annex's location-log branches.
 /// Passed as `--exclude` ahead of `--all`, so they apply to it alone.
-const ANNEX_REFS: [&str; 5] = [
+pub(crate) const ANNEX_REFS: [&str; 5] = [
     "refs/heads/git-annex",
     "refs/heads/synced/git-annex",
     "refs/remotes/*/git-annex",
