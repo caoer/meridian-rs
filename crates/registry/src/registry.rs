@@ -3898,20 +3898,27 @@ impl Registry {
         rings.values().any(|ring| ring.has_subscribers())
     }
 
-    /// Workspaces with at least one live `sub` connection whose directory still
-    /// exists on disk, paired with each ring's current watch baseline root
+    /// Workspaces with a live `sub` connection OR an un-redialed handover
+    /// baseline whose directory still exists on disk, paired with each ring's
+    /// current watch baseline root and any undelivered pending frames
     /// (`docs/wire-contract.md` §A.3).
-    pub(crate) fn subscribed_baselines(&self) -> Vec<(PathBuf, Option<wire::Root>)> {
+    pub(crate) fn subscribed_baselines(
+        &self,
+    ) -> Vec<(PathBuf, Option<wire::Root>, Vec<wire::DeltaFrame>)> {
         let live: Vec<(PathBuf, Arc<crate::ring::WorkspaceRing>)> = {
             let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             rings
                 .iter()
-                .filter(|(ws, ring)| ring.has_subscribers() && ws.is_dir())
+                .filter(|(ws, ring)| ring.needs_handover() && ws.is_dir())
                 .map(|(ws, ring)| (ws.clone(), Arc::clone(ring)))
                 .collect()
         };
         live.into_iter()
-            .map(|(ws, ring)| (ws, ring.watch_root()))
+            .map(|(ws, ring)| {
+                let root = ring.watch_root();
+                let pending = ring.pending_undelivered_frames();
+                (ws, root, pending)
+            })
             .collect()
     }
 
@@ -3933,14 +3940,14 @@ impl Registry {
     }
 
     /// Force a synchronous pre-handover detect pass on every live subscribed
-    /// workspace so dirty external edits are classified and recorded (with
-    /// `effects` / hook intents) before the handover commits.
+    /// or un-redialed handover workspace so dirty external edits are classified
+    /// and recorded (with `effects` / hook intents) before the handover commits.
     pub(crate) fn flush_subscribed_rings(&self, deadline: Instant) -> Result<(), String> {
         let live: Vec<(PathBuf, Arc<crate::ring::WorkspaceRing>)> = {
             let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
             rings
                 .iter()
-                .filter(|(ws, ring)| ring.has_subscribers() && ws.is_dir())
+                .filter(|(ws, ring)| ring.needs_handover() && ws.is_dir())
                 .map(|(ws, ring)| (ws.clone(), Arc::clone(ring)))
                 .collect()
         };
@@ -3949,8 +3956,18 @@ impl Registry {
             if rem.is_zero() {
                 return Err("flushing subscribed workspace changes".to_owned());
             }
-            ring.flush_detect(&fs::WorkspaceRoot(ws.clone()), self, rem)
-                .map_err(|e| format!("flushing subscribed workspace {}: {e:?}", ws.display()))?;
+            if let Err(e) = ring.flush_detect(&fs::WorkspaceRoot(ws.clone()), self, rem) {
+                if e.code == wire::ErrorCode::WorkspaceBusy {
+                    return Err(format!(
+                        "flushing subscribed workspace {}: {e:?}",
+                        ws.display()
+                    ));
+                }
+                timing::say!(
+                    "registry: pre-handover flush failed for {} ({e:?}); continuing without flush (may LOSS)",
+                    ws.display()
+                );
+            }
         }
         Ok(())
     }

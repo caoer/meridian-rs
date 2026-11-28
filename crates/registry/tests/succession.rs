@@ -483,14 +483,15 @@ fn notify_intents_in(frames: &[Value]) -> Vec<(String, String)> {
 /// Reconnect to the successor using the `ccc-statusd` `notifysub.go` protocol:
 /// old cursor → `DeadInstance` → live `sub` → if `ack.seq > 0`, re-anchor at
 /// `{new_instance, 0}` and replay `1..=ack.seq`. Returns `(ack_fp, replayed_frames)`.
-fn reconnect_like_notifysub(
+fn reconnect_like_notifysub_build(
     socket: &Path,
     ws: &Path,
+    expected_build: &str,
     old_instance: &str,
     old_seq: u64,
 ) -> (String, Vec<Value>) {
     let mut c = Conn::open(socket);
-    assert_eq!(c.hello(ws), "new");
+    assert_eq!(c.hello(ws), expected_build);
     let refused = c.sub_at(old_instance, old_seq);
     assert_eq!(
         refused["ok"],
@@ -512,7 +513,7 @@ fn reconnect_like_notifysub(
     }
     drop(c);
     let mut replay = Conn::open(socket);
-    assert_eq!(replay.hello(ws), "new");
+    assert_eq!(replay.hello(ws), expected_build);
     let reack = replay.sub_at(&new_inst, 0);
     assert_eq!(reack["ok"], json!(true), "re-anchor at seq 0: {reack}");
     let frames = replay.read_n_frames(usize::try_from(tip_seq).unwrap());
@@ -521,6 +522,15 @@ fn reconnect_like_notifysub(
         .unwrap()
         .to_owned();
     (final_fp, frames)
+}
+
+fn reconnect_like_notifysub(
+    socket: &Path,
+    ws: &Path,
+    old_instance: &str,
+    old_seq: u64,
+) -> (String, Vec<Value>) {
+    reconnect_like_notifysub_build(socket, ws, "new", old_instance, old_seq)
 }
 
 /// Window A: records dirtied externally right before a warm succession must
@@ -847,4 +857,440 @@ fn dirty_records_before_succession_deliver_with_unvouched_feed() {
 
     old.shutdown();
     new.shutdown();
+}
+
+/// P1-2: an external burst (the `.302` git-merge shape) running continuously
+/// across the handover adopt window must NEVER fold raced edits silently into
+/// the successor's baseline after `MAX_ADOPT_RESYNCS`. It backs off, retries,
+/// and delivers every notify intent with an unbroken fingerprint chain (0 LOSS).
+#[test]
+fn continuous_external_writer_across_handover_never_silently_folds() {
+    const CARDS: usize = 20;
+    let tmp = TempDir::new().unwrap();
+    let ws = write_armed_hook_ws(&tmp);
+    for i in 0..CARDS {
+        fs::write(ws.join(format!("tasks/burst-{i:02}.md")), task_card("todo")).unwrap();
+    }
+    fs::write(ws.join("scratch.md"), "# Scratch\n\nseed\n").unwrap();
+
+    let old = RunningServer::start(test_config(&tmp, "old")).unwrap();
+    let socket = old.socket_path().to_path_buf();
+
+    let mut warm_conn = Conn::open(&socket);
+    assert_eq!(warm_conn.hello(&ws), "old");
+    wait_for("initial workspace warm", || {
+        warm_conn.call(&json!({"op": "toc", "path": "scratch.md"}))["ok"] == json!(true)
+    });
+
+    let mut sub = Conn::open(&socket);
+    assert_eq!(sub.hello(&ws), "old");
+    let ack1 = sub.sub();
+    assert_eq!(ack1["ok"], json!(true), "{ack1}");
+    let old_inst = ack1["body"]["tree_instance"].as_str().unwrap().to_owned();
+    let start_fp = ack1["body"]["fingerprint"].as_str().unwrap().to_owned();
+
+    // External writer runs across the entire handover window (~900 ms, > 3
+    // unbacked resync attempts on the buggy head, yet finishes inside the
+    // WARM_RETRY + BUSY_RETRY backoff budget).
+    let ws_writer = ws.clone();
+    let writer_started = Arc::new(AtomicBool::new(false));
+    let started_c = writer_started.clone();
+    let writer = thread::spawn(move || {
+        started_c.store(true, Ordering::SeqCst);
+        for i in 0..CARDS {
+            fs::write(
+                ws_writer.join(format!("tasks/burst-{i:02}.md")),
+                task_card("review"),
+            )
+            .unwrap();
+            thread::sleep(Duration::from_millis(20));
+            fs::write(
+                ws_writer.join("scratch.md"),
+                format!("# Scratch\n\ntick {i}\n"),
+            )
+            .unwrap();
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+    wait_for("external burst started", || {
+        writer_started.load(Ordering::SeqCst)
+    });
+    thread::sleep(Duration::from_millis(40));
+
+    let new = RunningServer::succeed(test_config(&tmp, "new")).unwrap();
+    writer.join().unwrap();
+    assert!(old.handed_over(), "old daemon handed over");
+
+    let old_frames = sub.drain_until_eof();
+    let (mut prev_fp, old_seq) = assert_chain(&start_fp, &old_frames);
+
+    // Wait briefly for the successor to observe any trailing burst edits, then
+    // reconnect via the notifysub protocol.
+    let (succ_fp, mut new_frames) = reconnect_like_notifysub(&socket, &ws, &old_inst, old_seq);
+    if new_frames.is_empty() {
+        assert_eq!(
+            succ_fp, prev_fp,
+            "notify LOSS: successor baseline {succ_fp} jumped past last delivered {prev_fp}"
+        );
+    } else {
+        (prev_fp, _) = assert_chain(&prev_fp, &new_frames);
+    }
+
+    // Drain any post-reconnect frames if the trailing write had not landed before
+    // reconnect (all 20 cards are already on disk because `writer.join()` finished).
+    let mut all_frames = old_frames;
+    all_frames.append(&mut new_frames);
+    let intents = notify_intents_in(&all_frames);
+    assert_eq!(
+        intents.len(),
+        CARDS,
+        "expected all {CARDS} notify intents with 0 silent fold; got {} (prev_fp={prev_fp})",
+        intents.len()
+    );
+    old.shutdown();
+    new.shutdown();
+}
+
+/// P2-1: two back-to-back successions (`gen0 -> gen1 -> gen2`) while the
+/// subscriber is still inside its redial floor (0 subscribers attached to
+/// `gen1`) must preserve both external edits and wire `put`s from Window B
+/// without silent folding.
+#[test]
+fn back_to_back_successions_during_redial_floor_preserve_window_b_edits() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_armed_hook_ws(&tmp);
+    fs::write(ws.join("tasks/card2.md"), task_card("todo")).unwrap();
+    fs::write(ws.join("tasks/card3.md"), task_card("todo")).unwrap();
+
+    let r = RunningServer::start(test_config(&tmp, "gen0")).unwrap();
+    let socket = r.socket_path().to_path_buf();
+
+    let mut sub = Conn::open(&socket);
+    assert_eq!(sub.hello(&ws), "gen0");
+    let ack1 = sub.sub();
+    assert_eq!(ack1["ok"], json!(true), "{ack1}");
+    let old_inst = ack1["body"]["tree_instance"].as_str().unwrap().to_owned();
+    let start_fp = ack1["body"]["fingerprint"].as_str().unwrap().to_owned();
+
+    // First succession: gen0 -> gen1. Drain old sub to EOF and DO NOT redial
+    // yet (simulates ccc-statusd sleeping its 1 s notifyRedialFloor).
+    let s1 = RunningServer::succeed(test_config(&tmp, "gen1")).unwrap();
+    assert!(r.handed_over(), "gen0 handed over to gen1");
+    let old_frames = sub.drain_until_eof();
+    assert!(old_frames.is_empty(), "quiet gen0->gen1: {old_frames:?}");
+    r.shutdown();
+
+    // Window B on gen1 with ZERO subscribers attached:
+    // 1) an external edit (tasks/card.md -> review)
+    // 2) a wire splice on gen1 (tasks/card2.md -> review)
+    fs::write(ws.join("tasks/card.md"), task_card("review")).unwrap();
+    let mut writer = Conn::open(&socket);
+    assert_eq!(writer.hello(&ws), "gen1");
+    let spliced = writer.call(&json!({
+        "op": "splice",
+        "path": "tasks/card2.md",
+        "force": true,
+        "actor": "agent:window-b",
+        "now": "2026-11-28T02:00:00Z",
+        "edits": [{"target": {"fm_key": "status"}, "edit": {"put": {"at": "upsert", "text": "review"}}}],
+    }));
+    assert_eq!(spliced["ok"], json!(true), "splice on gen1: {spliced}");
+
+    // Second succession immediately: gen1 -> gen2, STILL before subscriber redials.
+    let s2 = RunningServer::succeed(test_config(&tmp, "gen2")).unwrap();
+    assert!(s1.handed_over(), "gen1 handed over to gen2");
+    s1.shutdown();
+
+    // One more external edit after gen2 commits, still before subscriber redials.
+    fs::write(ws.join("tasks/card3.md"), task_card("review")).unwrap();
+
+    // Now the subscriber wakes from its redial floor and reconnects to gen2.
+    let (succ_fp, new_frames) = reconnect_like_notifysub_build(&socket, &ws, "gen2", &old_inst, 0);
+    assert!(
+        !new_frames.is_empty(),
+        "back-to-back successions lost Window B edits (ack_fp={succ_fp}, start_fp={start_fp})"
+    );
+    assert_chain(&start_fp, &new_frames);
+    let paths: Vec<&str> = new_frames
+        .iter()
+        .flat_map(|f| f["delta"]["files"].as_array().into_iter().flatten())
+        .filter_map(|file| file["path"].as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["tasks/card.md", "tasks/card2.md", "tasks/card3.md"],
+        "all 3 Window B edits (external + wire splice on gen1, external on gen2) must survive gen0->gen1->gen2: {new_frames:?}"
+    );
+    assert_eq!(
+        new_frames[1]["delta"]["actor"].as_str(),
+        Some("agent:window-b"),
+        "wire splice frame from gen1 must survive intact into gen2: {new_frames:?}"
+    );
+    assert_eq!(
+        notify_intents_in(&new_frames),
+        vec![
+            (HOOK_ID.to_owned(), "notify".to_owned()),
+            (HOOK_ID.to_owned(), "notify".to_owned()),
+        ],
+        "external Window B notify intents on gen1 and gen2 must both arrive: {new_frames:?}"
+    );
+    s2.shutdown();
+}
+
+/// P2-2: a persistent `prime_beside` failure on one subscribed workspace must
+/// NOT abort the entire succession; the handover still succeeds and every
+/// healthy subscribed workspace preserves its notify intents with 0 LOSS.
+#[test]
+fn unprimable_subscribed_workspace_does_not_block_succession() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Guard cleanup so TempDir always succeeds even if an assertion fails.
+    struct RestorePerms(PathBuf);
+    impl Drop for RestorePerms {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o644));
+        }
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let ws_ok = write_armed_hook_ws(&tmp);
+    fs::write(ws_ok.join("tasks/card2.md"), task_card("todo")).unwrap();
+
+    let ws_bad = tmp.path().join("ws_bad");
+    fs::create_dir_all(&ws_bad).unwrap();
+    let bad_file = ws_bad.join("locked.md");
+    fs::write(&bad_file, "# Locked\n\ninitial\n").unwrap();
+
+    let old = RunningServer::start(test_config(&tmp, "old")).unwrap();
+    let socket = old.socket_path().to_path_buf();
+
+    // Warm and subscribe ws_ok.
+    let mut warm_ok = Conn::open(&socket);
+    assert_eq!(warm_ok.hello(&ws_ok), "old");
+    wait_for("ws_ok warm", || {
+        warm_ok.call(&json!({"op": "toc", "path": "tasks/card.md"}))["ok"] == json!(true)
+    });
+    let mut sub_ok = Conn::open(&socket);
+    assert_eq!(sub_ok.hello(&ws_ok), "old");
+    let ack_ok = sub_ok.sub();
+    assert_eq!(ack_ok["ok"], json!(true), "{ack_ok}");
+    let ok_inst = ack_ok["body"]["tree_instance"].as_str().unwrap().to_owned();
+    let ok_start_fp = ack_ok["body"]["fingerprint"].as_str().unwrap().to_owned();
+
+    // Subscribe ws_bad WITHOUT warming it so only `prime_beside` touches it.
+    let mut sub_bad = Conn::open(&socket);
+    assert_eq!(sub_bad.hello(&ws_bad), "old");
+    let ack_bad = sub_bad.sub();
+    assert_eq!(ack_bad["ok"], json!(true), "{ack_bad}");
+
+    // Make ws_bad/locked.md unreadable so the successor's `prime_beside` fails
+    // on ws_bad while ws_bad still exists as a directory.
+    fs::set_permissions(&bad_file, fs::Permissions::from_mode(0o000)).unwrap();
+    let _restore = RestorePerms(bad_file.clone());
+
+    // Dirty ws_ok (Window A) and trigger succession.
+    fs::write(ws_ok.join("tasks/card.md"), task_card("review")).unwrap();
+    let new = RunningServer::succeed(test_config(&tmp, "new"))
+        .expect("a single unprimable subscribed workspace must not fail succession");
+    assert!(old.handed_over(), "old daemon handed over");
+
+    let old_frames = sub_ok.drain_until_eof();
+    let _ = sub_bad.drain_until_eof();
+    let (mid_fp, old_seq) = assert_chain(&ok_start_fp, &old_frames);
+
+    // Dirty ws_ok again (Window B) before reconnecting.
+    fs::write(ws_ok.join("tasks/card2.md"), task_card("review")).unwrap();
+    let (succ_fp, new_frames) = reconnect_like_notifysub(&socket, &ws_ok, &ok_inst, old_seq);
+    assert!(
+        !new_frames.is_empty(),
+        "healthy workspace Window B edit preserved (ack={succ_fp})"
+    );
+    assert_chain(&mid_fp, &new_frames);
+
+    let mut all_frames = old_frames;
+    all_frames.extend(new_frames);
+    assert_eq!(
+        notify_intents_in(&all_frames),
+        vec![
+            (HOOK_ID.to_owned(), "notify".to_owned()),
+            (HOOK_ID.to_owned(), "notify".to_owned()),
+        ],
+        "healthy subscribed workspace loses zero intents: {all_frames:?}"
+    );
+    old.shutdown();
+    new.shutdown();
+}
+
+/// P3-1: frames recorded by `drain()`'s final `flush_detect` must already be
+/// written onto subscriber sockets BEFORE `grant:true` / commit, so even a
+/// SIGKILL of the predecessor immediately after commit loses nothing.
+#[test]
+fn drain_flushes_push_frames_onto_wire_before_commit() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_armed_hook_ws(&tmp);
+    let old = RunningServer::start(test_config(&tmp, "old")).unwrap();
+    let socket = old.socket_path().to_path_buf();
+
+    let mut sub = Conn::open(&socket);
+    assert_eq!(sub.hello(&ws), "old");
+    let ack1 = sub.sub();
+    assert_eq!(ack1["ok"], json!(true), "{ack1}");
+    let start_fp = ack1["body"]["fingerprint"].as_str().unwrap().to_owned();
+
+    // Probe warm/subscribed sets from the resident.
+    let told = Conn::open(&socket).call(&json!({"op": "handover", "warm": [], "primed": []}));
+    assert_eq!(told["grant"], json!(false), "{told}");
+    let warm = told["warm"].clone();
+    let primed: Vec<Value> = told["subscribed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["workspace"].clone())
+        .collect();
+    assert_eq!(primed.len(), 1, "expected 1 subscribed workspace: {told}");
+
+    // Dirty the card externally and immediately ask for handover.
+    fs::write(ws.join("tasks/card.md"), task_card("review")).unwrap();
+    let mut asking = Conn::open(&socket);
+    let granted = asking.call(&json!({
+        "op": "handover",
+        "warm": warm,
+        "primed": primed,
+    }));
+    assert_eq!(granted["grant"], json!(true), "{granted}");
+
+    // BEFORE sending `adopted` (and before `old` commits or closes `sub`),
+    // the frame flushed in `drain()` must ALREADY sit on `sub`'s wire buffer!
+    sub.reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(10)))
+        .unwrap();
+    let mut line = String::new();
+    let n = sub
+        .reader
+        .read_line(&mut line)
+        .expect("drain() must flush push_loop frames onto the wire BEFORE grant:true / commit");
+    assert!(n > 0, "expected flushed frame before commit");
+    let frame: Value = serde_json::from_str(&line).unwrap();
+    assert_chain(&start_fp, std::slice::from_ref(&frame));
+    assert_eq!(
+        notify_intents_in(std::slice::from_ref(&frame)),
+        vec![(HOOK_ID.to_owned(), "notify".to_owned())],
+        "flushed frame carries notify intent: {frame}"
+    );
+
+    // Abort cleanly so `old` resumes and shuts down.
+    drop(asking);
+    assert!(!old.handed_over());
+    old.shutdown();
+}
+
+/// P3-2 manual benchmark: measure handover stay and parked-caller latency on a
+/// real-size workspace (`MRD_REAL_WS`, e.g. a scratch copy of `home-wiki-sessions`)
+/// alongside 2 extra subscribed workspaces (3 total), for both quiet and
+/// dirty-flush handovers. Run with `--ignored --nocapture`.
+#[test]
+#[ignore = "manual real-workspace handover stay measurement (set MRD_REAL_WS)"]
+fn handover_stay_time_real_workspace() {
+    let real_ws = PathBuf::from(
+        std::env::var("MRD_REAL_WS").expect("set MRD_REAL_WS to a scratch real-size workspace"),
+    );
+    assert!(real_ws.is_dir(), "MRD_REAL_WS must exist");
+    let probe_rel = std::env::var("MRD_REAL_PROBE").unwrap_or_else(|_| "README.md".to_owned());
+
+    let tmp = TempDir::new().unwrap();
+    let ws2 = tmp.path().join("sub2");
+    let ws3 = tmp.path().join("sub3");
+    fs::create_dir_all(&ws2).unwrap();
+    fs::create_dir_all(&ws3).unwrap();
+    fs::write(ws2.join("a.md"), "# S2\n\nseed\n").unwrap();
+    fs::write(ws3.join("a.md"), "# S3\n\nseed\n").unwrap();
+
+    let mut server = RunningServer::start(test_config(&tmp, "gen0")).unwrap();
+    let socket = server.socket_path().to_path_buf();
+
+    // Warm all 3 workspaces first.
+    for (ws, probe) in [
+        (&real_ws, probe_rel.as_str()),
+        (&ws2, "a.md"),
+        (&ws3, "a.md"),
+    ] {
+        let mut c = Conn::open(&socket);
+        c.hello(ws);
+        wait_for("workspace warm", || {
+            c.call(&json!({"op": "toc", "path": probe}))["ok"] == json!(true)
+        });
+    }
+
+    let mut quiet_stay_ms = Vec::new();
+    let mut quiet_park_ms = Vec::new();
+    let mut dirty_stay_ms = Vec::new();
+    let mut dirty_park_ms = Vec::new();
+
+    for round in 1..=8 {
+        let dirty = round > 5;
+        let mut subs = Vec::new();
+        for ws in [&real_ws, &ws2, &ws3] {
+            let mut sub = Conn::open(&socket);
+            sub.hello(ws);
+            assert_eq!(sub.sub()["ok"], json!(true));
+            subs.push(sub);
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let worst_us = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (s_c, w_c, p_c, stop_c, worst_c) = (
+            socket.clone(),
+            real_ws.clone(),
+            probe_rel.clone(),
+            stop.clone(),
+            worst_us.clone(),
+        );
+        let caller = thread::spawn(move || {
+            let mut c = Conn::open(&s_c);
+            c.hello(&w_c);
+            while !stop_c.load(Ordering::SeqCst) {
+                let t0 = Instant::now();
+                let resp = c.call(&json!({"op": "toc", "path": p_c}));
+                assert_eq!(resp["ok"], json!(true), "{resp}");
+                let us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+                worst_c.fetch_max(us, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        thread::sleep(Duration::from_millis(50));
+        let mut created_probe = None;
+        if dirty {
+            // Dirty one domain-member file in the real workspace right before succession.
+            let target = real_ws.join(format!("stay-probe-{round}.md"));
+            fs::write(&target, format!("# Probe {round}\n\nbody {round}\n")).unwrap();
+            created_probe = Some(target);
+        }
+        let t0 = Instant::now();
+        let next = RunningServer::succeed(test_config(&tmp, &format!("gen{round}"))).unwrap();
+        let stay_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        assert!(server.handed_over());
+        for mut sub in subs {
+            let _ = sub.drain_until_eof();
+        }
+        stop.store(true, Ordering::SeqCst);
+        caller.join().unwrap();
+        if let Some(target) = created_probe {
+            let _ = fs::remove_file(target);
+        }
+        let park_ms = Duration::from_micros(worst_us.load(Ordering::SeqCst)).as_secs_f64() * 1000.0;
+        if dirty {
+            dirty_stay_ms.push(stay_ms);
+            dirty_park_ms.push(park_ms);
+        } else {
+            quiet_stay_ms.push(stay_ms);
+            quiet_park_ms.push(park_ms);
+        }
+        server.shutdown();
+        server = next;
+    }
+    eprintln!(
+        "REAL_WS_STAY quiet_stay_ms={quiet_stay_ms:.1?} quiet_park_ms={quiet_park_ms:.1?} dirty_stay_ms={dirty_stay_ms:.1?} dirty_park_ms={dirty_park_ms:.1?}"
+    );
+    server.shutdown();
 }

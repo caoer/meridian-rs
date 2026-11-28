@@ -1470,22 +1470,33 @@ it is `mrd daemon`.
   - `Ask` carries an optional `primed: [...]` set of subscribed workspaces the
     successor has pre-primed beside the resident (without taking
     `.meridian/write.lock`), and `Answer` carries an optional `subscribed:
-    [{"workspace":…,"root":…}]` list of live subscribed workspaces with each
-    ring's settled baseline root (both additive, omitted/defaulted for older
-    peers).
+    [{"workspace":…,"root":…,"pending_frames":[…]}]` list of live subscribed
+    and recently handed-over/un-redialed workspaces with each ring's settled
+    baseline root and any undelivered frames recorded while no subscriber was
+    attached (both additive, omitted/defaulted for older peers).
   - During the drain, the resident runs a final `door_observation`-backed
-    detect on every live subscribed workspace so dirty external edits already on
-    disk are classified and recorded (with `effects` / hook intents) before the
-    handover commits; after the commit, each `push_loop` drains its remaining
-    frames and flushes before closing its socket (and the resident's shutdown
-    waits briefly for push threads to finish that flush).
-  - Before sending `adopted`, the successor silently reconciles its pre-primed
-    baseline for each subscribed workspace to the resident's final baseline root
-    (without taking `.meridian/write.lock`); if an external edit races that
-    catch-up it aborts (`{"abort":true}`) and retries so no post-handover edit is
-    swallowed. Any change landing after the commit and before subscriber redial
-    therefore emits a frame (with intents) chaining directly from the
-    pre-handover fingerprint.
+    detect on every live subscribed or un-redialed handover workspace so dirty
+    external edits already on disk are classified and recorded (with `effects`
+    / hook intents) before the handover commits, then waits briefly for active
+    `push_loop` threads to flush those frames onto their sockets before
+    passing descriptors; after the commit, each `push_loop` drains any
+    remaining frames before closing its socket (and the resident's shutdown
+    waits briefly for push threads to finish). On back-to-back successions
+    within the redial floor, an un-redialed ring's `pending_frames` transfer
+    in `Answer.subscribed` and are seeded sequentially into the next
+    successor's ring on commit.
+  - Before sending `adopted` (and before the final pre-commit `stop` check),
+    the successor silently reconciles its pre-primed baseline for each
+    subscribed workspace to the resident's final baseline root under one shared
+    deadline below `ADOPT_BOUND` (without taking `.meridian/write.lock`). It
+    never silently folds a `DiskMoved` baseline: if an external edit races
+    catch-up, it aborts (`{"abort":true}`) and retries with backoff, falling
+    back to the `Busy` schedule after `MAX_ADOPT_RESYNCS` so the resident
+    keeps serving rather than losing intents. A persistent pre-prime failure on
+    one workspace retries briefly and then logs `may LOSS` rather than
+    blocking the whole succession. Any change landing after the commit and
+    before subscriber redial therefore emits a frame (with intents) chaining
+    directly from the pre-handover fingerprint.
 - **Currency.** The successor's own event feed observes every write the
   resident answered, and its first currency pass per workspace proves it by
   cookie (merkle-spec §6.4). At every instant exactly one daemon reads
