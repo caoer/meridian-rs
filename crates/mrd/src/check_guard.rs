@@ -350,15 +350,20 @@ pub(crate) struct Watchdog {
     stop: Arc<(Mutex<bool>, Condvar)>,
     done: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    prev_child_pdeathsig: bool,
 }
 
 impl Watchdog {
     /// Arm `SIGHUP`/`SIGTERM`/`SIGINT` handlers, ancestor-chain session
     /// monitoring (unless `MRD_CHECK_ALLOW_DETACH=1`), stdout pipe-hangup
-    /// detection, and the optional wall-clock bound.
+    /// detection, Linux `PR_SET_PDEATHSIG` on child `git` processes (scoped to
+    /// `mrd check` so the resident daemon keeps `posix_spawn`), and the
+    /// optional wall-clock bound.
     pub(crate) fn arm(timeout: Option<Duration>) -> Self {
         TERM_SIGNAL.store(0, Ordering::SeqCst);
         PDEATH_SIGNALED.store(false, Ordering::SeqCst);
+        let prev_child_pdeathsig = git::child_pdeathsig_enabled();
+        git::set_child_pdeathsig(true);
 
         let allow_detach = env_is_truthy(CHECK_ALLOW_DETACH_ENV);
         // SAFETY: `getppid(2)` has no preconditions.
@@ -396,7 +401,12 @@ impl Watchdog {
             })
             .ok();
 
-        Self { stop, done, handle }
+        Self {
+            stop,
+            done,
+            handle,
+            prev_child_pdeathsig,
+        }
     }
 }
 
@@ -411,6 +421,7 @@ impl Drop for Watchdog {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+        git::set_child_pdeathsig(self.prev_child_pdeathsig);
     }
 }
 

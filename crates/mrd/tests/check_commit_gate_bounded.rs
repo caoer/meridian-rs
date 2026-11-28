@@ -1193,3 +1193,476 @@ fn symlink_loop_under_directory_path_does_not_spin() {
         "must not spin on symlink loop (took {elapsed:?})"
     );
 }
+
+/// P2-1 visibility test: contrast the UNSCOPED gate (which retains full-corpus
+/// anchoring reach and catches an orphan in `h-orphan-other.md`) against all
+/// three `-- PATH` lanes (scoped `--commit-gate`, in-process `--staged`, and
+/// warm resident daemon) on an unrelated holder `h-mount.md`.
+#[test]
+#[allow(clippy::too_many_lines)] // full 3-lane + unscoped P2-1 contrast fixture
+fn unscoped_gate_catches_external_orphan_while_scoped_checks_path_holders_only() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (home, cache, ws) = setup_repo(tmp.path());
+    let _reaper = common::DaemonReaper {
+        home: home.clone(),
+        cache_home: cache.clone(),
+    };
+
+    // Add an orphan in `agents/card-b/card-b.md` (outside `-- agents/card-a/card-a.md`):
+    // edit `other-source.md`, re-pin card-b (writes blob B to ODB), then overwrite
+    // `other-source.md` without committing blob B.
+    write(
+        &ws,
+        "other-source.md",
+        "# Other\n\n## Rule\n\nuncommitted orphan blob B\n",
+    );
+    let pin_b = common::mrd_command(&home, &cache)
+        .args([
+            "pin",
+            "agents/card-b/card-b.md",
+            "other-source.md#Other/Rule",
+        ])
+        .current_dir(&ws)
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("pin card-b");
+    assert_eq!(pin_b.status.code(), Some(0), "pin b: {}", said(&pin_b));
+    write(
+        &ws,
+        "other-source.md",
+        "# Other\n\n## Rule\n\noverwritten blob C\n",
+    );
+    git(&ws, &["add", "agents/card-b/card-b.md", "other-source.md"]);
+    // Commit so the warm daemon sees the exact same committed worktree state too!
+    git(&ws, &["commit", "-qm", "leave orphan in card-b"]);
+
+    // 1. UNSCOPED `--commit-gate` (no `-- PATH`) MUST still catch card-b's orphan
+    //    across the whole corpus — preserving main's whole-corpus anchoring reach.
+    let unscoped = common::mrd_command(&home, &cache)
+        .args(["check", "--commit-gate", "--json"])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("unscoped");
+    assert_eq!(
+        unscoped.status.code(),
+        Some(1),
+        "unscoped gate must catch external orphan: {}",
+        said(&unscoped)
+    );
+    let uj: serde_json::Value = serde_json::from_slice(&unscoped.stdout).expect("unscoped json");
+    assert_eq!(uj["commit_gate"]["permits"], false);
+    assert_eq!(uj["pins"]["anchoring"]["asked"], 2);
+    let u_orphans = uj["pins"]["anchoring"]["orphaned"]
+        .as_array()
+        .expect("orphaned array");
+    assert_eq!(u_orphans.len(), 1);
+    assert_eq!(u_orphans[0]["src_path"], "agents/card-b/card-b.md");
+
+    // 2. Scoped `--commit-gate -- agents/card-a/card-a.md`, in-process
+    //    `--staged -- agents/card-a/card-a.md`, and warm-daemon
+    //    `check -- agents/card-a/card-a.md` all scope BOTH pin rows and
+    //    anchoring to `card-a` (asked == 1, orphaned == [], exit 0).
+    let scoped = common::mrd_command(&home, &cache)
+        .args([
+            "check",
+            "--commit-gate",
+            "--json",
+            "--",
+            "agents/card-a/card-a.md",
+        ])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("scoped");
+    let inproc = common::mrd_command(&home, &cache)
+        .args([
+            "check",
+            "--staged",
+            "--json",
+            "--",
+            "agents/card-a/card-a.md",
+        ])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("inproc");
+    let daemon = common::mrd_command(&home, &cache)
+        .args(["check", "--json", "--", "agents/card-a/card-a.md"])
+        .current_dir(&ws)
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("daemon");
+    for (label, out) in [
+        ("scoped", &scoped),
+        ("inproc", &inproc),
+        ("daemon", &daemon),
+    ] {
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{label} lane must pass for clean card-a: {}",
+            said(out)
+        );
+        let j: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        assert_eq!(
+            j["pins"]["anchoring"]["asked"], 1,
+            "{label} must ask only card-a's 1 object: {j}"
+        );
+        assert_eq!(
+            j["pins"]["anchoring"]["orphaned"],
+            serde_json::json!([]),
+            "{label} must not report card-b's orphan: {j}"
+        );
+    }
+
+    // 3. Checking card-b directly via `-- agents/card-b/card-b.md` catches its orphan.
+    let card_b = common::mrd_command(&home, &cache)
+        .args([
+            "check",
+            "--commit-gate",
+            "--json",
+            "--",
+            "agents/card-b/card-b.md",
+        ])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("card-b");
+    assert_eq!(card_b.status.code(), Some(1), "card-b: {}", said(&card_b));
+    let bj: serde_json::Value = serde_json::from_slice(&card_b.stdout).expect("card-b json");
+    assert_eq!(
+        bj["pins"]["anchoring"]["orphaned"].as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+/// R2-2: a card pinning a deleted path-qualified target must stay inside the
+/// bounded scoped lane and refuse RED (`target-missing`) without walking the
+/// rest of the corpus, and a subdir-qualified / case-folded target must also
+/// resolve inside the bounded lane via `git ls-files`.
+#[test]
+#[allow(clippy::too_many_lines)] // covers both deleted path-qualified and subdir-tail targets
+fn deleted_and_subdir_qualified_targets_stay_bounded_without_full_corpus_walk() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (home, cache, ws) = setup_repo(tmp.path());
+    let _reaper = common::DaemonReaper {
+        home: home.clone(),
+        cache_home: cache.clone(),
+    };
+
+    write(&ws, "sub/dead-target.md", "# Dead\n\n## Sec\n\nold text\n");
+    write(
+        &ws,
+        "deep/nested/Target.md",
+        "# Target\n\n## Sec\n\nlive text\n",
+    );
+    write(&ws, "agents/card-dead/card-dead.md", "# Dead Card\n");
+    write(&ws, "agents/card-tail/card-tail.md", "# Tail Card\n");
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-qm", "add targets"]);
+
+    for (card, target) in [
+        (
+            "agents/card-dead/card-dead.md",
+            "sub/dead-target.md#Dead/Sec",
+        ),
+        (
+            "agents/card-tail/card-tail.md",
+            "deep/nested/Target.md#Target/Sec",
+        ),
+    ] {
+        let pin = common::mrd_command(&home, &cache)
+            .args(["pin", card, target])
+            .current_dir(&ws)
+            .env_remove("MERIDIAN_WORKSPACE")
+            .output()
+            .expect("pin");
+        assert_eq!(pin.status.code(), Some(0), "pin {card}: {}", said(&pin));
+    }
+    // Rewrite card-tail's pin object to a case-folded subdir-qualified tail.
+    let tail_body =
+        std::fs::read_to_string(ws.join("agents/card-tail/card-tail.md")).expect("read tail");
+    let rewritten = tail_body.replace("deep/nested/Target", "nested/target");
+    assert_ne!(tail_body, rewritten);
+    std::fs::write(ws.join("agents/card-tail/card-tail.md"), rewritten).expect("write tail");
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-qm", "pin dead and tail"]);
+
+    // Delete `sub/dead-target.md` in git (committed deletion — absent from disk
+    // and index, the exact R2-2 dead-pin card state).
+    git(&ws, &["rm", "-q", "sub/dead-target.md"]);
+    git(&ws, &["commit", "-qm", "delete target"]);
+
+    // Poison the corpus with an unrelated bad-UTF-8 file and unrelated staged
+    // divergence so any fallback into `assess_in_process` is immediately visible
+    // on stderr (`unrelated-bad-utf8.md`).
+    std::fs::write(ws.join("unrelated-bad-utf8.md"), [0xff, 0xfe, b'\n']).expect("bad utf8");
+    write(
+        &ws,
+        "other-source.md",
+        "# Other\n\n## Rule\n\nUNRELATED DRIFT\n",
+    );
+
+    // 1. Deleted path-qualified target: RED exit 1, stays bounded (NO fallback,
+    //    never touches `unrelated-bad-utf8.md`).
+    let dead = common::mrd_command(&home, &cache)
+        .args([
+            "check",
+            "--commit-gate",
+            "--require-pins",
+            "--json",
+            "--",
+            "agents/card-dead/card-dead.md",
+        ])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("check dead");
+    let dead_text = said(&dead);
+    assert_eq!(
+        dead.status.code(),
+        Some(1),
+        "deleted target must refuse RED: {dead_text}"
+    );
+    assert!(
+        !dead_text.contains("unrelated-bad-utf8.md"),
+        "deleted path-qualified target must NOT fall back to full corpus walk: {dead_text}"
+    );
+    assert!(
+        !dead_text.contains("fell back to full lane"),
+        "deleted path-qualified target must stay in scoped lane: {dead_text}"
+    );
+    let dj: serde_json::Value = serde_json::from_slice(&dead.stdout).expect("dead json");
+    assert_eq!(dj["commit_gate"]["permits"], false);
+    assert_eq!(dj["commit_gate"]["verdict"], "RED");
+
+    // 2. Subdir-qualified case-folded tail: GREEN exit 0, stays bounded (NO
+    //    fallback, never touches `unrelated-bad-utf8.md`).
+    let tail = common::mrd_command(&home, &cache)
+        .args([
+            "check",
+            "--commit-gate",
+            "--require-pins",
+            "--json",
+            "--",
+            "agents/card-tail/card-tail.md",
+        ])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("check tail");
+    let tail_text = said(&tail);
+    assert_eq!(
+        tail.status.code(),
+        Some(0),
+        "subdir-qualified case-folded target must pass: {tail_text}"
+    );
+    assert!(
+        !tail_text.contains("unrelated-bad-utf8.md"),
+        "subdir-qualified target must resolve via git index without full walk: {tail_text}"
+    );
+    assert!(
+        !tail_text.contains("fell back to full lane"),
+        "subdir-qualified target must stay in scoped lane: {tail_text}"
+    );
+}
+
+/// R2-2: when `assess_scoped` genuinely falls back (unresolved bare alias or
+/// `>64` holders), `mrd check` MUST keep the scoped wall-clock bound armed
+/// (never relaxing to unbounded `None`), voice the fallback and active bound on
+/// stderr, and abort cleanly on timeout.
+#[test]
+fn fallback_keeps_scoped_wall_clock_bound_and_reports_reason() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (home, cache, ws) = setup_repo(tmp.path());
+    let _reaper = common::DaemonReaper {
+        home: home.clone(),
+        cache_home: cache.clone(),
+    };
+
+    // Case 1: bare alias fallback (`short-target` -> `sub/aliased.md`)
+    write(
+        &ws,
+        "sub/aliased.md",
+        "---\naliases: [short-target]\n---\n# Aliased\n\n## Sec\n\nhello\n",
+    );
+    write(&ws, "agents/card-alias/card-alias.md", "# Alias Card\n");
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-qm", "aliased"]);
+    let pin = common::mrd_command(&home, &cache)
+        .args([
+            "pin",
+            "agents/card-alias/card-alias.md",
+            "sub/aliased.md#Aliased/Sec",
+        ])
+        .current_dir(&ws)
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("pin alias");
+    assert_eq!(pin.status.code(), Some(0), "pin alias: {}", said(&pin));
+    let body =
+        std::fs::read_to_string(ws.join("agents/card-alias/card-alias.md")).expect("read alias");
+    std::fs::write(
+        ws.join("agents/card-alias/card-alias.md"),
+        body.replace("sub/aliased", "short-target"),
+    )
+    .expect("rewrite alias");
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-qm", "alias pin"]);
+
+    let alias_out = common::mrd_command(&home, &cache)
+        .args([
+            "check",
+            "--commit-gate",
+            "--require-pins",
+            "--",
+            "agents/card-alias/card-alias.md",
+        ])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MRD_CHECK_TIMEOUT_SECS")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("check alias");
+    let alias_err = String::from_utf8_lossy(&alias_out.stderr);
+    assert_eq!(
+        alias_out.status.code(),
+        Some(0),
+        "alias fallback must still pass green: {}",
+        said(&alias_out)
+    );
+    assert!(
+        alias_err.contains("scoped commit-gate fell back to full lane")
+            && alias_err.contains("keeping 60s wall-clock bound"),
+        "fallback must report reason and keep the 60s bound: {alias_err}"
+    );
+
+    // Case 2: >64 holders fallback keeps the 60s bound and aborts on timeout
+    for i in 0..66 {
+        write(&ws, &format!("many/f{i:02}.md"), "# Many\n\nbody\n");
+    }
+    git(&ws, &["add", "many"]);
+    git(&ws, &["commit", "-qm", "66 holders"]);
+
+    let many_out = common::mrd_command(&home, &cache)
+        .args(["check", "--commit-gate", "--", "many"])
+        .current_dir(&ws)
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+        .env_remove("MRD_CHECK_TIMEOUT_SECS")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("check many");
+    let many_err = String::from_utf8_lossy(&many_out.stderr);
+    assert!(
+        many_err.contains("scoped commit-gate fell back to full lane")
+            && many_err.contains("more than 64 holders")
+            && many_err.contains("keeping 60s wall-clock bound"),
+        ">64 holders fallback must keep the 60s bound and state why: {many_err}"
+    );
+}
+
+/// R2-1: backgrounded caller shape from `home-wiki/.githooks/pre-push:121` —
+/// `( mrd check; echo "EXIT=$?" ) &` where the parent shell exits immediately.
+/// Without `MRD_CHECK_ALLOW_DETACH=1`, `mrd check` aborts with exit 129; with
+/// `MRD_CHECK_ALLOW_DETACH=1`, it completes cleanly (exit 0) after the parent exits.
+#[test]
+fn backgrounded_caller_aborts_without_opt_out_and_completes_with_allow_detach() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (home, cache, ws) = setup_repo(tmp.path());
+    let _reaper = common::DaemonReaper {
+        home: home.clone(),
+        cache_home: cache.clone(),
+    };
+
+    // Wrap real `git` with a 0.6s delay and have the parent hook exit after
+    // 0.15s so `mrd check` has armed its Watchdog while the parent shell is
+    // still alive, then observes parent death mid-run (deterministically
+    // exercising the 100ms ancestor-chain check).
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("which git");
+    let real_git_path = String::from_utf8_lossy(&real_git.stdout).trim().to_owned();
+    let slow_bin = tmp.path().join("slow-bin");
+    std::fs::create_dir_all(&slow_bin).expect("mkdir slow-bin");
+    let slow_git = slow_bin.join("git");
+    std::fs::write(
+        &slow_git,
+        format!("#!/bin/sh\nsleep 0.6\nexec '{real_git_path}' \"$@\"\n"),
+    )
+    .expect("write slow git");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&slow_git, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let path_env = format!(
+        "{}:{}",
+        slow_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let run_bg = |allow_detach: bool, tag: &str| -> String {
+        let marker = tmp.path().join(format!("bg-{tag}.done"));
+        let log = tmp.path().join(format!("bg-{tag}.log"));
+        let lock = tmp.path().join(format!("bg-{tag}.lock"));
+        let env_prefix = if allow_detach {
+            "MRD_CHECK_ALLOW_DETACH=1 "
+        } else {
+            ""
+        };
+        let script = format!(
+            "( {env_prefix}'{}' check --commit-gate --require-pins -- agents/card-a/card-a.md >'{}' 2>&1; rc=$?; echo \"EXIT=$rc\" >'{}' ) &\nsleep 0.15\nexit 0\n",
+            mrd_bin().display(),
+            log.display(),
+            marker.display(),
+        );
+        let parent = Command::new("bash")
+            .args(["-c", &script])
+            .current_dir(&ws)
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", &cache)
+            .env("PATH", &path_env)
+            .env("MRD_CHECK_LOCK", &lock)
+            .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-no-daemon")
+            .env_remove("MRD_CHECK_ALLOW_DETACH")
+            .env_remove("MERIDIAN_WORKSPACE")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("spawn parent hook");
+        assert!(parent.success());
+
+        let start = std::time::Instant::now();
+        while !marker.exists() && start.elapsed().as_secs() < 15 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            marker.exists(),
+            "backgrounded mrd check ({tag}) did not finish in time; log: {}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        std::fs::read_to_string(&marker).expect("read marker")
+    };
+
+    let without = run_bg(false, "no-optout");
+    assert_eq!(
+        without.trim(),
+        "EXIT=129",
+        "backgrounded check without opt-out must abort 129 when parent exits"
+    );
+
+    let with = run_bg(true, "allow-detach");
+    assert_eq!(
+        with.trim(),
+        "EXIT=0",
+        "backgrounded check with MRD_CHECK_ALLOW_DETACH=1 must complete exit 0"
+    );
+}

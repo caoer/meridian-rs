@@ -1130,11 +1130,18 @@ direct target pages they pin (ambient and bound mounted roots), voices the
 enumerator-clause note for any declined out-of-domain holders under `PATH…`,
 and scopes both the pin findings and the git blob-anchoring questions to
 holders under `PATH…` (matching how `-- PATH…` scopes pin rows across every
-lane). When a holder's pin target does not match an exact workspace or mount
-path (e.g. a basename, subdir-qualified tail, alias, or case-folded spelling),
-or when `PATH…` expands to more than 64 holders, the scoped lane falls back to
-the standard daemon-or-in-process lane so target resolution and verdicts match
-identically. The unscoped commit fence (`mrd check --commit-gate` with no
+lane). When a holder's pin target is not at its exact workspace or mount path,
+`assess_scoped` checks `<rel>.md` and queries the git index
+(`git ls-files -z` case-insensitive exact / whole-segment suffix) before
+falling back: subdir-qualified tails and case-folded targets load directly in
+bounded scope, and deleted path-qualified targets stay in the bounded lane and
+refuse `red target-missing` without walking the corpus. Only an unresolved bare
+spelling (which may name a frontmatter `aliases:` entry), an ambiguous match
+(>16 candidates), a non-git root, or `PATH…` expanding to more than 64 holders
+falls back to the standard daemon-or-in-process lane — and that fallback keeps
+the 60 s scoped wall-clock bound armed (never relaxing to unbounded) and names
+the fallback reason on stderr (`MRD_CHECK_TIMEOUT_SECS=0` disables the bound
+when requested). The unscoped commit fence (`mrd check --commit-gate` with no
 `-- PATH…`) stays whole-commit and is not bounded by this fast path.
 On the anchoring plane, `HEAD:<path>` (`git ls-tree -r -z HEAD -- <paths>` when
 small), the path's own history across anchoring refs (`git log --all` minus
@@ -1160,12 +1167,14 @@ distinct from exit 2 bad invocation) and exits immediately without queuing.
 `SIGHUP`/`SIGTERM`/`SIGINT`, parent or ancestor-chain death up to the session
 leader (including `ssh … bash -s` wrapped in `timeout`, `flock`, or subshells),
 stdout pipe hangup, or its wall-clock bound (`MRD_CHECK_TIMEOUT_SECS`; default
-60 s for the bounded `--commit-gate -- PATH…` lane only, unbounded by default
+60 s for `--commit-gate -- PATH…` including any fallback, unbounded by default
 for unscoped or non-gate checks, and `0` disables the bound) — terminating any
-descendant processes it spawned before exit. Deliberately backgrounded callers
-(such as an asynchronous `pre-push` hook) opt out of the ancestor/pipe check
-explicitly with `MRD_CHECK_ALLOW_DETACH=1` or by detaching with `setsid` before
-invoking `mrd check`.
+descendant processes it spawned before exit. On Linux, `PR_SET_PDEATHSIG` on
+child `git` processes is enabled only while `mrd check` is armed (off in the
+resident daemon so multi-GiB daemons keep `posix_spawn`). Deliberately
+backgrounded callers (such as an asynchronous `pre-push` hook) opt out of the
+ancestor/pipe check explicitly with `MRD_CHECK_ALLOW_DETACH=1` or by detaching
+with `setsid` before invoking `mrd check`.
 
 **Write history is not assessed: the engine keeps no memory.** History is pinned
 to git at lock, and anything between locks is not history. So chain continuity

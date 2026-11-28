@@ -110,18 +110,24 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let scoped_gate = is_scoped_gate(parsed.commit_gate, &paths);
 
     let (_watchdog, scoped_built) = if scoped_gate {
-        let scoped_wd =
-            crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(true));
+        let bound = crate::check_guard::wall_clock_bound(true);
+        let scoped_wd = crate::check_guard::Watchdog::arm(bound);
         match assess_scoped(&root, &domain, &paths)? {
             ScopedOutcome::Built(built) => (scoped_wd, Some(*built)),
-            ScopedOutcome::Fallback => {
-                // Falling back to the full lane (e.g. a non-exact target
-                // spelling or >64 holders): relax the 60 s scoped bound to the
-                // unscoped default before running the full lane.
-                drop(scoped_wd);
-                let full_wd =
-                    crate::check_guard::Watchdog::arm(crate::check_guard::wall_clock_bound(false));
-                (full_wd, None)
+            ScopedOutcome::Fallback(reason) => {
+                // Keep the scoped wall-clock bound armed across the fallback
+                // so a single-card `--commit-gate -- PATH…` never falls back
+                // into an unbounded whole-corpus build. Callers that want no
+                // bound can pass `MRD_CHECK_TIMEOUT_SECS=0`.
+                let bound_note = match bound {
+                    Some(d) => format!("keeping {}s wall-clock bound", d.as_secs()),
+                    None => "wall-clock bound disabled (MRD_CHECK_TIMEOUT_SECS=0)".to_owned(),
+                };
+                eprintln!(
+                    "mrd check: scoped commit-gate fell back to full lane ({reason}); \
+                     {bound_note} (override with MRD_CHECK_TIMEOUT_SECS)"
+                );
+                (scoped_wd, None)
             }
         }
     } else {
@@ -750,10 +756,11 @@ struct Built {
 enum ScopedOutcome {
     /// Answered within bounded scope.
     Built(Box<Built>),
-    /// A target used a non-exact spelling (basename, subdir tail, alias, case
-    /// fold) or `PATH…` expanded past the small-batch threshold; fall back to
-    /// the standard daemon-or-in-process lane for exact resolution parity.
-    Fallback,
+    /// Could not settle within bounded scope (e.g. an unresolved bare spelling
+    /// that may be a frontmatter alias, or `PATH…` expanding past the
+    /// small-batch threshold); fall back to the standard daemon-or-in-process
+    /// lane while keeping the scoped wall-clock bound armed.
+    Fallback(String),
 }
 
 /// Bounded path-scoped `--commit-gate -- PATH…`: reads only the markdown
@@ -767,6 +774,7 @@ fn assess_scoped(
     paths: &[String],
 ) -> Result<ScopedOutcome, Fail> {
     const MAX_SCOPED_HOLDERS: usize = 64;
+    const MAX_INDEX_MATCHES_PER_TARGET: usize = 16;
 
     let scoped_phase = timing::phase("check.scoped");
     let mut worktree_holder_paths = BTreeSet::new();
@@ -774,7 +782,9 @@ fn assess_scoped(
         collect_md_under(&root.0, rel, &mut worktree_holder_paths);
         if worktree_holder_paths.len() > MAX_SCOPED_HOLDERS {
             scoped_phase.stop();
-            return Ok(ScopedOutcome::Fallback);
+            return Ok(ScopedOutcome::Fallback(format!(
+                "more than {MAX_SCOPED_HOLDERS} holders under PATH"
+            )));
         }
     }
 
@@ -828,7 +838,9 @@ fn assess_scoped(
     }
     if staged_in_domain.len() > MAX_SCOPED_HOLDERS {
         scoped_phase.stop();
-        return Ok(ScopedOutcome::Fallback);
+        return Ok(ScopedOutcome::Fallback(format!(
+            "more than {MAX_SCOPED_HOLDERS} staged holders under PATH"
+        )));
     }
 
     let (mount_set, bound_roots) = bind_mount_table_headers();
@@ -874,39 +886,158 @@ fn assess_scoped(
         }
     }
 
-    // Verify every direct pin target resolves by exact path (in worktree or
-    // staged index). Any non-exact spelling — basename, subdir-qualified tail,
-    // alias, case-folded path, or `notes.md` → `notes.md.md` — falls back to
-    // the full lane so `resolve_ref` parity is preserved.
+    // Resolve non-exact ambient targets cheaply (`.md` doubling + git index
+    // case-insensitive exact/whole-segment tail lookup) before ever falling
+    // back to the full corpus:
+    // - subdir-qualified tails and case-folded spellings load directly in
+    //   bounded scope;
+    // - deleted path-qualified targets (`rel.contains('/')` with zero index
+    //   matches) stay in the bounded lane and color `red target-missing`
+    //   instead of triggering a whole-corpus build;
+    // - only unresolved bare spellings (which could name a frontmatter
+    //   `aliases:` entry), out-of-domain bare spellings, >16 matches, or
+    //   non-git workspaces fall back (still under the scoped wall-clock bound).
+    let mut missing_ambient: Vec<String> = Vec::new();
+    let mut extra_ambient: BTreeSet<String> = BTreeSet::new();
     for rel in &ambient_targets {
         let on_disk = root.0.join(rel).is_file();
         let in_staged = div_map.contains_key(rel);
-        if !on_disk && !in_staged {
-            scoped_phase.stop();
-            return Ok(ScopedOutcome::Fallback);
-        }
         if on_disk && !domain.contains(Path::new(rel)) && !rel.contains('/') {
             scoped_phase.stop();
-            return Ok(ScopedOutcome::Fallback);
+            return Ok(ScopedOutcome::Fallback(format!(
+                "out-of-domain bare target `{rel}`"
+            )));
+        }
+        if !on_disk && !in_staged {
+            let double_md = format!("{rel}.md");
+            if root.0.join(&double_md).is_file() {
+                extra_ambient.insert(double_md);
+            } else {
+                missing_ambient.push(rel.clone());
+            }
         }
     }
-    for (name, targets) in &mounted_targets {
+    if !missing_ambient.is_empty() {
+        if git_status.is_some() {
+            scoped_phase.stop();
+            return Ok(ScopedOutcome::Fallback(format!(
+                "unresolved target `{}` without git index",
+                missing_ambient[0]
+            )));
+        }
+        let matches = match repo.find_icase_tail_paths(&missing_ambient) {
+            Ok(matches) => matches,
+            Err(e) => {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "git index lookup failed for unresolved target: {e}"
+                )));
+            }
+        };
+        for rel in &missing_ambient {
+            let hits: Vec<&String> = matches
+                .iter()
+                .filter(|cand| matches_icase_tail(cand, rel))
+                .collect();
+            if hits.len() > MAX_INDEX_MATCHES_PER_TARGET {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "ambiguous target `{rel}` ({} index matches)",
+                    hits.len()
+                )));
+            }
+            if !hits.is_empty() {
+                for hit in hits {
+                    extra_ambient.insert(hit.clone());
+                }
+            } else if !rel.contains('/') {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "unresolved bare target `{rel}` (may be an alias)"
+                )));
+            }
+            // Path-qualified target with zero disk/index/tail matches: genuinely
+            // deleted/missing — stay in the bounded lane so it colors red
+            // `target-missing` without walking the corpus.
+        }
+    }
+    if !extra_ambient.is_empty() {
+        let extra_list: Vec<String> = extra_ambient.iter().cloned().collect();
+        if git_status.is_none() {
+            match repo.staged_divergence_paths(&extra_list) {
+                Ok(entries) => {
+                    for (rel, bytes) in entries {
+                        div_map.entry(rel).or_insert(bytes);
+                    }
+                }
+                Err(other) => git_status = Some(Interval::CannotAsk(other.to_string())),
+            }
+        }
+        ambient_targets.extend(extra_ambient);
+    }
+
+    for (name, targets) in &mut mounted_targets {
         let mount_root = &bound_roots[name];
         let mount_ws = fs::WorkspaceRoot(mount_root.clone());
         let Ok(mount_domain) = fs::domain::Domain::load(&mount_ws) else {
             scoped_phase.stop();
-            return Ok(ScopedOutcome::Fallback);
+            return Ok(ScopedOutcome::Fallback(format!(
+                "cannot read domain for mounted root `{name}`"
+            )));
         };
-        for rel in targets {
-            if !mount_root.join(rel).is_file() {
+        let mut missing_mounted: Vec<String> = Vec::new();
+        let mut extra_mounted: BTreeSet<String> = BTreeSet::new();
+        for rel in targets.iter() {
+            let on_disk = mount_root.join(rel).is_file();
+            if on_disk && !mount_domain.contains(Path::new(rel)) && !rel.contains('/') {
                 scoped_phase.stop();
-                return Ok(ScopedOutcome::Fallback);
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "out-of-domain bare mounted target `{name}:{rel}`"
+                )));
             }
-            if !mount_domain.contains(Path::new(rel)) && !rel.contains('/') {
-                scoped_phase.stop();
-                return Ok(ScopedOutcome::Fallback);
+            if !on_disk {
+                let double_md = format!("{rel}.md");
+                if mount_root.join(&double_md).is_file() {
+                    extra_mounted.insert(double_md);
+                } else {
+                    missing_mounted.push(rel.clone());
+                }
             }
         }
+        if !missing_mounted.is_empty() {
+            let mount_repo = git::Repo::at(mount_root);
+            let Ok(matches) = mount_repo.find_icase_tail_paths(&missing_mounted) else {
+                scoped_phase.stop();
+                return Ok(ScopedOutcome::Fallback(format!(
+                    "unresolved mounted target `{name}:{}`",
+                    missing_mounted[0]
+                )));
+            };
+            for rel in &missing_mounted {
+                let hits: Vec<&String> = matches
+                    .iter()
+                    .filter(|cand| matches_icase_tail(cand, rel))
+                    .collect();
+                if hits.len() > MAX_INDEX_MATCHES_PER_TARGET {
+                    scoped_phase.stop();
+                    return Ok(ScopedOutcome::Fallback(format!(
+                        "ambiguous mounted target `{name}:{rel}` ({} index matches)",
+                        hits.len()
+                    )));
+                }
+                if !hits.is_empty() {
+                    for hit in hits {
+                        extra_mounted.insert(hit.clone());
+                    }
+                } else if !rel.contains('/') {
+                    scoped_phase.stop();
+                    return Ok(ScopedOutcome::Fallback(format!(
+                        "unresolved bare mounted target `{name}:{rel}` (may be an alias)"
+                    )));
+                }
+            }
+        }
+        targets.extend(extra_mounted);
     }
 
     let diverged_paths: Vec<String> = div_map
@@ -1042,6 +1173,22 @@ fn is_md_path(rel: &str) -> bool {
     Path::new(rel)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+/// Case-insensitive whole-segment tail match: `candidate` equals `rel` or ends
+/// with `/{rel}` (ASCII case-insensitive), matching `model::matches_qualified_path`.
+fn matches_icase_tail(candidate: &str, rel: &str) -> bool {
+    let rel = rel.trim_start_matches('/');
+    if candidate.eq_ignore_ascii_case(rel) {
+        return true;
+    }
+    if candidate.len() <= rel.len() {
+        return false;
+    }
+    let split = candidate.len() - rel.len();
+    candidate.is_char_boundary(split)
+        && candidate.as_bytes()[split - 1] == b'/'
+        && candidate[split..].eq_ignore_ascii_case(rel)
 }
 
 fn collect_md_under(root: &Path, rel: &str, out: &mut BTreeSet<String>) {
@@ -1883,6 +2030,20 @@ mod tests {
             true,
             &["agents/x/x.md".to_string(), String::new()]
         ));
+    }
+
+    #[test]
+    fn icase_tail_matches_whole_segments_only() {
+        assert!(matches_icase_tail("Root.md", "root.md"));
+        assert!(matches_icase_tail(
+            "deep/nested/Target.md",
+            "nested/target.md"
+        ));
+        assert!(!matches_icase_tail(
+            "deep/xnested/Target.md",
+            "nested/target.md"
+        ));
+        assert!(!matches_icase_tail("short.md", "nested/short.md"));
     }
 
     #[test]

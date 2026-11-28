@@ -52,8 +52,29 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod reach;
+
+/// When enabled (e.g. by `mrd check`), Linux `git` children install
+/// `PR_SET_PDEATHSIG` in `pre_exec` so they die if their parent is `SIGKILL`ed
+/// or OOM-killed. Off by default so long-lived multi-GiB processes (the
+/// resident daemon) keep Rust `std`'s `posix_spawn` fast path and avoid
+/// `fork()` page-table copies on every git call.
+static CHILD_PDEATHSIG: AtomicBool = AtomicBool::new(false);
+
+/// Opt into (or out of) Linux `PR_SET_PDEATHSIG` on child `git` processes
+/// spawned by [`Repo`] in this process.
+pub fn set_child_pdeathsig(enabled: bool) {
+    CHILD_PDEATHSIG.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether [`Repo`] currently installs `PR_SET_PDEATHSIG` on child `git`
+/// processes.
+#[must_use]
+pub fn child_pdeathsig_enabled() -> bool {
+    CHILD_PDEATHSIG.load(Ordering::Relaxed)
+}
 
 #[cfg(target_os = "linux")]
 mod linux_sys {
@@ -1142,15 +1163,60 @@ impl Repo {
         }
     }
 
+    /// Look up tracked/staged index paths matching any of `targets` either
+    /// case-insensitively at the workspace root (`:(icase,literal)<rel>`) or as
+    /// a whole-segment case-insensitive suffix (`:(icase,glob)**/<escaped>`).
+    ///
+    /// Reads only the git index (never walks the working tree or reads blobs),
+    /// so `mrd check --commit-gate -- PATH…` can tell a deleted target from a
+    /// subdir-qualified or case-folded spelling without falling back to a
+    /// whole-corpus build.
+    ///
+    /// # Errors
+    /// [`GitFail::NotARepo`], [`GitFail::Spawn`], or [`GitFail::Refused`].
+    pub fn find_icase_tail_paths(&self, targets: &[String]) -> Result<Vec<String>, GitFail> {
+        if targets.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.require_repo()?;
+        let mut cmd = self.command();
+        cmd.env_remove("GIT_LITERAL_PATHSPECS");
+        cmd.args(["ls-files", "-z", "--"]);
+        let mut added = false;
+        for rel in targets {
+            let trimmed = rel.trim_start_matches('/');
+            if trimmed.is_empty() {
+                continue;
+            }
+            added = true;
+            cmd.arg(format!(":(icase,literal){trimmed}"));
+            cmd.arg(format!(":(icase,glob)**/{}", escape_git_glob(trimmed)));
+        }
+        if !added {
+            return Ok(Vec::new());
+        }
+        let stdout = self.run(cmd, "ls-files icase-tail")?;
+        let mut out: Vec<String> = stdout
+            .split(|b| *b == 0)
+            .filter(|r| !r.is_empty())
+            .map(|r| String::from_utf8_lossy(r).into_owned())
+            .collect();
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
     /// `git -C <root>` with a C locale, so a fatal's wording is the one
-    /// [`NOT_A_REPO`] matches on any operator's machine. On Linux, sets
+    /// [`NOT_A_REPO`] matches on any operator's machine. On Linux, when
+    /// [`set_child_pdeathsig`] is enabled (by `mrd check`), sets
     /// `PR_SET_PDEATHSIG` to `SIGTERM` in `pre_exec` so child `git` processes
-    /// never outlive a `SIGKILL`ed / OOM-killed parent.
+    /// never outlive a `SIGKILL`ed / OOM-killed check. Off by default so the
+    /// resident daemon keeps `posix_spawn`.
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.arg("-C").arg(&self.root).env("LC_ALL", "C");
         #[cfg(target_os = "linux")]
-        {
+        if CHILD_PDEATHSIG.load(Ordering::Relaxed) {
             use std::os::unix::process::CommandExt as _;
             // SAFETY: `getpid`/`getppid`/`prctl`/`_exit` are async-signal-safe
             // syscalls on Linux; `parent_pid` is captured before `fork`.
@@ -2004,6 +2070,19 @@ fn parse_check_attr_flags(stdout: &[u8], expected: usize) -> Option<Vec<bool>> {
     Some(out)
 }
 
+/// Escape git pathspec glob metacharacters (`\`, `*`, `?`, `[`) so a literal
+/// suffix path can be matched via `:(icase,glob)**/<escaped>`.
+fn escape_git_glob(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if matches!(ch, '\\' | '*' | '?' | '[') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// The git program a bare [`Repo::at`] handle runs, for a caller that wants to
 /// name it in a diagnostic.
 #[must_use]
@@ -2125,5 +2204,124 @@ mod tests {
         assert!(annex_config_log_overrides(
             b"1788344999s annex.gitaddtoannex false\n"
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_pdeathsig_is_off_by_default_and_scoped_to_opt_in() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::time::{Duration, Instant};
+
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_child_pdeathsig(false);
+            }
+        }
+        let _reset = Reset;
+
+        assert!(
+            !child_pdeathsig_enabled(),
+            "child PDEATHSIG must be off by default so resident daemon keeps posix_spawn"
+        );
+
+        let tmp =
+            std::env::temp_dir().join(format!("mrd-git-pdeathsig-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).expect("mkdir tmp");
+        let sleeper = tmp.join("sleep-git.sh");
+        fs::write(&sleeper, "#!/bin/sh\nexec sleep 10\n").expect("write sleeper");
+        fs::set_permissions(&sleeper, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        // Spawn `repo.command()` from a short-lived worker thread that exits
+        // right away: Linux delivers `PR_SET_PDEATHSIG` (SIGTERM) when the
+        // spawning thread exits. Off by default -> child stays alive past
+        // 250ms; opted in -> child exits promptly via SIGTERM (15).
+        let spawn_from_exiting_thread = |enabled: bool| -> Option<i32> {
+            set_child_pdeathsig(enabled);
+            let dir = tmp.clone();
+            let prog = sleeper.clone();
+            let mut child = std::thread::spawn(move || {
+                let repo = Repo::at_with_program(&dir, &prog);
+                let mut cmd = repo.command();
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                cmd.spawn().expect("spawn sleeper")
+            })
+            .join()
+            .expect("join spawner");
+
+            let wait_ms = if enabled { 1500 } else { 250 };
+            let deadline = Instant::now() + Duration::from_millis(wait_ms);
+            while Instant::now() < deadline {
+                if let Some(status) = child.try_wait().expect("try_wait") {
+                    return status.signal();
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        };
+
+        assert_eq!(
+            spawn_from_exiting_thread(false),
+            None,
+            "default Repo::command must NOT install PR_SET_PDEATHSIG pre_exec"
+        );
+        assert_eq!(
+            spawn_from_exiting_thread(true),
+            Some(15),
+            "opted-in Repo::command must install PR_SET_PDEATHSIG=SIGTERM (15)"
+        );
+        assert_eq!(
+            spawn_from_exiting_thread(false),
+            None,
+            "disabling child PDEATHSIG must stop installing PR_SET_PDEATHSIG"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_icase_tail_paths_matches_case_and_subdir_tails() {
+        let tmp =
+            std::env::temp_dir().join(format!("mrd-git-icase-tail-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("deep/nested")).expect("mkdir");
+        fs::write(tmp.join("deep/nested/Target.md"), "# T\n").expect("write");
+        fs::write(tmp.join("RootFile.md"), "# R\n").expect("write");
+
+        let run_git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&tmp)
+                .args(args)
+                .env("LC_ALL", "C")
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}");
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["add", "-A"]);
+
+        let repo = Repo::at(&tmp);
+        assert_eq!(
+            repo.find_icase_tail_paths(&["nested/target.md".to_owned()])
+                .expect("tail"),
+            vec!["deep/nested/Target.md".to_owned()]
+        );
+        assert_eq!(
+            repo.find_icase_tail_paths(&["rootfile.md".to_owned()])
+                .expect("root"),
+            vec!["RootFile.md".to_owned()]
+        );
+        assert_eq!(
+            repo.find_icase_tail_paths(&["nested/deleted.md".to_owned()])
+                .expect("missing"),
+            Vec::<String>::new()
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
