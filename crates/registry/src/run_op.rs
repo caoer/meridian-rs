@@ -903,7 +903,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let out1 = rows(&serve_line(&reg, Some(&canonical), &f1, Rev::V3));
         assert_eq!(out1[0]["result"], "ok", "{out1:?}");
 
-        let limits = effects::EvalLimits::default();
+        let limits = EvalLimits::default();
         let key = format!(
             "{}:{}:{}",
             blake3::hash(valid_prelude.as_bytes()).to_hex(),
@@ -912,7 +912,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         );
         let modules = reg.modules(&canonical);
         assert!(
-            run::modes::ModuleCache::prelude_ok(&*modules, &key),
+            modes::ModuleCache::prelude_ok(&*modules, &key),
             "first fire cached the validated prelude key"
         );
 
