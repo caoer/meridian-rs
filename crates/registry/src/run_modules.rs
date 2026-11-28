@@ -13,10 +13,12 @@
 //! invalidates: there is nothing to get wrong, because a rev IS the identity
 //! of the bytes. A restart re-evaluates and loses nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use run::modes::{LoadedBlock, ModuleCache};
+use run::modes::{LoadedBlock, ModuleCache, Page};
+
+use crate::residency::controller::Floor;
 
 /// How many blocks one workspace keeps. A page carries a handful of blocks
 /// and a fleet root a few pages of them, so this is generous for the real
@@ -24,10 +26,100 @@ use run::modes::{LoadedBlock, ModuleCache};
 /// on every edit is a slow leak, and a fleet daemon runs for weeks.
 const CAPACITY: usize = 512;
 
-/// One workspace's cached modules.
+/// How many validated prelude keys one workspace keeps.
+const PRELUDE_CAPACITY: usize = 64;
+
+/// How many parsed mode-row page copies (`page_path -> Arc<CachedPage>`)
+/// one workspace keeps. Keyed by page path alone so a new `file_rev` replaces
+/// the superseded copy (and releases its residency floor charge once any
+/// in-flight row finishes), while warm fires on an unchanged page avoid
+/// re-walking and cloning every fenced block of a large hooks page (e.g.
+/// 236 KB `HOOKS.md`).
+const PAGE_CAPACITY: usize = 64;
+
+/// A cached [`Page`] copy paired with the residency floor charge that covers
+/// its heap allocation (merkle-spec §6.4 / §6.8).
+///
+/// Field order is load-bearing: `page` drops BEFORE `floor`, so the
+/// allocation is destroyed before its floor charge ends — whether the last
+/// `Arc<CachedPage>` drops on cache replacement, clear, workspace eviction, or
+/// the completion of an in-flight row.
+#[derive(Debug)]
+pub(crate) struct CachedPage {
+    page: Page,
+    floor: Option<Floor>,
+}
+
+impl CachedPage {
+    /// Pair a copied [`Page`] with the residency floor charge covering it.
+    #[must_use]
+    pub(crate) fn new(page: Page, floor: Option<Floor>) -> Self {
+        Self { page, floor }
+    }
+
+    /// The cached page copy.
+    #[must_use]
+    pub(crate) fn page(&self) -> &Page {
+        &self.page
+    }
+
+    /// Whether this cached copy already carries a residency floor charge.
+    #[must_use]
+    pub(crate) fn is_charged(&self) -> bool {
+        self.floor.is_some()
+    }
+}
+
+/// One workspace's cached modules, validated preludes, and extracted mode pages.
 #[derive(Default)]
 pub struct WorkspaceModules {
     blocks: Mutex<HashMap<String, Arc<LoadedBlock>>>,
+    preludes: Mutex<HashSet<String>>,
+    pages: Mutex<HashMap<String, Arc<CachedPage>>>,
+}
+
+impl WorkspaceModules {
+    /// Look up a cached [`CachedPage`] for `page` if its revision matches
+    /// `file_rev`.
+    #[must_use]
+    pub(crate) fn get_page(&self, page: &str, file_rev: &str) -> Option<Arc<CachedPage>> {
+        self.pages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(page)
+            .filter(|entry| entry.page().file_rev() == file_rev)
+            .map(Arc::clone)
+    }
+
+    /// Cache a [`CachedPage`] under `page`, replacing any superseded revision
+    /// for that page. Evicted entries (and their residency floor charges) drop
+    /// outside the `pages` mutex.
+    ///
+    /// If another thread already inserted an entry at the same `file_rev`
+    /// (with equal or better charge coverage), returns that existing entry and
+    /// drops the redundant copy immediately.
+    pub(crate) fn put_page(&self, page: String, entry: Arc<CachedPage>) -> Arc<CachedPage> {
+        let (kept, evicted) = {
+            let mut pages = self.pages.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(existing) = pages.get(&page)
+                && existing.page().file_rev() == entry.page().file_rev()
+                && (existing.is_charged() || !entry.is_charged())
+            {
+                (Arc::clone(existing), vec![entry])
+            } else {
+                let mut evicted = Vec::new();
+                if pages.len() >= PAGE_CAPACITY && !pages.contains_key(&page) {
+                    evicted.extend(pages.drain().map(|(_, v)| v));
+                }
+                if let Some(old) = pages.insert(page, Arc::clone(&entry)) {
+                    evicted.push(old);
+                }
+                (entry, evicted)
+            }
+        };
+        drop(evicted);
+        kept
+    }
 }
 
 // `LoadedBlock` holds a starlark `FrozenModule`, which has no `Debug`. The
@@ -60,5 +152,20 @@ impl ModuleCache for WorkspaceModules {
             blocks.clear();
         }
         blocks.insert(key, loaded);
+    }
+
+    fn prelude_ok(&self, key: &str) -> bool {
+        self.preludes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(key)
+    }
+
+    fn mark_prelude_ok(&self, key: String) {
+        let mut preludes = self.preludes.lock().unwrap_or_else(PoisonError::into_inner);
+        if preludes.len() >= PRELUDE_CAPACITY {
+            preludes.clear();
+        }
+        preludes.insert(key);
     }
 }

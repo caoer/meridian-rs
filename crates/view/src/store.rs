@@ -137,10 +137,12 @@
 //! shared and can temporarily change native flushing during that append.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use duckdb::Connection;
 use duckdb::types::Value;
@@ -836,24 +838,41 @@ pub struct ColMeta {
     pub ty: String,
 }
 
-/// How often [`SqlRead::run_until`] asks whether its caller has left, and,
-/// once it has, how often it re-sends the interrupt. Re-sent because `DuckDB`
-/// clears a connection's interrupt flag each time a statement starts, so one
-/// signal can land in the gap before a statement (or the next statement of a
-/// multi-statement call) and be discarded.
-pub const LEAVE_TICK: std::time::Duration = std::time::Duration::from_millis(50);
+/// Short deterministic hash of a SQL statement for engine logs (slow-op lines
+/// and retired-instance read attribution). Avoids logging raw query text while
+/// correlating a slow op with an outstanding read.
+#[must_use]
+pub fn query_hash(sql: &str) -> String {
+    let hex = blake3::hash(sql.as_bytes()).to_hex();
+    hex[..12].to_owned()
+}
 
-/// [`run_query`] beside a watcher that interrupts `conn` while `gone`
+/// How often [`SqlRead::run_until`] asks whether its caller has left or its
+/// instance has retired, and, once either is true, how often it re-sends the
+/// interrupt. Re-sent because `DuckDB` clears a connection's interrupt flag
+/// each time a statement starts, so one signal can land in the gap before a
+/// statement (or the next statement of a multi-statement call) and be
+/// discarded.
+pub const LEAVE_TICK: Duration = Duration::from_millis(50);
+
+/// How many rows [`run_query_checked`] materializes between stop checks so a
+/// query whose rows are already buffered in `DuckDB` still aborts promptly
+/// when the caller leaves or the instance retires.
+const ROW_STOP_CHECK_STRIDE: usize = 256;
+
+/// [`run_query_checked`] beside a watcher that interrupts `conn` while `stop`
 /// answers `true`. The watcher is joined before this returns, so no
 /// interrupt reaches the `ROLLBACK` and config restore that follow; a flag
 /// it left set is cleared when the `ROLLBACK` starts.
 fn run_query_until(
     conn: &Connection,
     query: &str,
-    gone: &(dyn Fn() -> bool + Sync),
+    stop: &(dyn Fn() -> bool + Sync),
 ) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
     let interrupt = conn.interrupt_handle();
-    watched(gone, &|| interrupt.interrupt(), || run_query(conn, query))
+    watched(stop, &|| interrupt.interrupt(), || {
+        run_query_checked(conn, query, stop)
+    })
 }
 
 /// Run `body` beside a watcher thread that calls `interrupt` every
@@ -917,6 +936,17 @@ fn watched<T>(
 /// of the face relations involved when it names a column that does not exist
 /// ([`column_lists`]).
 pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
+    run_query_checked(conn, query, &|| false)
+}
+
+fn run_query_checked(
+    conn: &Connection,
+    query: &str,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<(Vec<ColMeta>, Vec<Vec<Json>>), String> {
+    if stop() {
+        return Err("Interrupt Error: Interrupted!".to_owned());
+    }
     // Read before the statement: a failed prepare leaves `conn`'s transaction
     // aborted, and it answers nothing more.
     let catalog: Option<String> = conn
@@ -928,6 +958,9 @@ pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Ve
         format!("{}{lists}", teach(&error))
     };
     let mut stmt = conn.prepare(query).map_err(refuse)?;
+    if stop() {
+        return Err("Interrupt Error: Interrupted!".to_owned());
+    }
     let mut rows = stmt.query([]).map_err(refuse)?;
 
     // Column metadata is available once the query has executed (`query` binds +
@@ -960,6 +993,9 @@ pub fn run_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Ve
 
     let mut out = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        if out.len().is_multiple_of(ROW_STOP_CHECK_STRIDE) && stop() {
+            return Err("Interrupt Error: Interrupted!".to_owned());
+        }
         let mut r = Vec::with_capacity(tz_cols.len());
         for (i, tz_col) in tz_cols.iter().enumerate() {
             let v = row
@@ -1266,11 +1302,82 @@ struct Manifest {
 /// GLOBAL-scope settings as `DuckDB` reports them, `(name, value)`.
 type Settings = Vec<(String, String)>;
 
+/// Metadata for one open [`SqlRead`] on a [`SqlStore`] instance, surfaced when
+/// a retired instance logs or waits on outstanding reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutstandingRead {
+    /// Monotonic per-instance read identifier.
+    pub id: u64,
+    /// Milliseconds since [`SqlStore::begin_read`] opened this read.
+    pub age_ms: u64,
+    /// Short blake3 hash of the statement, once execution has begun.
+    pub query_hash: Option<String>,
+    /// Peer process id of the Unix-socket client, when known.
+    pub peer_pid: Option<u32>,
+}
+
+impl fmt::Display for OutstandingRead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "id={} age_ms={}", self.id, self.age_ms)?;
+        if let Some(hash) = &self.query_hash {
+            write!(f, " query_hash={hash}")?;
+        }
+        if let Some(pid) = self.peer_pid {
+            write!(f, " peer_pid={pid}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Diagnostic snapshot of a retired [`SqlStore`] instance: why it retired, how
+/// long ago, and every read still holding it open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetirementState {
+    /// Why the instance was retired.
+    pub reason: String,
+    /// Milliseconds elapsed since retirement was first recorded.
+    pub retired_for_ms: u64,
+    /// Number of outstanding `Arc<InstancePolicy>` handles beyond the store's own.
+    pub outstanding_handles: usize,
+    /// Active reads registered on this instance when sampled.
+    pub reads: Vec<OutstandingRead>,
+}
+
+impl RetirementState {
+    /// Compact bracketed list of active reads for a single log line.
+    #[must_use]
+    pub fn format_reads(&self) -> String {
+        if self.reads.is_empty() {
+            return "[]".to_owned();
+        }
+        let parts: Vec<String> = self.reads.iter().map(ToString::to_string).collect();
+        format!("[{}]", parts.join(", "))
+    }
+}
+
+struct ActiveRead {
+    started: Instant,
+    query_hash: Option<String>,
+    peer_pid: Option<u32>,
+    interrupt: Arc<duckdb::InterruptHandle>,
+}
+
+struct RetirementInfo {
+    reason: String,
+    at: Instant,
+    retire_logged: bool,
+    last_wait_log: Option<Instant>,
+}
+
 /// Retirement is monotonic and follows every outstanding read handle.
 /// Required settings are checked at append entry without excluding queries.
 #[derive(Default)]
 struct InstancePolicy {
     retired: AtomicBool,
+    reaper_spawned: AtomicBool,
+    retirement: Mutex<Option<RetirementInfo>>,
+    next_read_id: AtomicU64,
+    reads: Mutex<BTreeMap<u64, ActiveRead>>,
     /// While an append runs escalated ([`SqlStore::raise_memory_limit`]): the
     /// configuration a read ending meanwhile restores, the open-time one with
     /// the raised limit. Its lock orders each read's restore against the
@@ -1301,8 +1408,12 @@ fn required_writer_setting(name: &str) -> bool {
 }
 
 impl InstancePolicy {
+    fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
     fn check(&self) -> Result<(), ViewError> {
-        if self.retired.load(Ordering::Acquire) {
+        if self.is_retired() {
             return Err(policy_error(
                 "sql cache instance retired; retry sync after outstanding reads finish",
             ));
@@ -1310,22 +1421,266 @@ impl InstancePolicy {
         Ok(())
     }
 
+    /// Mark this instance retired (first reason wins) and immediately
+    /// interrupt every registered read so it unwinds instead of running to
+    /// completion for a result [`SqlRead::finish`] will discard anyway. If
+    /// reads are open, spawns one weak-held ticker to re-send interrupts across
+    /// `DuckDB`'s statement-start flag resets until every read drops.
+    fn retire(this: &Arc<Self>, reason: impl Into<String>) {
+        this.retired.store(true, Ordering::Release);
+        {
+            let mut info = this
+                .retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if info.is_none() {
+                *info = Some(RetirementInfo {
+                    reason: reason.into(),
+                    at: Instant::now(),
+                    retire_logged: false,
+                    last_wait_log: None,
+                });
+            }
+        }
+        if this.interrupt_reads() && !this.reaper_spawned.swap(true, Ordering::AcqRel) {
+            let weak = Arc::downgrade(this);
+            let _ = std::thread::Builder::new()
+                .name("sql-retire-interrupt".into())
+                .spawn(move || {
+                    loop {
+                        std::thread::sleep(LEAVE_TICK);
+                        // Once only the store (or nothing) holds the policy,
+                        // do not upgrade `weak` so we never race
+                        // `Arc::strong_count == 1`.
+                        if weak.strong_count() <= 1 {
+                            break;
+                        }
+                        let still_open = weak.upgrade().is_some_and(|p| p.interrupt_reads());
+                        if !still_open {
+                            break;
+                        }
+                    }
+                });
+        }
+    }
+
+    /// Signal `DuckDB`'s interrupt flag on every registered read handle.
+    /// Clones handles out of the lock before calling `interrupt()`.
+    /// Returns `true` when at least one read was registered.
+    fn interrupt_reads(&self) -> bool {
+        let handles: Vec<Arc<duckdb::InterruptHandle>> = {
+            let reads = self
+                .reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            reads.values().map(|r| Arc::clone(&r.interrupt)).collect()
+        };
+        let any = !handles.is_empty();
+        for handle in handles {
+            handle.interrupt();
+        }
+        any
+    }
+
+    fn register_read(
+        &self,
+        interrupt: &Arc<duckdb::InterruptHandle>,
+        peer_pid: Option<u32>,
+    ) -> u64 {
+        let id = self.next_read_id.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut reads = self
+                .reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            reads.insert(
+                id,
+                ActiveRead {
+                    started: Instant::now(),
+                    query_hash: None,
+                    peer_pid,
+                    interrupt: Arc::clone(interrupt),
+                },
+            );
+        }
+        if self.is_retired() {
+            interrupt.interrupt();
+        }
+        id
+    }
+
+    fn set_read_query(&self, id: u64, hash: String) {
+        let mut reads = self
+            .reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = reads.get_mut(&id) {
+            entry.query_hash = Some(hash);
+        }
+    }
+
+    fn unregister_read(&self, id: u64) {
+        let mut reads = self
+            .reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reads.remove(&id);
+    }
+
+    fn snapshot_reads(&self) -> Vec<OutstandingRead> {
+        let now = Instant::now();
+        let reads = self
+            .reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reads
+            .iter()
+            .map(|(&id, read)| OutstandingRead {
+                id,
+                age_ms: u64::try_from(now.saturating_duration_since(read.started).as_millis())
+                    .unwrap_or(u64::MAX),
+                query_hash: read.query_hash.clone(),
+                peer_pid: read.peer_pid,
+            })
+            .collect()
+    }
+
+    fn snapshot_retirement(&self, strong_count: usize) -> Option<RetirementState> {
+        if !self.is_retired() {
+            return None;
+        }
+        let (reason, retired_for_ms) = {
+            let info = self
+                .retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match info.as_ref() {
+                Some(info) => (
+                    info.reason.clone(),
+                    u64::try_from(info.at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                ),
+                None => ("instance retired".to_owned(), 0),
+            }
+        };
+        Some(RetirementState {
+            reason,
+            retired_for_ms,
+            outstanding_handles: strong_count.saturating_sub(1),
+            reads: self.snapshot_reads(),
+        })
+    }
+
+    fn take_retire_log(&self, strong_count: usize) -> Option<RetirementState> {
+        if !self.is_retired() {
+            return None;
+        }
+        let (reason, retired_for_ms) = {
+            let mut info = self
+                .retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = info.get_or_insert_with(|| RetirementInfo {
+                reason: "instance retired".to_owned(),
+                at: Instant::now(),
+                retire_logged: false,
+                last_wait_log: None,
+            });
+            if entry.retire_logged {
+                return None;
+            }
+            entry.retire_logged = true;
+            (
+                entry.reason.clone(),
+                u64::try_from(entry.at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            )
+        };
+        Some(RetirementState {
+            reason,
+            retired_for_ms,
+            outstanding_handles: strong_count.saturating_sub(1),
+            reads: self.snapshot_reads(),
+        })
+    }
+
+    fn take_wait_log(
+        &self,
+        strong_count: usize,
+        min_interval: Duration,
+    ) -> Option<RetirementState> {
+        if !self.is_retired() {
+            return None;
+        }
+        let now = Instant::now();
+        let (reason, retired_for_ms) = {
+            let mut info = self
+                .retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = info.get_or_insert_with(|| RetirementInfo {
+                reason: "instance retired".to_owned(),
+                at: now,
+                retire_logged: false,
+                last_wait_log: None,
+            });
+            if entry
+                .last_wait_log
+                .is_some_and(|last| now.saturating_duration_since(last) < min_interval)
+            {
+                return None;
+            }
+            entry.last_wait_log = Some(now);
+            (
+                entry.reason.clone(),
+                u64::try_from(now.saturating_duration_since(entry.at).as_millis())
+                    .unwrap_or(u64::MAX),
+            )
+        };
+        Some(RetirementState {
+            reason,
+            retired_for_ms,
+            outstanding_handles: strong_count.saturating_sub(1),
+            reads: self.snapshot_reads(),
+        })
+    }
+
     /// A read's end-of-call restore: toward the raised configuration while an
     /// escalation runs, else toward `baseline`.
     fn restore_read(
-        &self,
+        this: &Arc<Self>,
         conn: &Connection,
         baseline: &[(String, String)],
     ) -> Result<(), ViewError> {
-        let raised = self
+        let raised = this
             .raised
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.restore(conn, raised.as_deref().map_or(baseline, Vec::as_slice))
+        #[cfg(test)]
+        this.maybe_pause_in_restore();
+        let result = Self::restore_inner(conn, raised.as_deref().map_or(baseline, Vec::as_slice));
+        drop(raised);
+        if let Err((names, err)) = result {
+            Self::retire(this, format!("configuration restoration failed: {names}"));
+            return Err(err);
+        }
+        Ok(())
     }
 
-    fn restore(&self, conn: &Connection, baseline: &[(String, String)]) -> Result<(), ViewError> {
+    fn restore(
+        this: &Arc<Self>,
+        conn: &Connection,
+        baseline: &[(String, String)],
+    ) -> Result<(), ViewError> {
         #[cfg(test)]
+        this.maybe_pause_in_restore();
+        if let Err((names, err)) = Self::restore_inner(conn, baseline) {
+            Self::retire(this, format!("configuration restoration failed: {names}"));
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn maybe_pause_in_restore(&self) {
         if let Some(paused) = self
             .pause_in_restore
             .lock()
@@ -1333,18 +1688,26 @@ impl InstancePolicy {
             .take()
         {
             let _ = paused.send(());
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(200));
         }
+    }
+
+    fn restore_inner(
+        conn: &Connection,
+        baseline: &[(String, String)],
+    ) -> Result<(), (String, ViewError)> {
         let unrestored: Vec<_> = restore_global_config(conn, baseline)
             .into_iter()
             .filter(|name| required_writer_setting(name))
             .collect();
         if !unrestored.is_empty() {
-            self.retired.store(true, Ordering::Release);
-            return Err(policy_error(format!(
-                "sql cache configuration restoration failed: {}; instance retired",
-                unrestored.join(", ")
-            )));
+            let names = unrestored.join(", ");
+            return Err((
+                names.clone(),
+                policy_error(format!(
+                    "sql cache configuration restoration failed: {names}; instance retired",
+                )),
+            ));
         }
         Ok(())
     }
@@ -1389,8 +1752,8 @@ fn note_staged_body_bytes(rows: &Rows) {
     MAX_STAGED_BODY_BYTES.with(|peak| peak.set(peak.get().max(bytes)));
 }
 
-impl std::fmt::Debug for SqlStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SqlStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqlStore")
             .field("file", &self.file)
             .finish_non_exhaustive()
@@ -1536,15 +1899,56 @@ impl SqlStore {
         Ok(store)
     }
 
+    /// Whether this instance has been retired and awaits reopen once its
+    /// outstanding reads drain.
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.policy.is_retired()
+    }
+
+    /// Re-signal `DuckDB`'s interrupt flag on every open read of this instance.
+    pub fn interrupt_reads(&self) {
+        let _ = self.policy.interrupt_reads();
+    }
+
+    /// Snapshot of this instance's retirement state and open reads, or `None`
+    /// while the instance is live.
+    #[must_use]
+    pub fn retirement_state(&self) -> Option<RetirementState> {
+        self.policy
+            .snapshot_retirement(Arc::strong_count(&self.policy))
+    }
+
+    /// Snapshot of this instance's retirement state once per retired instance,
+    /// so the caller logs retirement exactly once.
+    pub fn take_retire_log(&self) -> Option<RetirementState> {
+        self.policy.take_retire_log(Arc::strong_count(&self.policy))
+    }
+
+    /// Rate-limited snapshot of this instance's retirement state while waiting
+    /// on outstanding reads.
+    pub fn take_wait_log(&self, min_interval: Duration) -> Option<RetirementState> {
+        self.policy
+            .take_wait_log(Arc::strong_count(&self.policy), min_interval)
+    }
+
     /// Reopen only after all handles on the retired instance are gone. The
     /// old connection must close before ATTACH opens the same file in a new
     /// instance; keep retirement set if reopening fails so retries stay safe.
-    fn recover_retired(&mut self) -> Result<(), ViewError> {
+    ///
+    /// # Errors
+    /// [`ViewError::Busy`] while any read handle on the retired instance is
+    /// still open (re-interrupting every registered read first), or a `DuckDB`
+    /// / I/O failure if reopening the file fails.
+    pub fn recover_retired(&mut self) -> Result<(), ViewError> {
         if self.policy.check().is_ok() {
             return Ok(());
         }
-        self.policy.retired.store(true, Ordering::Release);
+        InstancePolicy::retire(&self.policy, "instance retired");
         if Arc::strong_count(&self.policy) != 1 {
+            // Re-signal every open read in case an earlier interrupt landed
+            // across a statement-start flag reset.
+            let _ = self.policy.interrupt_reads();
             return Err(policy_error(
                 "sql cache instance retired with outstanding reads; retry after they finish",
             ));
@@ -1800,7 +2204,7 @@ impl SqlStore {
             .filter(|(name, _)| required_writer_setting(name))
             .cloned()
             .collect();
-        self.policy.restore(&self.conn, &required)?;
+        InstancePolicy::restore(&self.policy, &self.conn, &required)?;
 
         self.conn.execute_batch("BEGIN")?;
         let appended = (|| {
@@ -2463,6 +2867,10 @@ impl SqlStore {
     /// # Errors
     /// The connection cannot be cloned, or `BEGIN` / the forcing read fails.
     fn begin_read(&self) -> Result<SqlRead, ViewError> {
+        self.begin_read_for(None)
+    }
+
+    fn begin_read_for(&self, peer_pid: Option<u32>) -> Result<SqlRead, ViewError> {
         self.policy.check()?;
         let conn = self.conn.try_clone()?;
         // `try_clone` shares the attached database instance but does not
@@ -2472,12 +2880,19 @@ impl SqlStore {
         // Not a health check and not a warm-up: this is the statement that
         // MAKES the snapshot. Removing it silently re-opens the freshness lie.
         conn.execute_batch("SELECT gen FROM hist.pin LIMIT 1")?;
-        Ok(SqlRead {
-            conn,
+        let interrupt = conn.interrupt_handle();
+        let read_id = self.policy.register_read(&interrupt, peer_pid);
+        let read = SqlRead {
+            conn: Some(conn),
+            read_id,
             baseline: Arc::clone(&self.baseline),
             policy: Arc::clone(&self.policy),
             hold: None,
-        })
+        };
+        // If another thread retired the instance while we cloned/began, drop
+        // the read right here rather than handing out a doomed handle.
+        self.policy.check()?;
+        Ok(read)
     }
 
     /// [`SqlStore::begin_read`] on a store its owner shares as `shared`, the
@@ -2490,7 +2905,20 @@ impl SqlStore {
     /// # Errors
     /// As [`SqlStore::begin_read`].
     pub fn begin_held_read(&self, shared: &Arc<Mutex<SqlStore>>) -> Result<SqlRead, ViewError> {
-        let mut read = self.begin_read()?;
+        self.begin_held_read_for(shared, None)
+    }
+
+    /// [`SqlStore::begin_held_read`], recording the caller's Unix peer pid for
+    /// retirement-wait diagnostics.
+    ///
+    /// # Errors
+    /// As [`SqlStore::begin_read`].
+    pub fn begin_held_read_for(
+        &self,
+        shared: &Arc<Mutex<SqlStore>>,
+        peer_pid: Option<u32>,
+    ) -> Result<SqlRead, ViewError> {
+        let mut read = self.begin_read_for(peer_pid)?;
         read.hold = Some(Arc::clone(shared));
         Ok(read)
     }
@@ -2538,13 +2966,13 @@ impl SqlStore {
     /// `true` once none is open. A caller holding this store's mutex — under
     /// which reads begin — only ever sees the count fall meanwhile.
     #[must_use]
-    pub fn wait_for_reads(&self, wait: std::time::Duration) -> bool {
-        let deadline = std::time::Instant::now() + wait;
+    pub fn wait_for_reads(&self, wait: Duration) -> bool {
+        let deadline = Instant::now() + wait;
         while Arc::strong_count(&self.policy) != 1 {
-            if std::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 return false;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(5));
         }
         true
     }
@@ -2584,7 +3012,7 @@ impl SqlStore {
         }
         // Retired before the close, so a failure below leaves a store the
         // next sync reopens ([`SqlStore::recover_retired`]).
-        self.policy.retired.store(true, Ordering::Release);
+        InstancePolicy::retire(&self.policy, "history compaction swap");
         drop(std::mem::replace(
             &mut self.conn,
             Connection::open_in_memory()?,
@@ -2722,7 +3150,8 @@ impl SqlStore {
 /// Dropping one without calling [`SqlRead::run`] leaves the transaction to be
 /// closed by the connection's own drop.
 pub struct SqlRead {
-    conn: Connection,
+    conn: Option<Connection>,
+    read_id: u64,
     baseline: Arc<Vec<(String, String)>>,
     policy: Arc<InstancePolicy>,
     /// The shared store this read was opened on
@@ -2731,8 +3160,18 @@ pub struct SqlRead {
     hold: Option<Arc<Mutex<SqlStore>>>,
 }
 
-impl std::fmt::Debug for SqlRead {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Drop for SqlRead {
+    fn drop(&mut self) {
+        // Remove our `InterruptHandle` before closing `conn`, so no concurrent
+        // `retire()` signals a closing connection and `conn` closes before
+        // `policy`'s strong count drops to 1.
+        self.policy.unregister_read(self.read_id);
+        drop(self.conn.take());
+    }
+}
+
+impl fmt::Debug for SqlRead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqlRead").finish_non_exhaustive()
     }
 }
@@ -2781,11 +3220,12 @@ impl SqlRead {
 
     /// [`SqlRead::run`] for a caller that can leave: while the statement
     /// runs, `gone` is asked every [`LEAVE_TICK`], and once it answers `true`
-    /// the statement is interrupted, so a read nobody will receive stops
-    /// holding the instance's threads, memory and this read's handle on the
-    /// store. The interrupted statement is the caller's own failure (`Ok`
-    /// with `DuckDB`'s interrupt words); the rollback and config restore run
-    /// as on every call.
+    /// (or the instance is retired) the statement is interrupted, so a read
+    /// nobody will receive stops holding the instance's threads, memory and
+    /// this read's handle on the store. The interrupted statement is the
+    /// caller's own failure (`Ok` with `DuckDB`'s interrupt words) unless the
+    /// instance retired; the rollback and config restore run on live
+    /// instances as on every call.
     ///
     /// # Errors
     /// As [`SqlRead::run`].
@@ -2805,17 +3245,37 @@ impl SqlRead {
         gone: Option<&(dyn Fn() -> bool + Sync)>,
     ) -> Result<Result<(Vec<ColMeta>, Vec<Vec<Json>>), String>, ViewError> {
         self.policy.check()?;
+        self.policy.set_read_query(self.read_id, query_hash(sql));
+        let conn = self
+            .conn
+            .as_ref()
+            .expect("SqlRead connection stays open until drop");
+        let stop = || self.policy.is_retired() || gone.is_some_and(|g| g());
         let result = match gone {
-            None => run_query(&self.conn, sql),
-            Some(gone) => run_query_until(&self.conn, sql, gone),
+            // `SqlRead::run` spawns no watcher thread on the normal path;
+            // `InstancePolicy::retire` interrupts registered handles directly
+            // and runs one weak-held ticker per retired instance.
+            None => run_query_checked(conn, sql, &stop),
+            Some(_) => run_query_until(conn, sql, &stop),
         };
         // Always roll back — reads are unaffected; DML dies here (P3/P6).
-        let rolled_back = self.conn.execute_batch("ROLLBACK");
+        let rolled_back = conn.execute_batch("ROLLBACK");
+        // An instance retired while we ran is closing as soon as every read
+        // drops, and this read is refused below either way: skip restoring
+        // global config on a doomed instance so we never stall or OOM in
+        // `duckdb_settings()` before dropping our handle.
+        if self.policy.is_retired() {
+            let _ = rolled_back;
+            return Err(self
+                .policy
+                .check()
+                .expect_err("retired policy always refuses"));
+        }
         // Always restore — the transaction never held the engine's config, so
         // a ROLLBACK that itself failed is no reason to leave the next caller
         // with this caller's `memory_limit`. Restore first, then answer for
         // the rollback.
-        let restored = self.policy.restore_read(&self.conn, &self.baseline);
+        let restored = InstancePolicy::restore_read(&self.policy, conn, &self.baseline);
         rolled_back?;
         restored?;
         self.policy.check()?;
@@ -2833,8 +3293,8 @@ pub struct Raised<'s> {
     hold: Option<Box<dyn Send>>,
 }
 
-impl std::fmt::Debug for Raised<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Raised<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Raised").finish_non_exhaustive()
     }
 }
@@ -2876,10 +3336,30 @@ impl Drop for Raised<'_> {
         let limit_kept = unrestored
             .iter()
             .any(|name| name == "memory_limit" || name == "<config snapshot unavailable>");
-        if limit_kept || unrestored.iter().any(|name| required_writer_setting(name)) {
-            policy.retired.store(true, Ordering::Release);
-        }
+        let writer_unrestored: Vec<&str> = unrestored
+            .iter()
+            .filter(|name| required_writer_setting(name))
+            .map(String::as_str)
+            .collect();
+        let retire_reason = if limit_kept && !writer_unrestored.is_empty() {
+            Some(format!(
+                "memory_limit stayed raised after escalation and writer settings unrestored: {}",
+                writer_unrestored.join(", ")
+            ))
+        } else if limit_kept {
+            Some("memory_limit stayed raised after escalation".to_owned())
+        } else if !writer_unrestored.is_empty() {
+            Some(format!(
+                "writer settings unrestored after escalation: {}",
+                writer_unrestored.join(", ")
+            ))
+        } else {
+            None
+        };
         drop(raised);
+        if let Some(reason) = retire_reason {
+            InstancePolicy::retire(&policy, reason);
+        }
         if limit_kept {
             park(&policy, hold);
         } else {
@@ -4576,7 +5056,7 @@ pub(crate) mod tests {
         let built = rebuilt(&dir, &docs, "b3b:v6");
 
         let read = store.begin_read().expect("read");
-        assert!(!store.wait_for_reads(std::time::Duration::from_millis(20)));
+        assert!(!store.wait_for_reads(Duration::from_millis(20)));
         assert!(
             matches!(store.swap_in(&built), Err(ViewError::Busy(_))),
             "the swap refuses while a read is open"
@@ -4591,7 +5071,7 @@ pub(crate) mod tests {
             .expect("query");
         assert_eq!(rows, vec![vec![Json::from(hist)]], "the old file, whole");
 
-        assert!(store.wait_for_reads(std::time::Duration::ZERO));
+        assert!(store.wait_for_reads(Duration::ZERO));
         store
             .swap_in(&built)
             .expect("the swap lands once the read ended");
@@ -4906,6 +5386,114 @@ pub(crate) mod tests {
                 .generation,
             2
         );
+    }
+
+    /// Retiring an instance while a connected read is executing must interrupt
+    /// that read (whose result would be discarded at finish anyway) so the
+    /// instance drains and reopens without a process restart.
+    #[test]
+    fn retiring_an_instance_interrupts_in_flight_read_and_allows_recovery() {
+        const ENDLESS_SQL: &str = "SELECT sum(hash(i)) FROM range(1000000000000) t(i)";
+
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open_limited(&tmp_store(&dir), Some(64 << 20)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let shared = Arc::new(Mutex::new(store));
+
+        let read = {
+            let guard = shared.lock().unwrap();
+            guard
+                .begin_held_read_for(&shared, Some(4242))
+                .expect("begin")
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let outcome = read.run(ENDLESS_SQL);
+            let _ = done_tx.send(outcome);
+        });
+        // Give DuckDB time to enter execution on the reader thread.
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Retire the instance via the real escalation-lower-failure path.
+        let retire_snapshot = {
+            let mut guard = shared.lock().unwrap();
+            let raised = guard.raise_memory_limit(128 << 20, ()).expect("raise");
+            KEEP_MEMORY_LIMIT.with(|keep| keep.set(true));
+            drop(raised);
+            KEEP_MEMORY_LIMIT.with(|keep| keep.set(false));
+            guard.retirement_state().expect("retired state recorded")
+        };
+        assert!(
+            retire_snapshot.reason.contains("memory_limit"),
+            "reason: {:?}",
+            retire_snapshot.reason
+        );
+        assert_eq!(retire_snapshot.outstanding_handles, 1);
+        assert_eq!(retire_snapshot.reads.len(), 1);
+        assert_eq!(retire_snapshot.reads[0].peer_pid, Some(4242));
+        assert_eq!(
+            retire_snapshot.reads[0].query_hash.as_deref(),
+            Some(query_hash(ENDLESS_SQL).as_str())
+        );
+
+        let reader_outcome = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("in-flight read was not interrupted on instance retirement");
+        reader.join().expect("reader thread");
+        assert!(
+            matches!(reader_outcome, Err(ViewError::Busy(_))),
+            "interrupted read must report retryable retirement busy: {reader_outcome:?}"
+        );
+
+        let mut guard = shared.lock().unwrap();
+        assert!(
+            guard.wait_for_reads(Duration::from_secs(2)),
+            "read handle must drop once interrupted"
+        );
+        guard.recover_retired().expect("retired instance reopens");
+        assert!(!guard.is_retired());
+        let (_, rows) = guard.query("SELECT 42").expect("lane").expect("rows");
+        assert_eq!(rows, vec![vec![Json::from(42)]]);
+    }
+
+    #[test]
+    fn retired_store_logs_retire_once_and_rate_limits_wait_logs() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let mut store = SqlStore::open(&tmp_store(&dir)).expect("open");
+        sync_ambient(&mut store, &fixture_v1(), "b3b:v1").expect("cold");
+        let shared = Arc::new(Mutex::new(store));
+        let outstanding = {
+            let guard = shared.lock().unwrap();
+            guard
+                .begin_held_read_for(&shared, Some(9999))
+                .expect("older read")
+        };
+        {
+            let mut guard = shared.lock().unwrap();
+            inject_restore_failure(&mut guard);
+            let _ = guard.query("SELECT 1");
+
+            let first = guard.take_retire_log().expect("first retire log fires");
+            assert_eq!(first.outstanding_handles, 1);
+            assert_eq!(first.reads.len(), 1);
+            assert_eq!(first.reads[0].peer_pid, Some(9999));
+            assert!(
+                guard.take_retire_log().is_none(),
+                "retire log fires at most once per retired instance"
+            );
+
+            let wait1 = guard
+                .take_wait_log(Duration::from_secs(60))
+                .expect("first wait log fires");
+            assert_eq!(wait1.outstanding_handles, 1);
+            assert!(
+                guard.take_wait_log(Duration::from_secs(60)).is_none(),
+                "wait log is rate-limited inside its interval"
+            );
+        }
+        drop(outstanding);
+        let mut guard = shared.lock().unwrap();
+        guard.recover_retired().expect("recovers after drop");
     }
 
     #[test]

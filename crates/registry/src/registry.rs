@@ -2112,27 +2112,23 @@ impl Registry {
 
             // Warm + unchanged → done. Nothing is copied out of the memo on
             // this path: it is the hot one, and a 20k-entry clone per currency
-            // pass would put back a slice of what the memo just removed. A
-            // miss records the resident fingerprint as the WITNESS the guarded
-            // insert below checks against, and pins the resident engine as
-            // the incremental pass's prior build.
-            let (witness, prior) = {
+            // pass would put back a slice of what the memo just removed. Do
+            // NOT clone `prior` before `enter_warm_flight`: a waiter that
+            // adopts the in-flight rebuild never uses `prior`, and holding an
+            // `Arc` to the old generation across the wait would make the
+            // waiter drop the replaced generation on its own thread.
+            {
                 let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
-                match engines.get(&canonical) {
-                    Some(engine) if engine.at_fingerprint == fingerprint => {
-                        let outcome = match parsed {
-                            None => WarmOutcome::Reused,
-                            Some(docs) => WarmOutcome::Built { docs },
-                        };
-                        return Ok((outcome, Arc::clone(engine)));
-                    }
-                    Some(engine) => (
-                        Some(engine.at_fingerprint.clone()),
-                        Some(Arc::clone(engine)),
-                    ),
-                    None => (None, None),
+                if let Some(engine) = engines.get(&canonical)
+                    && engine.at_fingerprint == fingerprint
+                {
+                    let outcome = match parsed {
+                        None => WarmOutcome::Reused,
+                        Some(docs) => WarmOutcome::Built { docs },
+                    };
+                    return Ok((outcome, Arc::clone(engine)));
                 }
-            };
+            }
 
             // One rebuild per `(workspace, fingerprint)`: the first caller to
             // miss at this fold runs the pass below, the rest wait here and
@@ -2154,6 +2150,27 @@ impl Registry {
                         waited_at.push(fingerprint);
                         continue;
                     }
+                }
+            };
+
+            // Only the caller running the rebuild pins the resident engine as
+            // its incremental prior and records its fingerprint as the WITNESS
+            // checked at the guarded insert below.
+            let (witness, prior) = {
+                let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+                match engines.get(&canonical) {
+                    Some(engine) if engine.at_fingerprint == fingerprint => {
+                        let outcome = match parsed {
+                            None => WarmOutcome::Reused,
+                            Some(docs) => WarmOutcome::Built { docs },
+                        };
+                        return Ok((outcome, Arc::clone(engine)));
+                    }
+                    Some(engine) => (
+                        Some(engine.at_fingerprint.clone()),
+                        Some(Arc::clone(engine)),
+                    ),
+                    None => (None, None),
                 }
             };
 
@@ -2235,11 +2252,16 @@ impl Registry {
                 }
                 if resident == witness {
                     let engine = Arc::new(engine);
-                    engines.insert(canonical.clone(), Arc::clone(&engine));
+                    let replaced = engines.insert(canonical.clone(), Arc::clone(&engine));
                     drop(engines);
-                    // Published: the waiters serve it now, ahead of the
-                    // host's census below.
+                    // Published: release the flight BEFORE dropping the
+                    // replaced generation so warm-flight waiters serve the new
+                    // generation immediately instead of waiting on the old
+                    // generation's teardown (and drop both outside
+                    // `self.engines.write()` so readers never stall behind the
+                    // drop).
                     drop(flight);
+                    drop(replaced);
                     if let Some(host) = &self.residency {
                         // The host floor reaches this generation for as long
                         // as anything holds it (merkle-spec §6.4).
@@ -4178,13 +4200,17 @@ impl Registry {
             candidates
         };
         if !candidates.is_empty() {
-            let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-            for key in &candidates {
-                if engines.remove(key).is_some() {
-                    demoted.insert(key.clone());
+            let mut removed_engines = Vec::new();
+            {
+                let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+                for key in &candidates {
+                    if let Some(engine) = engines.remove(key) {
+                        demoted.insert(key.clone());
+                        removed_engines.push(engine);
+                    }
                 }
             }
-            drop(engines);
+            drop(removed_engines);
             // The resident memo SURVIVES the horizon under a live feed — the
             // §6.4 point: memo + dirty set make the re-warm O(dirty). With no
             // live feed there is no gap coverage, so the memo dies here as it
@@ -4520,12 +4546,14 @@ impl Registry {
     /// cache and pre-warm signature all drop; the registration survives.
     /// Re-censuses the host floor, alone when `alone` ([`Self::census`]).
     fn evict(&self, victims: &[PathBuf], alone: bool) {
-        {
+        let removed_engines: Vec<_> = {
             let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-            for key in victims {
-                engines.remove(key);
-            }
-        }
+            victims
+                .iter()
+                .filter_map(|key| engines.remove(key))
+                .collect()
+        };
+        drop(removed_engines);
         // Feed and memo leave their maps under the locks and die OUTSIDE
         // them: the feed's Drop releases a kernel stream, and unbinding a
         // memo's stamps takes the memo lock — no path takes a memo lock
@@ -4549,12 +4577,14 @@ impl Registry {
                 stores.remove(key);
             }
         }
-        {
+        let removed_modules: Vec<_> = {
             let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
-            for key in victims {
-                modules.remove(key);
-            }
-        }
+            victims
+                .iter()
+                .filter_map(|key| modules.remove(key))
+                .collect()
+        };
+        drop(removed_modules);
         {
             let mut signatures = self
                 .prewarm_signatures
@@ -5211,6 +5241,7 @@ mod engine_tests {
             &engine,
             "SELECT path FROM doc ORDER BY path",
             &|| false,
+            None,
         )
         .expect("the call answers");
         let wire::ResponseBody::Sql {
@@ -6987,6 +7018,88 @@ mod engine_tests {
         assert_eq!(store_limit(&store).unwrap(), "16.0 MiB");
     }
 
+    /// A retired store carrying a previous escalation rung must recover
+    /// before inspecting `rung()` or raising `memory_limit`: retries while an
+    /// outstanding read drains must reserve zero controller budget, and once
+    /// the read drops the reopened store runs at steady with `rung() == None`.
+    #[test]
+    fn retired_store_with_rung_recovers_without_reserving_or_stamping_stale_rung() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_at_16_mib(&dir);
+        let docs: model::Docs = [(
+            "a.md".to_owned(),
+            Arc::new(model::build("# A\n".to_owned(), syntax::parse("# A\n"))),
+        )]
+        .into_iter()
+        .collect();
+        store
+            .sync(
+                &docs,
+                &model::RootedCorpus::ambient(&docs),
+                None,
+                None,
+                "b3b:v1",
+                None,
+            )
+            .expect("cold");
+        store.set_rung(Some(32 << 20));
+        let shared = Arc::new(Mutex::new(store));
+        let outstanding = shared
+            .lock()
+            .unwrap()
+            .begin_held_read(&shared)
+            .expect("open read");
+        // Retire the instance while `outstanding` still holds it.
+        let _ = shared.lock().unwrap().query("SET lock_configuration=true");
+        assert!(shared.lock().unwrap().is_retired());
+
+        let controller = crate::residency::controller::Controller::new(1 << 30);
+        let escalation = crate::residency::SqlEscalation::new(Some(controller.clone()), 64 << 20);
+        for _ in 0..5 {
+            let mut guard = shared.lock().unwrap();
+            let err = escalation
+                .run(&mut guard, |s| {
+                    s.sync(
+                        &docs,
+                        &model::RootedCorpus::ambient(&docs),
+                        None,
+                        None,
+                        "b3b:v2",
+                        None,
+                    )
+                })
+                .expect_err("retired with outstanding read refuses");
+            assert!(matches!(err.error, view::ViewError::Busy(_)), "{err:?}");
+            assert_eq!(
+                controller.report().reserved,
+                0,
+                "retries against a retired store must not reserve or park controller budget"
+            );
+        }
+
+        drop(outstanding);
+        let mut guard = shared.lock().unwrap();
+        escalation
+            .run(&mut guard, |s| {
+                s.sync(
+                    &docs,
+                    &model::RootedCorpus::ambient(&docs),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None,
+                )
+            })
+            .expect("reopens and appends at steady limit");
+        assert!(!guard.is_retired());
+        assert_eq!(controller.report().reserved, 0);
+        assert_eq!(
+            guard.rung(),
+            None,
+            "reopened steady-limit append must not carry the retired instance's rung"
+        );
+    }
+
     /// The suspicious-only door piggybacks on the next borrow: a named
     /// overflow marks all-dirty, the next `domain_cache` climb is the sweep
     /// rung (memo kept), and the record names the cause. No timer fires.
@@ -7924,6 +8037,88 @@ mod engine_tests {
         );
     }
 
+    /// Publishing a rebuilt generation releases `WarmFlightGuard` BEFORE
+    /// dropping the replaced `Arc<WorkspaceEngine>`, so a warm-flight waiter
+    /// serves the published generation immediately without waiting on the old
+    /// generation's teardown.
+    #[test]
+    fn warm_flight_waiter_is_released_before_replaced_engine_drops() {
+        // Always unblock the drop hook on unwind so the leader thread exits cleanly.
+        struct ReleaseOnDrop(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A v1\n"), ("b.md", "# B\n")]);
+        reg.warm_or_build(&ws).unwrap();
+        rewrite(&ws, "a.md", "# A v2\n");
+
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release_insert, release_insert_rx) = std::sync::mpsc::channel();
+        *reg.pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_insert_rx));
+
+        let (dropping_tx, dropping_rx) = std::sync::mpsc::channel();
+        let (release_drop, release_drop_rx) = std::sync::mpsc::channel();
+        let mut drop_guard = ReleaseOnDrop(Some(release_drop));
+
+        let leader = {
+            let reg = Arc::clone(&reg);
+            let ws = ws.clone();
+            std::thread::spawn(move || {
+                let mut hook = Some((dropping_tx, release_drop_rx));
+                crate::engine::drop_test::ON_DROP.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(move || {
+                        if let Some((tx, rx)) = hook.take() {
+                            let _ = tx.send(());
+                            let _ = rx.recv();
+                        }
+                    }));
+                });
+                let out = reg.warm_generation(&ws);
+                crate::engine::drop_test::ON_DROP.with(|slot| {
+                    *slot.borrow_mut() = None;
+                });
+                out
+            })
+        };
+
+        arrived.recv().expect("the rebuild reached the pause gate");
+        let waiter = warm_on_a_thread(&reg, &ws);
+        until_flight_waits(&reg, 1);
+
+        release_insert
+            .send(())
+            .expect("the rebuild parked on the gate");
+        dropping_rx
+            .recv_timeout(ANSWERS)
+            .expect("the leader entered drop(replaced)");
+
+        // While the leader is still parked inside drop(replaced), the waiter
+        // must already wake and serve the newly published generation.
+        let (waiter_outcome, served) = waiter
+            .recv_timeout(Duration::from_secs(2))
+            .expect("warm-flight waiter must be released before replaced engine finishes dropping")
+            .unwrap();
+        assert_eq!(waiter_outcome, WarmOutcome::Reused);
+
+        // Now let the replaced generation finish dropping.
+        let _ = drop_guard.0.take().unwrap().send(());
+        let (leader_outcome, built) = leader.join().expect("leader thread panicked").unwrap();
+        assert_eq!(leader_outcome, WarmOutcome::Built { docs: 1 });
+        assert!(
+            Arc::ptr_eq(&built, &served),
+            "the waiter serves the very generation the rebuild published"
+        );
+    }
+
     /// The other end of that wait, at a new fold: the rebuild a warm waited
     /// on lost its insert to v3, and by then disk is at v4 with another
     /// caller rebuilding it. The waiter serves nothing stamped with another
@@ -8847,5 +9042,56 @@ mod engine_tests {
             .root(&::fs::WorkspaceRoot(canonical.clone()))
             .unwrap();
         assert_eq!(after, truth, "the named document is served as on disk");
+    }
+
+    /// Replacing a warm generation in `warm_generation` drops the previous
+    /// `Arc<WorkspaceEngine>` AFTER releasing `self.engines.write()`, so a
+    /// concurrent `cold_gate` / `engine_snapshot` reader is never blocked
+    /// behind the old generation's teardown.
+    #[test]
+    fn warm_generation_drops_replaced_engine_outside_engines_write_lock() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("notes/plan.md", &plan_page("August"))]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical).unwrap();
+
+        fs::write(canonical.join("notes/plan.md"), plan_page("September")).unwrap();
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let reader_saw_unlocked = Arc::new(AtomicBool::new(false));
+        let reg_cb = Arc::clone(&reg);
+        let canonical_cb = canonical.clone();
+        let drops_cb = Arc::clone(&drops);
+        let unlocked_cb = Arc::clone(&reader_saw_unlocked);
+
+        crate::engine::drop_test::ON_DROP.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                drops_cb.fetch_add(1, Ordering::SeqCst);
+                if reg_cb.engine_snapshot_nowait(&canonical_cb).is_some() {
+                    unlocked_cb.store(true, Ordering::SeqCst);
+                }
+            }));
+        });
+
+        let outcome = reg.warm_or_build(&canonical);
+
+        crate::engine::drop_test::ON_DROP.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+
+        outcome.unwrap();
+        assert!(
+            drops.load(Ordering::SeqCst) >= 1,
+            "the replaced WorkspaceEngine dropped during warm_or_build"
+        );
+        assert!(
+            reader_saw_unlocked.load(Ordering::SeqCst),
+            "engine_snapshot_nowait must succeed while the replaced generation drops \
+             (self.engines.write() must already be released)"
+        );
     }
 }

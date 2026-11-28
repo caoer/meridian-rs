@@ -228,6 +228,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                 (Some(world), None) => entry_row(
                     &**world,
                     registry.residency_controller(),
+                    modules.as_deref(),
                     &target.page,
                     &invocation,
                     |page| {
@@ -289,11 +290,15 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 /// before the row runs (merkle-spec §6.8). A block's Starlark and `bash()`
 /// execute with no body of the generation pinned, and the row keeps no parse
 /// tree of the page. Under a residency host, `charge` is its controller and
-/// the copy is a floor charge from the copy until the row ends. Every arm
-/// answers on the row, so its siblings still report for themselves.
+/// every live copy carries a measured floor charge until its allocation is
+/// destroyed — until the row ends when uncached, or until the last reference
+/// drops on replacement, cache clear, or workspace eviction when cached in
+/// `modules` (merkle-spec §6.4). Every arm answers on the row, so its siblings
+/// still report for themselves.
 fn entry_row(
     world: &dyn model::catalog::DocumentCatalog,
     charge: Option<&crate::residency::controller::Controller>,
+    modules: Option<&crate::run_modules::WorkspaceModules>,
     page: &str,
     invocation: &str,
     row: impl FnOnce(&modes::Page) -> Value,
@@ -306,19 +311,52 @@ fn entry_row(
             "fault": {"class": class, "reason": reason},
         })
     };
+    if let (Some(modules), Some(rev)) = (modules, world.revision(page))
+        && let Some(cached) = modules.get_page(page, &rev.0)
+    {
+        // A cached copy already carries its own floor charge for its full
+        // lifetime; take a per-row charge only if the cache entry was
+        // populated without a controller.
+        let fallback_charge =
+            (!cached.is_charged())
+                .then_some(charge)
+                .flatten()
+                .and_then(|controller| {
+                    controller
+                        .charge_floor(cached.page().heap_bytes())
+                        .inspect_err(|error| {
+                            timing::say!("run: a page copy was not charged: {error}");
+                        })
+                        .ok()
+                });
+        let answer = row(cached.page());
+        drop(cached);
+        drop(fallback_charge);
+        return answer;
+    }
     match model::catalog::read(world, page, modes::Page::of) {
         Ok(Some(copied)) => {
-            // Under a residency host the copy is a floor charge for the
-            // row's life; the copy is destroyed before its charge ends.
+            // Under a residency host every live page copy carries a measured
+            // floor charge until its allocation is destroyed (merkle-spec
+            // §6.4). Pairing `Page` and `Floor` inside `Arc<CachedPage>` (with
+            // `Page` dropped before `Floor`) holds the charge for the row's
+            // life when uncached, and across cache hits and in-flight rows
+            // until the last reference drops when cached in `modules`.
             let charged = charge.and_then(|controller| {
                 controller
                     .charge_floor(copied.heap_bytes())
                     .inspect_err(|error| timing::say!("run: a page copy was not charged: {error}"))
                     .ok()
             });
-            let answer = row(&copied);
-            drop(copied);
-            drop(charged);
+            let cached = std::sync::Arc::new(crate::run_modules::CachedPage::new(copied, charged));
+            let cached = match modules {
+                Some(modules) if charge.is_none() || cached.is_charged() => {
+                    modules.put_page(page.to_owned(), cached)
+                }
+                _ => cached,
+            };
+            let answer = row(cached.page());
+            drop(cached);
             answer
         }
         // The pinned corpus does not carry this page.
@@ -785,6 +823,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let row = entry_row(
             &world,
             None,
+            None,
             "HOOKS.md",
             "inv-t0",
             |page| json!({"pinned_page": *page == modes::Page::of(&docs["HOOKS.md"])}),
@@ -795,8 +834,170 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             (1, 0),
             "the row serves this one page: an interactive lease, not a scan pin"
         );
-        let absent = entry_row(&world, None, "gone.md", "inv-t1", |_| json!("ran"));
+        let absent = entry_row(&world, None, None, "gone.md", "inv-t1", |_| json!("ran"));
         assert_eq!(absent["fault"]["class"], "bad_path", "{absent:#}");
+    }
+
+    /// A cached page copy obeys the residency floor-charge law (merkle-spec
+    /// §6.4): its floor charge stays held for as long as the copy lives in
+    /// `WorkspaceModules` or in an in-flight row, cache hits reuse that charge
+    /// without re-pinning or double-counting, an edit replaces the superseded
+    /// revision and releases its charge once any in-flight row ends, and
+    /// dropping `WorkspaceModules` releases every cached page's charge.
+    #[test]
+    fn a_warm_mode_row_caches_its_page_under_a_floor_charge_for_its_full_lifetime() {
+        use crate::entry_fixture::{Entry, docs};
+        use crate::residency::controller::Controller;
+        use crate::run_modules::WorkspaceModules;
+
+        let d1 = docs(&[("HOOKS.md", HOOKS)]);
+        let w1 = Entry::new(&d1);
+        let modules = WorkspaceModules::default();
+        let controller = Controller::new(0);
+        let _other = controller.charge_floor(1).unwrap();
+        let base_floor = controller.report().floor;
+        let copy1 = modes::Page::of(&d1["HOOKS.md"]).heap_bytes();
+        let fire = |w: &Entry<'_>, inv: &str| {
+            entry_row(
+                w,
+                Some(&controller),
+                Some(&modules),
+                "HOOKS.md",
+                inv,
+                |p| json!({"rev": p.file_rev(), "floor": controller.report().floor}),
+            )
+        };
+
+        let first = fire(&w1, "inv-t0");
+        assert_eq!(w1.reads(), 1, "first fire pins and copies once");
+        assert_eq!(first["floor"], json!(base_floor + copy1));
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy1,
+            "cached page copy stays charged in floor after row ends"
+        );
+
+        let second = fire(&w1, "inv-t1");
+        assert_eq!(
+            w1.reads(),
+            1,
+            "second fire at the same file_rev hits the page cache without re-pinning"
+        );
+        assert_eq!(second["rev"], first["rev"]);
+        assert_eq!(
+            second["floor"],
+            json!(base_floor + copy1),
+            "cache hit reuses the cached copy's floor charge without double-counting"
+        );
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy1,
+            "floor charge stays held while the copy stays cached"
+        );
+
+        // An edited page has a new file_rev, misses the cache, and replaces
+        // the superseded revision so only one copy per page stays charged.
+        let d2 = docs(&[("HOOKS.md", HOOKS_EDITED)]);
+        let w2 = Entry::new(&d2);
+        let copy2 = modes::Page::of(&d2["HOOKS.md"]).heap_bytes();
+        let edited = fire(&w2, "inv-t2");
+        assert_eq!(w2.reads(), 1, "edited file_rev misses and re-reads once");
+        assert_ne!(edited["rev"], first["rev"]);
+        assert_eq!(
+            edited["floor"],
+            json!(base_floor + copy2),
+            "replacing a page drops the superseded revision and its floor charge"
+        );
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy2,
+            "only the latest revision stays charged after replacement"
+        );
+
+        // While an in-flight row holds the previous cached copy and another
+        // row replaces the cache entry, both live copies stay charged until
+        // the in-flight row drops its reference.
+        let overlap = entry_row(
+            &w2,
+            Some(&controller),
+            Some(&modules),
+            "HOOKS.md",
+            "inv-t3",
+            |_| {
+                let inner = fire(&w1, "inv-t4")["floor"].clone();
+                json!({"inner": inner, "outer_after_replace": controller.report().floor})
+            },
+        );
+        assert_eq!(
+            overlap["inner"],
+            json!(base_floor + copy2 + copy1),
+            "both the replaced in-flight copy and the new cached copy are charged"
+        );
+        assert_eq!(
+            overlap["outer_after_replace"],
+            json!(base_floor + copy2 + copy1),
+            "the replaced copy's charge stays held until the in-flight row drops it"
+        );
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy1,
+            "once the in-flight row ends, only the cached copy remains charged"
+        );
+
+        // Dropping the workspace module cache (eviction / unregister) releases
+        // every cached page copy and its floor charge.
+        drop(modules);
+        assert_eq!(
+            controller.report().floor,
+            base_floor,
+            "dropping WorkspaceModules releases every cached page floor charge"
+        );
+    }
+
+    /// Validated preludes are cached in `WorkspaceModules` across warm fires,
+    /// while an invalid prelude is never cached and still refuses `prelude_invalid`.
+    #[test]
+    fn a_warm_fire_caches_valid_prelude_and_refuses_invalid_prelude() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+
+        let valid_prelude = "def helper(x):\n    return x\n";
+        let mut f1 = fire_frame(1);
+        f1.insert("prelude".into(), json!(valid_prelude));
+        let out1 = rows(&serve_line(&reg, Some(&canonical), &f1, Rev::V3));
+        assert_eq!(out1[0]["result"], "ok", "{out1:?}");
+
+        let limits = EvalLimits::default();
+        let key = format!(
+            "{}:{}:{}",
+            blake3::hash(valid_prelude.as_bytes()).to_hex(),
+            limits.fuel,
+            limits.mem
+        );
+        let modules = reg.modules(&canonical);
+        assert!(
+            modes::ModuleCache::prelude_ok(&*modules, &key),
+            "first fire cached the validated prelude key"
+        );
+
+        let mut f2 = fire_frame(2);
+        f2.insert("prelude".into(), json!(valid_prelude));
+        let out2 = rows(&serve_line(&reg, Some(&canonical), &f2, Rev::V3));
+        assert_eq!(out2[0]["result"], "ok", "{out2:?}");
+
+        let mut bad = fire_frame(3);
+        bad.insert("prelude".into(), json!("def broken(:\n"));
+        let out_bad = rows(&serve_line(&reg, Some(&canonical), &bad, Rev::V3));
+        assert_eq!(out_bad[0]["result"], "refused", "{out_bad:?}");
+        assert_eq!(
+            out_bad[0]["fault"]["class"], "prelude_invalid",
+            "{out_bad:?}"
+        );
     }
 
     /// The row runs after its lease has ended: with a controller behind the
@@ -814,7 +1015,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let world = Catalog::capture(&docs, &controller, &store).unwrap();
         let expected = modes::Page::of(&docs["HOOKS.md"]);
         drop(docs);
-        let row = entry_row(&world, None, "HOOKS.md", "inv-t0", |page| {
+        let row = entry_row(&world, None, None, "HOOKS.md", "inv-t0", |page| {
             assert_eq!(*page, expected);
             let report = controller.report();
             let nested = model::catalog::read(&world, "other.md", |other| other.raw.len());
@@ -841,9 +1042,14 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // grows for the row's charge nor shrinks when it ends.
         let _other = controller.charge_floor(1).unwrap();
         let before = controller.report().floor;
-        let during = entry_row(&world, Some(&controller), "HOOKS.md", "inv-t0", |_| {
-            json!(controller.report().floor)
-        });
+        let during = entry_row(
+            &world,
+            Some(&controller),
+            None,
+            "HOOKS.md",
+            "inv-t0",
+            |_| json!(controller.report().floor),
+        );
         assert_eq!(
             during,
             json!(before + copy),
@@ -869,7 +1075,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             (Fault::Transient, "workspace_busy"),
         ] {
             world.fail(fault);
-            let row = entry_row(&world, None, "HOOKS.md", "inv-t0", |_| {
+            let row = entry_row(&world, None, None, "HOOKS.md", "inv-t0", |_| {
                 panic!("{fault:?}: the row ran without its pinned page")
             });
             assert_eq!(row["result"], "refused", "{fault:?}: {row:#}");
@@ -886,7 +1092,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // The sibling row of the same submission still answers for itself.
         world.fail(Fault::None);
         assert_eq!(
-            entry_row(&world, None, "HOOKS.md", "inv-t1", |_| json!("ran")),
+            entry_row(&world, None, None, "HOOKS.md", "inv-t1", |_| json!("ran")),
             json!("ran")
         );
     }

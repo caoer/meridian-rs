@@ -184,3 +184,109 @@ fn a_caller_that_half_closes_still_gets_its_answer() {
          for the watcher to have looked; lengthen SPIN"
     );
 }
+
+/// End-to-end over a real daemon socket: a connected caller runs an endless
+/// query; a second caller retires the sql cache (`SET lock_configuration=true`).
+/// The retirement interrupts the still-connected caller instead of leaving
+/// every subsequent `sql` stuck on "sql cache instance retired with
+/// outstanding reads" until process restart, and the next caller recovers and
+/// answers rows.
+#[test]
+fn a_retired_cache_interrupts_connected_sql_and_recovers_without_restart() {
+    let tmp = TempDir::new().unwrap();
+    let ws = workspace(&tmp);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let socket = server.socket_path().to_path_buf();
+    let (mut other, mut other_reader) = bound(&socket, &ws);
+
+    let store = server
+        .registry()
+        .sql_store(&std::fs::canonicalize(&ws).unwrap())
+        .unwrap();
+    let reads_open = || {
+        !store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .wait_for_reads(Duration::ZERO)
+    };
+
+    // Client 1 stays connected throughout (no hangup).
+    let (mut holder, mut holder_reader) = bound(&socket, &ws);
+    send(
+        &mut holder,
+        &json!({"id": 2, "op": "sql", "query": ENDLESS_SQL}),
+    );
+    assert!(
+        until(Duration::from_secs(30), reads_open),
+        "holder never opened a read on the workspace's cache"
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(reads_open(), "holder ended on its own");
+
+    // Client 2 retires the instance via one-way `lock_configuration=true`.
+    let (mut retirer, mut retirer_reader) = bound(&socket, &ws);
+    send(
+        &mut retirer,
+        &json!({"id": 3, "op": "sql", "query": "SET lock_configuration=true"}),
+    );
+    let retire_answer = receive(&mut retirer_reader);
+    assert_eq!(retire_answer["ok"], false, "{retire_answer}");
+    assert_eq!(
+        retire_answer["error"]["code"], "workspace_busy",
+        "{retire_answer}"
+    );
+
+    // Client 1 (still connected!) is interrupted and answered promptly instead
+    // of holding the retired instance open for hours.
+    let retired_at = Instant::now();
+    assert!(
+        until(STOP_BOUND, || !reads_open()),
+        "connected sql still holds the retired cache {:?} after retirement",
+        retired_at.elapsed()
+    );
+    let holder_answer = receive(&mut holder_reader);
+    assert_eq!(holder_answer["ok"], false, "{holder_answer}");
+    assert_eq!(
+        holder_answer["error"]["code"], "workspace_busy",
+        "{holder_answer}"
+    );
+
+    // Client 3 recovers the retired instance transparently and serves rows.
+    send(
+        &mut other,
+        &json!({"id": 4, "op": "sql", "query": "SELECT 7"}),
+    );
+    let answer = receive(&mut other_reader);
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["body"]["rows"], json!([[7]]), "{answer}");
+}
+
+#[test]
+fn slow_op_line_carries_peer_pid_and_query_hash() {
+    let (a, _b) = UnixStream::pair().unwrap();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert_eq!(super::peer_pid(&a), Some(std::process::id()));
+
+    let ledger = timing::op::begin();
+    let hash = view::store::query_hash("SELECT 1");
+    let line = super::slow_op_line(
+        "sql",
+        Duration::from_secs(6),
+        Some(Path::new("/ws")),
+        &ledger,
+        super::SlowOpMeta {
+            peer_pid: Some(12345),
+            query_hash: Some(&hash),
+        },
+        std::time::SystemTime::now(),
+    )
+    .expect("over threshold");
+    assert!(
+        line.contains(" peer_pid=12345 "),
+        "peer_pid missing from slow-op line: {line}"
+    );
+    assert!(
+        line.contains(&format!(" query_hash={hash} ")),
+        "query_hash missing from slow-op line: {line}"
+    );
+}
