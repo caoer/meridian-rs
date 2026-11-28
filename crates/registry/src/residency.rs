@@ -362,6 +362,16 @@ impl SqlEscalation {
         let Some(steady) = store.memory_limit() else {
             return append(store).map_err(|error| AppendFailure { limit: None, error });
         };
+        // Recover a retired instance before inspecting `rung()` or raising
+        // `memory_limit`: otherwise retries against a retired store with
+        // outstanding reads reserve and park controller budget on every
+        // attempt, and a reopen during `append` would discard the raise.
+        if let Err(error) = store.recover_retired() {
+            return Err(AppendFailure {
+                limit: Some(steady),
+                error,
+            });
+        }
         let mut limit = steady;
         let mut first = None;
         if let Some(rung) = store
@@ -383,6 +393,15 @@ impl SqlEscalation {
                         .raise_memory_limit(rung, reservation)
                         .and_then(|mut raised| append(&mut raised)),
                 );
+                if let Some(state) = store.take_retire_log() {
+                    timing::say!(
+                        "sql-cache: retiring {} reason={:?} outstanding_reads={} {}",
+                        store.file().display(),
+                        state.reason,
+                        state.outstanding_handles,
+                        state.format_reads(),
+                    );
+                }
             }
         }
         let first = first.unwrap_or_else(|| append(store));
@@ -435,6 +454,15 @@ impl SqlEscalation {
             let attempt = store
                 .raise_memory_limit(limit, reservation)
                 .and_then(|mut raised| append(&mut raised));
+            if let Some(state) = store.take_retire_log() {
+                timing::say!(
+                    "sql-cache: retiring {} reason={:?} outstanding_reads={} {}",
+                    store.file().display(),
+                    state.reason,
+                    state.outstanding_handles,
+                    state.format_reads(),
+                );
+            }
             error = match attempt {
                 Ok(done) => {
                     store.set_rung(Some(limit));

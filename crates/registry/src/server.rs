@@ -112,13 +112,30 @@ pub(crate) const SLOW_OP_LOG: Duration = Duration::from_secs(5);
 /// `started_unix_ms` is the wall clock at print minus the duration: the log
 /// file carries no timestamps of its own, and this is what matches the line to
 /// the caller's log.
+/// Optional attribution fields carried onto a `slow op` log line.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SlowOpMeta<'a> {
+    pub(crate) peer_pid: Option<u32>,
+    pub(crate) query_hash: Option<&'a str>,
+}
+
 pub(crate) fn log_slow_op(
     op: &str,
     elapsed: Duration,
     attached: Option<&Path>,
     ledger: &timing::op::Ledger,
 ) {
-    if let Some(line) = slow_op_line(op, elapsed, attached, ledger, SystemTime::now()) {
+    log_slow_op_with_meta(op, elapsed, attached, ledger, SlowOpMeta::default());
+}
+
+pub(crate) fn log_slow_op_with_meta(
+    op: &str,
+    elapsed: Duration,
+    attached: Option<&Path>,
+    ledger: &timing::op::Ledger,
+    meta: SlowOpMeta<'_>,
+) {
+    if let Some(line) = slow_op_line(op, elapsed, attached, ledger, meta, SystemTime::now()) {
         #[cfg(test)]
         slow_op_test::LINES.with(|lines| lines.borrow_mut().push(line.clone()));
         timing::say!("{line}");
@@ -156,8 +173,11 @@ fn slow_op_line(
     elapsed: Duration,
     attached: Option<&Path>,
     ledger: &timing::op::Ledger,
+    meta: SlowOpMeta<'_>,
     now: SystemTime,
 ) -> Option<String> {
+    use std::fmt::Write as _;
+
     if elapsed < slow_op_threshold() {
         return None;
     }
@@ -166,9 +186,16 @@ fn slow_op_line(
         .checked_sub(elapsed)
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let mut attrs = String::new();
+    if let Some(pid) = meta.peer_pid {
+        let _ = write!(attrs, " peer_pid={pid}");
+    }
+    if let Some(hash) = meta.query_hash {
+        let _ = write!(attrs, " query_hash={hash}");
+    }
     Some(format!(
         "registry: slow op {op} duration_us={duration_us} started_unix_ms={started_unix_ms} \
-         on {} phases_us[{}] — total time in dispatch, any wait for a contended resource \
+         on {}{attrs} phases_us[{}] — total time in dispatch, any wait for a contended resource \
          included; phases nest and do not sum (docs/run-plane.md § The slow-op line)",
         attached.map_or_else(|| "<unattached>".to_string(), |p| p.display().to_string()),
         ledger.render(),
@@ -2125,6 +2152,62 @@ pub(crate) fn caller_left(stream: &UnixStream) -> bool {
     ready > 0 && (pfd.revents & (libc::POLLHUP | libc::POLLERR)) != 0
 }
 
+/// Process id of the Unix-socket peer, when the kernel exposes it.
+/// Best-effort attribution for `slow op` and retired-cache wait logs.
+pub(crate) fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = u32::try_from(size_of::<libc::ucred>()).ok()?;
+        // SAFETY: `cred` is a live `libc::ucred`, `len` holds its byte size,
+        // and `stream`'s fd is open for the duration of the syscall.
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &raw mut len,
+            )
+        };
+        if rc == 0 && cred.pid > 0 {
+            return u32::try_from(cred.pid).ok();
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut pid: libc::pid_t = 0;
+        let mut len = u32::try_from(size_of::<libc::pid_t>()).ok()?;
+        // `SOL_LOCAL` is 0 in Darwin `<sys/un.h>`.
+        const SOL_LOCAL: libc::c_int = 0;
+        // SAFETY: `pid` is a live `libc::pid_t`, `len` holds its byte size,
+        // and `stream`'s fd is open for the duration of the syscall.
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&raw mut pid).cast(),
+                &raw mut len,
+            )
+        };
+        if rc == 0 && pid > 0 {
+            return u32::try_from(pid).ok();
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = stream;
+        None
+    }
+}
+
 /// Route one frame by `op` and render the `\n`-terminated response line.
 ///
 /// Wire classes project per negotiated `rev`: v3 re-keys request before decode
@@ -2478,16 +2561,25 @@ fn serve_wire(
     let (body, duration_us) = match wire_serve::decode::decode(obj, rev) {
         Ok(op) => {
             // U7: dispatch call alone (after decode, before render).
+            let sql_hash = match &op {
+                Op::Sql { query } => Some(view::store::query_hash(query)),
+                _ => None,
+            };
+            let client_pid = peer.and_then(peer_pid);
             let ledger = timing::op::begin();
             let started = Instant::now();
             let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3, peer);
             let elapsed = started.elapsed();
             let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-            log_slow_op(
+            log_slow_op_with_meta(
                 obj.get("op").and_then(Value::as_str).unwrap_or("?"),
                 elapsed,
                 attached,
                 &ledger,
+                SlowOpMeta {
+                    peer_pid: client_pid,
+                    query_hash: sql_hash.as_deref(),
+                },
             );
             (body, Some(duration_us))
         }
@@ -2838,9 +2930,15 @@ fn dispatch_read(
             let (_, engine) = registry
                 .warm_generation(ws)
                 .map_err(|e| warm_err_to_wire(&e))?;
-            crate::sql_op::serve(registry, ws, &engine, &query, &|| {
-                peer.is_some_and(caller_left)
-            })
+            let client_pid = peer.and_then(peer_pid);
+            crate::sql_op::serve(
+                registry,
+                ws,
+                &engine,
+                &query,
+                &|| peer.is_some_and(caller_left),
+                client_pid,
+            )
         }
         // U20b §4.7 push channel. Arm here; convert after ack (`serve_conn`).
         // S2: stands behind the same bind + deny ceiling as composed reads.

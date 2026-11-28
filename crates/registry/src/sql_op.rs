@@ -151,6 +151,17 @@ const _: () = assert!(
 /// be wrong about.
 const SQL_STORE_POLL: Duration = Duration::from_millis(10);
 
+/// How long [`serve`] waits under the store lock for already-interrupted reads
+/// on a retired instance to drop before returning `workspace_busy`. Long enough
+/// for an interrupted `DuckDB` query to unwind and drop (`~50–150 ms`), short
+/// enough to stay far below [`SQL_STORE_WAIT`] (8 s).
+const RETIRED_DRAIN_WAIT: Duration = Duration::from_millis(500);
+
+/// Minimum interval between repeated engine-log lines naming the reads holding
+/// a retired cache open, so a busy-retry storm emits one attribution line per
+/// second rather than flooding the daemon log.
+const RETIRED_WAIT_LOG_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Acquire the workspace's `SqlStore` under [`SQL_STORE_WAIT`], or refuse
 /// `lock_timeout` (retry class — "same request may succeed", v2 §8).
 ///
@@ -240,6 +251,7 @@ pub(crate) fn serve(
     engine: &crate::engine::WorkspaceEngine,
     query: &str,
     caller_left: &(dyn Fn() -> bool + Sync),
+    peer_pid: Option<u32>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     // THE HOLD, AND ITS END. The mutex covers the append and the opening of
     // this call's own read — nothing else. `begin_read` clones a connection off
@@ -251,24 +263,42 @@ pub(crate) fn serve(
     // queued behind the slowest one (measured: 350.6 s against a 351.6 s
     // holder, while the same probe on a DIFFERENT workspace served in 70 ms
     // through the same daemon).
-    let read = with_appender(registry, ws, engine, |append| {
+    let (store, read) = with_appender(registry, ws, engine, |append| {
         // The registry's least-recently-used close counts a query as holding
         // the cache through this `Arc`. The read below takes its own clone of
-        // it (`begin_held_read`), so the cache stays held until the read ends
-        // (merkle-spec §6.4).
+        // it (`begin_held_read_for`), so the cache stays held until the read
+        // ends (merkle-spec §6.4).
         let store = registry
             .sql_store(ws)
             .map_err(|e| io_error(format!("cannot open the sql cache: {e}")))?;
         let mut guard = lock_store_bounded(&store, ws, SQL_STORE_WAIT)?;
+        recover_retired_for_serve(&mut guard)?;
         append_escalating(registry, &mut guard, append)?;
-        guard
-            .begin_held_read(&store)
-            .map_err(|e| store_error("cannot open a read on the sql cache", e))
+        let read = guard
+            .begin_held_read_for(&store, peer_pid)
+            .map_err(|e| store_error("cannot open a read on the sql cache", e))?;
+        drop(guard);
+        Ok((store, read))
     })?;
 
-    let result = read
-        .run_until(query, caller_left)
-        .map_err(|e| store_error("cannot query the sql cache", e))?;
+    let result = match read.run_until(query, caller_left) {
+        Ok(result) => result,
+        Err(error) => {
+            if let Ok(guard) = store.try_lock()
+                && let Some(state) = guard.take_retire_log()
+            {
+                timing::say!(
+                    "sql-cache: retiring {} reason={:?} outstanding_reads={} {}",
+                    guard.file().display(),
+                    state.reason,
+                    state.outstanding_handles,
+                    state.format_reads(),
+                );
+            }
+            return Err(store_error("cannot query the sql cache", error));
+        }
+    };
+    drop(store);
     let as_of = engine.at_fingerprint.0.clone();
 
     match result {
@@ -317,6 +347,54 @@ pub(crate) fn serve(
     }
 }
 
+/// When `store` is retired, log its retirement once, re-interrupt any open
+/// reads and wait briefly ([`RETIRED_DRAIN_WAIT`]) for them to drop, then
+/// reopen the instance — logging the reopen or a rate-limited list of the
+/// reads still holding it open.
+fn recover_retired_for_serve(store: &mut view::store::SqlStore) -> Result<(), Box<ErrorBody>> {
+    if !store.is_retired() {
+        return Ok(());
+    }
+    if let Some(state) = store.take_retire_log() {
+        timing::say!(
+            "sql-cache: retiring {} reason={:?} outstanding_reads={} {}",
+            store.file().display(),
+            state.reason,
+            state.outstanding_handles,
+            state.format_reads(),
+        );
+    }
+    store.interrupt_reads();
+    let _ = store.wait_for_reads(RETIRED_DRAIN_WAIT);
+    let before = store.retirement_state();
+    match store.recover_retired() {
+        Ok(()) => {
+            if let Some(state) = before {
+                timing::say!(
+                    "sql-cache: reopened retired {} after {}ms (reason={:?})",
+                    store.file().display(),
+                    state.retired_for_ms,
+                    state.reason,
+                );
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(state) = store.take_wait_log(RETIRED_WAIT_LOG_INTERVAL) {
+                timing::say!(
+                    "sql-cache: {} retired for {}ms (reason={:?}) waiting on {} outstanding read(s) {}",
+                    store.file().display(),
+                    state.retired_for_ms,
+                    state.reason,
+                    state.outstanding_handles,
+                    state.format_reads(),
+                );
+            }
+            Err(store_error("cannot append to the sql cache", error))
+        }
+    }
+}
+
 /// Test seam: warm `ws` and serve from the generation that warm returned, as
 /// the wire dispatch does.
 #[cfg(test)]
@@ -328,7 +406,7 @@ pub(crate) fn serve_warm(
     let (_, engine) = registry
         .warm_generation(ws)
         .map_err(|e| io_error(format!("cannot warm the corpus: {e}")))?;
-    serve(registry, ws, &engine, query, &|| false)
+    serve(registry, ws, &engine, query, &|| false, None)
 }
 
 /// One append to a cache of `ws`, from `engine`'s generation.
