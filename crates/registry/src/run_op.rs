@@ -873,9 +873,14 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // An edited page has a new file_rev and misses the cache.
         let d2 = docs(&[("HOOKS.md", HOOKS_EDITED)]);
         let w2 = Entry::new(&d2);
-        let edited = entry_row(&w2, None, Some(&modules), "HOOKS.md", "inv-t2", |page| {
-            json!({"rev": page.file_rev()})
-        });
+        let edited = entry_row(
+            &w2,
+            None,
+            Some(&modules),
+            "HOOKS.md",
+            "inv-t2",
+            |page| json!({"rev": page.file_rev()}),
+        );
         assert_eq!(w2.reads(), 1, "edited file_rev misses and re-reads once");
         assert_ne!(edited["rev"], first["rev"]);
     }
@@ -920,7 +925,10 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         bad.insert("prelude".into(), json!("def broken(:\n"));
         let out_bad = rows(&serve_line(&reg, Some(&canonical), &bad, Rev::V3));
         assert_eq!(out_bad[0]["result"], "refused", "{out_bad:?}");
-        assert_eq!(out_bad[0]["fault"]["class"], "prelude_invalid", "{out_bad:?}");
+        assert_eq!(
+            out_bad[0]["fault"]["class"], "prelude_invalid",
+            "{out_bad:?}"
+        );
     }
 
     /// The row runs after its lease has ended: with a controller behind the
@@ -965,9 +973,14 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // grows for the row's charge nor shrinks when it ends.
         let _other = controller.charge_floor(1).unwrap();
         let before = controller.report().floor;
-        let during = entry_row(&world, Some(&controller), None, "HOOKS.md", "inv-t0", |_| {
-            json!(controller.report().floor)
-        });
+        let during = entry_row(
+            &world,
+            Some(&controller),
+            None,
+            "HOOKS.md",
+            "inv-t0",
+            |_| json!(controller.report().floor),
+        );
         assert_eq!(
             during,
             json!(before + copy),
