@@ -70,10 +70,20 @@ impl Sandbox {
 
     /// `mrd daemon [--successor]` in the foreground, stdout piped.
     fn daemon(&self, successor: bool) -> Daemon {
+        self.daemon_with_residency(successor, None)
+    }
+
+    /// `mrd daemon [--successor]` with an optional `MRD_RESIDENCY_HOST_BYTES`.
+    fn daemon_with_residency(&self, successor: bool, residency_host_bytes: Option<u64>) -> Daemon {
         let mut command = common::mrd_command(&self.home, &self.cache_home);
         command.arg("daemon");
         if successor {
             command.arg("--successor");
+        }
+        if let Some(bytes) = residency_host_bytes {
+            command.env(registry::RESIDENCY_HOST_BYTES_ENV, bytes.to_string());
+        } else {
+            command.env_remove(registry::RESIDENCY_HOST_BYTES_ENV);
         }
         let mut child = command
             .env_remove("MRD_TIMING")
@@ -99,6 +109,13 @@ impl Sandbox {
             first_line,
             rest: Some(rest),
         }
+    }
+
+    fn backing_dir(&self) -> PathBuf {
+        self.cache_home
+            .join("meridian")
+            .join("registry")
+            .join("backing")
     }
 
     /// A connection bound to the workspace.
@@ -386,4 +403,175 @@ fn a_successor_takes_over_when_a_warmed_workspace_vanished_without_unregister() 
     let (status, rest) = new.stop();
     assert_eq!(status.code(), Some(0));
     assert_eq!(rest, "");
+}
+
+/// Names of `raw-*` store directories currently under `backing_dir`, sorted.
+fn backing_stores(backing_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(backing_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            name.starts_with("raw-").then_some(name)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Wait until a `raw-<pid>-*` store directory appears under `backing_dir` with
+/// at least one `.raw` segment file written inside it.
+fn wait_for_pid_backing(backing_dir: &Path, pid: u32) -> String {
+    let prefix = format!("raw-{pid}-");
+    let started = Instant::now();
+    loop {
+        if let Some(name) = backing_stores(backing_dir)
+            .into_iter()
+            .find(|n| n.starts_with(&prefix))
+        {
+            let dir = backing_dir.join(&name);
+            let has_segment = std::fs::read_dir(&dir).is_ok_and(|entries| {
+                entries.flatten().any(|e| {
+                    e.path()
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("raw"))
+                })
+            });
+            if has_segment {
+                return name;
+            }
+        }
+        assert!(
+            started.elapsed() < BUDGET,
+            "backing store for pid {pid} with segments never appeared in {} (saw {:?})",
+            backing_dir.display(),
+            backing_stores(backing_dir),
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Hold a partial request line open on `socket` so the resident daemon answers
+/// `busy` to handover asks instead of committing succession.
+fn stall_resident(sb: &Sandbox) -> UnixStream {
+    let mut stalled = sb.dial();
+    stalled
+        .write_all(br#"{"op": "toc", "#)
+        .expect("partial request writes");
+    // Longer than the daemon's connection park tick so the resident sees an
+    // in-flight request when handover drains.
+    thread::sleep(Duration::from_millis(300));
+    stalled
+}
+
+#[test]
+fn a_stopped_successor_removes_its_backing_store_and_leaves_the_serving_ones_alone() {
+    let sb = Sandbox::new();
+    let budget = 1 << 30;
+    let mut old = sb.daemon_with_residency(false, Some(budget));
+    wait_bound(&sb.socket());
+    warm_workspace(&sb.socket(), &sb.ws);
+    let old_store = wait_for_pid_backing(&sb.backing_dir(), old.child.id());
+
+    // Keep the resident busy so the successor warms its own backing store and
+    // stays pre-commit until SIGTERM arrives (the nyc-1 engine-swap shape).
+    let mut stalled = stall_resident(&sb);
+
+    let mut succ = sb.daemon_with_residency(true, Some(budget));
+    let succ_store = wait_for_pid_backing(&sb.backing_dir(), succ.child.id());
+    assert_ne!(succ_store, old_store);
+
+    // Stop the successor with SIGTERM as `ccc-statusd` does on swap timeout.
+    let stop_started = Instant::now();
+    let (status, rest) = succ.stop();
+    assert!(
+        stop_started.elapsed() < Duration::from_secs(5),
+        "successor took {:?} to exit on SIGTERM (past 5 s reap bound)",
+        stop_started.elapsed()
+    );
+    assert!(
+        !status.success(),
+        "stopped pre-commit successor must exit non-zero: {status}"
+    );
+    assert_eq!(
+        succ.first_line(),
+        "",
+        "stopped successor must not print serving"
+    );
+    assert_eq!(rest, "");
+
+    // Immediately after the successor exits, its backing store must be gone
+    // and the serving daemon's store must be untouched.
+    assert_eq!(
+        backing_stores(&sb.backing_dir()),
+        vec![old_store.clone()],
+        "stopped successor left a backing store behind (or touched the serving one)"
+    );
+
+    // Finish the stalled request and confirm the serving daemon still serves.
+    stalled
+        .write_all(b"\"path\": \"a.md\"}\n")
+        .expect("complete stalled request");
+    let mut line = String::new();
+    BufReader::new(stalled.try_clone().expect("clone"))
+        .read_line(&mut line)
+        .expect("stalled response");
+    let answer: Value = serde_json::from_str(&line).expect("json");
+    assert_eq!(answer["ok"], json!(true), "resident still serves: {answer}");
+    assert_eq!(
+        toc(&sb.dial())["ok"],
+        json!(true),
+        "fresh dial still serves"
+    );
+    assert_eq!(backing_stores(&sb.backing_dir()), vec![old_store]);
+
+    let (status, _) = old.stop();
+    assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn a_sigkilled_successors_backing_store_is_swept_by_the_next_successor() {
+    let sb = Sandbox::new();
+    let budget = 1 << 30;
+    let mut old = sb.daemon_with_residency(false, Some(budget));
+    wait_bound(&sb.socket());
+    warm_workspace(&sb.socket(), &sb.ws);
+    let old_store = wait_for_pid_backing(&sb.backing_dir(), old.child.id());
+
+    let _stalled = stall_resident(&sb);
+
+    // First successor warms, writes segments, then dies abruptly via SIGKILL.
+    let mut first = sb.daemon_with_residency(true, Some(budget));
+    let first_store = wait_for_pid_backing(&sb.backing_dir(), first.child.id());
+    first.child.kill().expect("SIGKILL first successor");
+    let _ = first.child.wait();
+    assert!(
+        sb.backing_dir().join(&first_store).is_dir(),
+        "SIGKILL leaves the dead successor's store on disk before the sweep"
+    );
+
+    // A second successor starting beside the serving daemon sweeps the dead
+    // predecessor's store while leaving the serving daemon's store intact.
+    let mut second = sb.daemon_with_residency(true, Some(budget));
+    let second_store = wait_for_pid_backing(&sb.backing_dir(), second.child.id());
+    assert!(
+        !sb.backing_dir().join(&first_store).exists(),
+        "dead SIGKILLed successor's store was swept on next successor start"
+    );
+    assert!(
+        sb.backing_dir().join(&old_store).is_dir(),
+        "serving engine's store remained untouched"
+    );
+
+    // Stopping the second successor with SIGTERM leaves only the resident's.
+    let (status, _) = second.stop();
+    assert!(!status.success());
+    assert!(!sb.backing_dir().join(&second_store).exists());
+    assert_eq!(backing_stores(&sb.backing_dir()), vec![old_store]);
+
+    let (status, _) = old.stop();
+    assert_eq!(status.code(), Some(0));
 }

@@ -146,14 +146,17 @@ pub(crate) fn run(successor: bool) -> Result<(), Fail> {
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     let cache_root = config.cache_root.clone();
     let server = if successor {
-        // No handler yet: a signal ends this process. Before the takeover
-        // commits that leaves the serving daemon untouched.
-        let server = RunningServer::succeed(config).map_err(|e| {
+        // Install handlers before warming/handover so a pre-commit SIGINT or
+        // SIGTERM interrupts `succeed_until`, removes this successor's own
+        // backing store promptly, and leaves the serving daemon untouched.
+        // A signal arriving after the commit falls through into the loop below
+        // and runs `server.shutdown()`.
+        install_signal_handlers();
+        let server = RunningServer::succeed_until(config, &SIGNALLED).map_err(|e| {
             Fail::tool(format!(
                 "cannot succeed the serving registry daemon, which keeps serving: {e}"
             ))
         })?;
-        install_signal_handlers();
         let mut stdout = io::stdout();
         let _ = writeln!(stdout, "serving");
         let _ = stdout.flush();

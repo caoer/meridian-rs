@@ -775,24 +775,78 @@ fn after_loss(socket: &Path) -> Offer {
     }
 }
 
+fn handover_interrupted() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "successor interrupted before handover",
+    )
+}
+
+/// Read the resident's answer line (and any descriptors attached to it),
+/// polling `stop` between short timeouts so a pre-commit signal aborts
+/// promptly. Returns `Ok(None)` when the resident closed or died mid-drain.
+fn read_answer_line(
+    stream: &UnixStream,
+    bytes: &mut Vec<u8>,
+    fds: &mut Vec<OwnedFd>,
+    stop: &AtomicBool,
+) -> io::Result<Option<usize>> {
+    let mut buf = [0u8; 4096];
+    let _ = stream.set_read_timeout(Some(PARK_TICK));
+    let line_end = loop {
+        if let Some(end) = bytes.iter().position(|b| *b == b'\n') {
+            break Some(end);
+        }
+        if stop.load(Ordering::SeqCst) {
+            fds.clear();
+            return Err(handover_interrupted());
+        }
+        match recv_with_fds(stream, &mut buf, fds) {
+            Ok(0) => {
+                fds.clear();
+                break None;
+            }
+            Ok(got) => bytes.extend_from_slice(&buf[..got]),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => return Err(e),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => {
+                fds.clear();
+                break None;
+            }
+        }
+    };
+    let _ = stream.set_read_timeout(None);
+    Ok(line_end)
+}
+
 /// Ask the daemon on `socket` to hand over to this process, which holds
-/// `warm` warm and `primed` rings pre-primed. `adopt_check` runs after
-/// `grant:true` arrives and before `adopted` is written; returning `false`
-/// declines adoption cleanly so the resident resumes and this process can
-/// resync.
+/// `warm` warm and `primed` rings pre-primed, stopping promptly before the
+/// commit if `stop` becomes `true`. `adopt_check` runs after `grant:true`
+/// arrives and before the final `stop` check and `adopted` write; returning
+/// `false` declines adoption cleanly so the resident resumes and this process
+/// can resync.
 ///
 /// Until the commit every received descriptor is a plain descriptor: closing
 /// one unlocks nothing and ends no connection the resident still serves.
 ///
 /// # Errors
-/// The resident does not speak `handover`, or descriptors were lost in
-/// transit: this process must not serve, and the resident serves on.
+/// `stop` was raised before the commit (`Interrupted`), the resident does not
+/// speak `handover`, or descriptors were lost in transit: this process must
+/// not serve, and the resident serves on.
 pub(crate) fn ask(
     socket: &Path,
     warm: &[PathBuf],
     primed: &[PathBuf],
+    stop: &AtomicBool,
     mut adopt_check: impl FnMut(&[SubscribedState]) -> bool,
 ) -> io::Result<Offer> {
+    if stop.load(Ordering::SeqCst) {
+        return Err(handover_interrupted());
+    }
     let Ok(stream) = UnixStream::connect(socket) else {
         return Ok(Offer::Absent);
     };
@@ -808,27 +862,8 @@ pub(crate) fn ask(
     // The answer line, with whatever descriptors rode it.
     let mut fds: Vec<OwnedFd> = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 4096];
-    // One read; `false` when the resident closed or died instead.
-    let mut read = |fds: &mut Vec<OwnedFd>, bytes: &mut Vec<u8>| -> io::Result<bool> {
-        match recv_with_fds(&stream, &mut buf, fds) {
-            Ok(0) => Ok(false),
-            Ok(got) => {
-                bytes.extend_from_slice(&buf[..got]);
-                Ok(true)
-            }
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => Err(e),
-            Err(_) => Ok(false),
-        }
-    };
-    let line_end = loop {
-        if let Some(end) = bytes.iter().position(|b| *b == b'\n') {
-            break end;
-        }
-        if !read(&mut fds, &mut bytes)? {
-            // The resident died mid-drain; nothing was passed.
-            return Ok(after_loss(socket));
-        }
+    let Some(line_end) = read_answer_line(&stream, &mut bytes, &mut fds, stop)? else {
+        return Ok(after_loss(socket));
     };
     let answer: Answer = serde_json::from_slice(&bytes[..line_end]).map_err(|e| {
         io::Error::new(
@@ -850,15 +885,28 @@ pub(crate) fn ask(
     }
     // Continuation messages carry the descriptors past the first message's.
     let expected = 2 + answer.conns.len();
+    let mut buf = [0u8; 4096];
     while fds.len() < expected {
-        if !read(&mut fds, &mut bytes)? {
-            // The resident died mid-grant.
-            drop(fds);
-            return Ok(after_loss(socket));
+        match recv_with_fds(&stream, &mut buf, &mut fds) {
+            Ok(0) => {
+                // The resident died mid-grant.
+                drop(fds);
+                return Ok(after_loss(socket));
+            }
+            Ok(got) => bytes.extend_from_slice(&buf[..got]),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => return Err(e),
+            Err(_) => {
+                drop(fds);
+                return Ok(after_loss(socket));
+            }
         }
     }
 
     if !adopt_check(&answer.subscribed) {
+        if stop.load(Ordering::SeqCst) {
+            drop(fds);
+            return Err(handover_interrupted());
+        }
         // Deliberately carries no `"adopted"` token so the resident aborts
         // immediately instead of waiting out ADOPT_BOUND or committing.
         let _ = (&stream).write_all(b"{\"abort\":true}\n");
@@ -866,6 +914,14 @@ pub(crate) fn ask(
         let _ = (&stream).read_to_end(&mut word);
         drop(fds);
         return Ok(Offer::Resync(answer.subscribed));
+    }
+
+    // Last pre-commit cancellation check (after `adopt_check`): closing the
+    // stream without writing `adopted` makes the resident abort the handover
+    // and keep serving.
+    if stop.load(Ordering::SeqCst) {
+        drop(fds);
+        return Err(handover_interrupted());
     }
 
     let adopted = (&stream).write_all(b"{\"adopted\":true}\n");
@@ -941,7 +997,7 @@ mod tests {
         let lock = DrawerLock::try_acquire(tmp.path()).unwrap().unwrap();
 
         let offer = std::thread::scope(|scope| {
-            let asking = scope.spawn(|| ask(&socket, &[], &[], |_| true));
+            let asking = scope.spawn(|| ask(&socket, &[], &[], &AtomicBool::new(false), |_| true));
             let stream = asked(&listener);
             // The resident stopped waiting for `adopted` before the successor
             // wrote it: the successor's write fails with the grant in hand.
@@ -970,7 +1026,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
 
         let offer = std::thread::scope(|scope| {
-            let asking = scope.spawn(|| ask(&socket, &[], &[], |_| true));
+            let asking = scope.spawn(|| ask(&socket, &[], &[], &AtomicBool::new(false), |_| true));
             let stream = asked(&listener);
             drop(listener);
             drop(stream);

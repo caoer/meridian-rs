@@ -699,7 +699,9 @@ fn clear_earlier_stores(registry: &Registry, registry_dir: &Path) {
     let Some(own) = registry.residency_store_dir() else {
         return;
     };
-    let Ok(entries) = std::fs::read_dir(registry_dir.join("backing")) else {
+    let backing = registry_dir.join("backing");
+    let backing = std::fs::canonicalize(&backing).unwrap_or(backing);
+    let Ok(entries) = std::fs::read_dir(&backing) else {
         return;
     };
     for entry in entries.flatten() {
@@ -716,6 +718,126 @@ fn clear_earlier_stores(registry: &Registry, registry_dir: &Path) {
     }
 }
 
+/// Parse the creator pid from a raw-store directory name (`raw-<pid>-<rest>`).
+fn parse_raw_store_pid(name: &str) -> Option<libc::pid_t> {
+    let rest = name.strip_prefix("raw-")?;
+    let (pid_str, _) = rest.split_once('-')?;
+    let pid: libc::pid_t = pid_str.parse().ok()?;
+    (pid > 0).then_some(pid)
+}
+
+/// Whether `pid` refers to a live process (or cannot be proved gone).
+/// Only `ESRCH` from `kill(pid, 0)` proves the process no longer exists.
+fn pid_is_alive(pid: libc::pid_t) -> bool {
+    if pid <= 0 {
+        return true;
+    }
+    // SAFETY: signal 0 delivers nothing; `kill` only probes process existence.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+/// Remove residency stores under `<registry_dir>/backing/` whose owning
+/// process is confirmed dead (`ESRCH`) and whose advisory directory lock is
+/// unheld, keeping `own` and every live process's store untouched.
+///
+/// Safe without holding the singleton lock (a successor starting beside a
+/// serving daemon, or a resident's reaper sweep): a live resident — even an
+/// older build that does not hold a per-store `DrawerLock` — is skipped by
+/// [`pid_is_alive`] before any lock or removal is attempted.
+fn clear_dead_stores(registry_dir: &Path, own: Option<&Path>) {
+    let backing = registry_dir.join("backing");
+    let backing = std::fs::canonicalize(&backing).unwrap_or(backing);
+    let Ok(entries) = std::fs::read_dir(&backing) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if own.is_some_and(|o| o == path) {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(parse_raw_store_pid) else {
+            continue;
+        };
+        if pid_is_alive(pid) {
+            continue;
+        }
+        // Hold the directory's advisory lock while removing it so two
+        // concurrent sweepers (or an open descriptor still closing) never race.
+        let Ok(Some(_lock)) = DrawerLock::try_acquire(&path) else {
+            continue;
+        };
+        if let Err(e) = std::fs::remove_dir_all(&path)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            timing::say!(
+                "registry: cannot remove a dead process's residency store {} ({e})",
+                path.display()
+            );
+        }
+    }
+}
+
+fn succession_interrupted() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "successor interrupted before handover",
+    )
+}
+
+fn sleep_until_stopped(duration: Duration, stop: &AtomicBool) -> io::Result<()> {
+    const TICK: Duration = Duration::from_millis(50);
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        if stop.load(Ordering::SeqCst) {
+            return Err(succession_interrupted());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(remaining.min(TICK));
+    }
+    if stop.load(Ordering::SeqCst) {
+        return Err(succession_interrupted());
+    }
+    Ok(())
+}
+
+/// Abort and remove a successor's residency store whenever `succeed_until`
+/// exits without committing a takeover (signal, timeout, error, or panic).
+struct AbortStoreOnDrop {
+    registry: Arc<Registry>,
+    armed: bool,
+}
+
+impl AbortStoreOnDrop {
+    fn new(registry: &Arc<Registry>) -> Self {
+        Self {
+            registry: Arc::clone(registry),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AbortStoreOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.registry.abort_residency_store();
+        }
+    }
+}
+
 /// Did warming `workspace` fail solely because its root directory no longer
 /// exists on disk? A vanished workspace cannot be warmed by a successor and
 /// must not abort handover; an error on a still-present directory still fails.
@@ -726,27 +848,6 @@ fn is_vanished_workspace(workspace: &Path, err: &io::Error) -> bool {
 /// Maximum times a successor declines adoption to resync a subscribed baseline
 /// whose disk moved past the resident's final root during handover transfer.
 const MAX_ADOPT_RESYNCS: u32 = 3;
-
-/// Bring every already-warm workspace up to disk before asking handover,
-/// recording vanished directories so an older resident still grants.
-fn refresh_warm_beside(registry: &Registry, vanished: &mut Vec<PathBuf>) -> io::Result<()> {
-    for workspace in registry.warm_workspaces() {
-        match registry.warm_or_build(&workspace) {
-            Ok(_) => {}
-            Err(e) if is_vanished_workspace(&workspace, &e) => {
-                timing::say!(
-                    "registry: skipping vanished workspace {} while refreshing beside the serving daemon ({e})",
-                    workspace.display()
-                );
-                if !vanished.contains(&workspace) {
-                    vanished.push(workspace);
-                }
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
 
 /// Union `live` with any `vanished` paths not already present.
 fn with_vanished(mut live: Vec<PathBuf>, vanished: &[PathBuf]) -> Vec<PathBuf> {
@@ -759,13 +860,18 @@ fn with_vanished(mut live: Vec<PathBuf>, vanished: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Pre-prime or silently refresh every subscribed workspace beside the serving
-/// daemon (without taking `.meridian/write.lock`), skipping vanished paths.
+/// daemon (without taking `.meridian/write.lock`), skipping vanished paths and
+/// stopping promptly when `stop` is raised.
 fn refresh_subscribed_beside(
     registry: &Registry,
     subscribed_targets: &[PathBuf],
     vanished_subscribed: &mut Vec<PathBuf>,
+    stop: &AtomicBool,
 ) -> io::Result<()> {
     for workspace in subscribed_targets {
+        if stop.load(Ordering::SeqCst) {
+            return Err(succession_interrupted());
+        }
         if vanished_subscribed.contains(workspace) {
             continue;
         }
@@ -799,13 +905,18 @@ fn refresh_subscribed_beside(
 
 /// Reconcile each pre-primed subscribed ring silently to the resident's final
 /// baseline root before sending `adopted`. Returns `false` to abort and resync
-/// when disk moved past the resident's root while `allow_resync` is true.
+/// when disk moved past the resident's root while `allow_resync` is true, or
+/// when `stop` is raised.
 fn adopt_subscribed_baselines(
     registry: &Registry,
     subscribed: &[SubscribedState],
     allow_resync: bool,
+    stop: &AtomicBool,
 ) -> bool {
     for entry in subscribed {
+        if stop.load(Ordering::SeqCst) {
+            return false;
+        }
         let Some(expected) = entry.root.as_ref() else {
             continue;
         };
@@ -831,77 +942,126 @@ fn adopt_subscribed_baselines(
             }
         }
     }
-    true
+    !stop.load(Ordering::SeqCst)
+}
+
+enum WarmStep {
+    Warmed,
+    Vanished(PathBuf),
+}
+
+fn warm_one_beside(registry: &Registry, workspace: PathBuf) -> io::Result<WarmStep> {
+    if !workspace.is_dir() {
+        timing::say!(
+            "registry: skipping vanished workspace {} beside the serving daemon (directory is gone)",
+            workspace.display()
+        );
+        return Ok(WarmStep::Vanished(workspace));
+    }
+    match registry.warm_or_build(&workspace) {
+        Ok(outcome) => {
+            timing::say!(
+                "registry: warm beside the serving daemon for {} ({outcome:?})",
+                workspace.display()
+            );
+            Ok(WarmStep::Warmed)
+        }
+        Err(e) if is_vanished_workspace(&workspace, &e) => {
+            timing::say!(
+                "registry: skipping vanished workspace {} beside the serving daemon ({e})",
+                workspace.display()
+            );
+            Ok(WarmStep::Vanished(workspace))
+        }
+        Err(e) => {
+            timing::say!(
+                "registry: cannot warm {} beside the serving daemon ({e})",
+                workspace.display()
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Warm every workspace of `theirs` this daemon does not already cover in
 /// `claimed`, one thread each: the serving daemon answers its callers
 /// meanwhile. Returns the subset of `theirs` whose root directory no longer
 /// exists on disk so the successor can still claim them against an older
-/// resident without aborting succession.
+/// resident without aborting succession. Stops promptly when `stop` is raised.
 fn warm_beside(
     registry: &Arc<Registry>,
     theirs: &[PathBuf],
     claimed: &[PathBuf],
+    stop: &AtomicBool,
 ) -> io::Result<Vec<PathBuf>> {
-    enum Step {
-        Warmed,
-        Vanished(PathBuf),
-    }
-
-    let builds: Vec<_> = theirs
+    let pending: Vec<PathBuf> = theirs
         .iter()
         .filter(|workspace| !claimed.contains(workspace))
-        .map(|workspace| {
-            let registry = Arc::clone(registry);
-            let workspace = workspace.clone();
-            thread::spawn(move || {
-                if !workspace.is_dir() {
-                    timing::say!(
-                        "registry: skipping vanished workspace {} beside the serving daemon (directory is gone)",
-                        workspace.display()
-                    );
-                    return Ok(Step::Vanished(workspace));
-                }
-                let outcome = registry.warm_or_build(&workspace);
-                match outcome {
-                    Ok(outcome) => {
-                        timing::say!(
-                            "registry: warm beside the serving daemon for {} ({outcome:?})",
-                            workspace.display()
-                        );
-                        Ok(Step::Warmed)
-                    }
-                    Err(e) if is_vanished_workspace(&workspace, &e) => {
-                        timing::say!(
-                            "registry: skipping vanished workspace {} beside the serving daemon ({e})",
-                            workspace.display()
-                        );
-                        Ok(Step::Vanished(workspace))
-                    }
-                    Err(e) => {
-                        timing::say!(
-                            "registry: cannot warm {} beside the serving daemon ({e})",
-                            workspace.display()
-                        );
-                        Err(e)
-                    }
-                }
-            })
-        })
+        .cloned()
         .collect();
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+    if stop.load(Ordering::SeqCst) {
+        return Err(succession_interrupted());
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut remaining = pending.len();
+    let mut handles = Vec::with_capacity(remaining);
+    for workspace in pending {
+        let registry = Arc::clone(registry);
+        let tx = tx.clone();
+        handles.push(thread::spawn(move || {
+            let _ = tx.send(warm_one_beside(&registry, workspace));
+        }));
+    }
+    drop(tx);
+
     let mut first: io::Result<()> = Ok(());
     let mut vanished = Vec::new();
-    for build in builds {
-        let outcome = build.join().unwrap_or_else(|_| {
-            Err(io::Error::other(
+    while remaining > 0 {
+        if stop.load(Ordering::SeqCst) {
+            // Close and purge the backing store immediately so worker threads
+            // fail fast on their next retain() and no backing directory
+            // remains on disk even if a slow parse is still unwinding.
+            registry.abort_residency_store();
+            let wait_until = Instant::now() + Duration::from_secs(2);
+            while remaining > 0 && Instant::now() < wait_until {
+                match rx.recv_timeout(Duration::from_millis(20)) {
+                    Ok(_) => remaining -= 1,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        remaining = 0;
+                        break;
+                    }
+                }
+            }
+            if remaining == 0 {
+                for handle in handles {
+                    let _ = handle.join();
+                }
+            }
+            return Err(succession_interrupted());
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(outcome) => {
+                remaining -= 1;
+                match outcome {
+                    Ok(WarmStep::Vanished(path)) => vanished.push(path),
+                    Err(e) if first.is_ok() => first = Err(e),
+                    Ok(WarmStep::Warmed) | Err(_) => {}
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    for handle in handles {
+        if handle.join().is_err() && first.is_ok() {
+            first = Err(io::Error::other(
                 "a warm beside the serving daemon panicked",
-            ))
-        });
-        match outcome {
-            Ok(Step::Vanished(path)) => vanished.push(path),
-            Err(e) if first.is_ok() => first = Err(e),
-            Ok(Step::Warmed) | Err(_) => {}
+            ));
         }
     }
     first?;
@@ -912,7 +1072,8 @@ fn warm_beside(
 /// (merkle-spec §6.4): one controller with that limit and one raw store under
 /// `<registry-dir>/backing/`. `clear` holding the singleton lock: every store
 /// directory an earlier process left there is removed first. A successor
-/// warming beside the lock's holder leaves them and clears at its commit
+/// warming beside the lock's holder sweeps only dead-process, unlocked stores
+/// here and clears the predecessor's store at its commit
 /// ([`clear_earlier_stores`]).
 fn install_host(
     registry_dir: &Path,
@@ -921,18 +1082,21 @@ fn install_host(
 ) -> io::Result<crate::residency::Host> {
     let backing = registry_dir.join("backing");
     std::fs::create_dir_all(&backing)?;
-    for entry in std::fs::read_dir(&backing)? {
-        let entry = entry?;
-        if clear
-            && entry.file_type()?.is_dir()
-            && entry.file_name().to_string_lossy().starts_with("raw-")
-            && let Err(e) = std::fs::remove_dir_all(entry.path())
-        {
-            timing::say!(
-                "registry: cannot remove an earlier residency store {} ({e})",
-                entry.path().display()
-            );
+    if clear {
+        for entry in std::fs::read_dir(&backing)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir()
+                && entry.file_name().to_string_lossy().starts_with("raw-")
+                && let Err(e) = std::fs::remove_dir_all(entry.path())
+            {
+                timing::say!(
+                    "registry: cannot remove an earlier residency store {} ({e})",
+                    entry.path().display()
+                );
+            }
         }
+    } else {
+        clear_dead_stores(registry_dir, None);
     }
     let limit = usize::try_from(bytes).unwrap_or(usize::MAX);
     timing::say!("registry: residency host installed, limit {limit} bytes");
@@ -1119,13 +1283,33 @@ impl RunningServer {
     /// `handover`. In each of those the serving daemon keeps serving. An
     /// error after the takeover committed leaves no daemon serving.
     pub fn succeed(config: Config) -> io::Result<Self> {
+        static NEVER: AtomicBool = AtomicBool::new(false);
+        Self::succeed_until(config, &NEVER)
+    }
+
+    /// As [`RunningServer::succeed`], stopping promptly before the handover
+    /// commit when `stop` becomes `true` (e.g. a `SIGINT`/`SIGTERM` handler).
+    /// On any non-commit exit the successor's own residency backing store is
+    /// closed and removed immediately while the serving daemon and its backing
+    /// store stay untouched.
+    ///
+    /// # Errors
+    ///
+    /// As [`RunningServer::succeed`], plus [`io::ErrorKind::Interrupted`] when
+    /// `stop` is raised before the handover commits.
+    pub fn succeed_until(config: Config, stop: &AtomicBool) -> io::Result<Self> {
+        if stop.load(Ordering::SeqCst) {
+            return Err(succession_interrupted());
+        }
         let dir = prepare_dirs(&config)?;
         if UnixStream::connect(&config.socket_path).is_err() {
             return Self::start(config);
         }
-        // Beside a serving daemon: its residency stores stay, and nothing
-        // here writes the state file or a cache drawer until the commit.
+        // Beside a serving daemon: live residency stores stay, dead-process
+        // unlocked leftovers are swept, and nothing here writes the state file
+        // or a cache drawer until the commit.
         let registry = load_registry(&config, &dir, false)?;
+        let mut abort_store = AbortStoreOnDrop::new(&registry);
         let mut busy = 0u32;
         let mut retry = succession::BUSY_RETRY;
         // Workspaces the resident named whose directory disappeared on disk:
@@ -1139,21 +1323,41 @@ impl RunningServer {
         let mut vanished_subscribed: Vec<PathBuf> = Vec::new();
         let mut adopt_resyncs = 0u32;
         loop {
-            refresh_warm_beside(&registry, &mut vanished)?;
-            refresh_subscribed_beside(&registry, &subscribed_targets, &mut vanished_subscribed)?;
-            let warm = registry.warm_workspaces();
+            if stop.load(Ordering::SeqCst) {
+                return Err(succession_interrupted());
+            }
+            // Bring what is warm up to the disk, so the first currency pass
+            // after the commit has little to fold.
+            let mut warm = registry.warm_workspaces();
+            for gone in warm_beside(&registry, &warm, &[], stop)? {
+                if !vanished.contains(&gone) {
+                    vanished.push(gone);
+                }
+            }
+            refresh_subscribed_beside(
+                &registry,
+                &subscribed_targets,
+                &mut vanished_subscribed,
+                stop,
+            )?;
+            warm = registry.warm_workspaces();
             let claimed = with_vanished(warm.clone(), &vanished);
             let primed = with_vanished(registry.primed_workspaces(), &vanished_subscribed);
             let allow_resync = adopt_resyncs < MAX_ADOPT_RESYNCS;
             let adopt_check = |subscribed: &[SubscribedState]| {
-                adopt_subscribed_baselines(&registry, subscribed, allow_resync)
+                adopt_subscribed_baselines(&registry, subscribed, allow_resync, stop)
             };
-            match succession::ask(&config.socket_path, &claimed, &primed, adopt_check)? {
+            match succession::ask(&config.socket_path, &claimed, &primed, stop, adopt_check)? {
                 Offer::Absent => {
+                    if stop.load(Ordering::SeqCst) {
+                        return Err(succession_interrupted());
+                    }
                     // The serving daemon went away while this one warmed.
                     let singleton = take_singleton(&dir)?;
+                    let server = Self::bind_and_serve(config, Arc::clone(&registry), singleton)?;
+                    abort_store.disarm();
                     clear_earlier_stores(&registry, &dir);
-                    return Self::bind_and_serve(config, registry, singleton);
+                    return Ok(server);
                 }
                 Offer::Warm {
                     warm: theirs,
@@ -1166,14 +1370,14 @@ impl RunningServer {
                     if warm_covered && sub_covered {
                         // Nothing new to warm or prime: the serving daemon is
                         // building a drawer. Wait for it instead of spinning.
-                        thread::sleep(succession::WARM_RETRY);
+                        sleep_until_stopped(succession::WARM_RETRY, stop)?;
                     }
                     for entry in &theirs_sub {
                         if !subscribed_targets.contains(&entry.workspace) {
                             subscribed_targets.push(entry.workspace.clone());
                         }
                     }
-                    for gone in warm_beside(&registry, &theirs, &claimed)? {
+                    for gone in warm_beside(&registry, &theirs, &claimed, stop)? {
                         if !vanished.contains(&gone) {
                             vanished.push(gone);
                         }
@@ -1205,7 +1409,7 @@ impl RunningServer {
                         succession::BUSY_TRIES,
                         retry.as_secs()
                     );
-                    thread::sleep(retry);
+                    sleep_until_stopped(retry, stop)?;
                     retry = (retry * 2).min(succession::BUSY_RETRY_MAX);
                 }
                 Offer::Granted {
@@ -1231,6 +1435,7 @@ impl RunningServer {
                     // daemon accepts.
                     let server =
                         Self::serve(config, Arc::clone(&registry), listener, singleton, conns)?;
+                    abort_store.disarm();
                     clear_earlier_stores(&registry, &dir);
                     return Ok(server);
                 }
@@ -1748,6 +1953,7 @@ fn spawn_reaper(
     let idle_exit = config.idle_exit;
     let max_resident_bytes = config.max_resident_bytes;
     let sql_compaction = config.sql_compaction;
+    let registry_dir = config.registry_dir().to_path_buf();
     thread::spawn(move || {
         let mut elapsed = Duration::ZERO;
         while !shutdown.load(Ordering::SeqCst) {
@@ -1774,6 +1980,9 @@ fn spawn_reaper(
                     evicted.len()
                 );
             }
+            // Reclaim dead-process backing stores (e.g. a successor killed
+            // with SIGKILL or crashed) without touching live stores.
+            clear_dead_stores(&registry_dir, registry.residency_store_dir().as_deref());
             // The host floor's tick: memo and ring growth since the last
             // publish or eviction reaches the floor here (merkle-spec §6.4).
             registry.charge_floor();
@@ -4923,6 +5132,81 @@ mod residency_activation_tests {
             running,
             "the refused daemon removed or added a store"
         );
+        server.shutdown();
+    }
+
+    /// Find a pid that is guaranteed dead by spawning and reaping a trivial
+    /// child (`true`), or fall back to probing high pids if needed.
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn trivial child for dead pid");
+        let pid = child.id();
+        let _ = child.wait();
+        pid
+    }
+
+    #[test]
+    fn clear_dead_stores_removes_only_dead_pid_dirs_and_keeps_live_stores() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("registry");
+        let backing = dir.join("backing");
+        std::fs::create_dir_all(&backing).unwrap();
+
+        let dead = dead_pid();
+        let stale = backing.join(format!("raw-{dead}-deadbeef-0"));
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("0000000000000000.raw"), b"leaked segment").unwrap();
+
+        // Simulate an older live resident without a per-store DrawerLock:
+        // its pid is our own live process, so `pid_is_alive` must protect it.
+        let legacy_live = backing.join(format!("raw-{}-cafebabe-0", std::process::id()));
+        std::fs::create_dir_all(&legacy_live).unwrap();
+        std::fs::write(legacy_live.join("0000000000000000.raw"), b"live segment").unwrap();
+
+        // Non-store directories and unparseable names stay untouched.
+        let unrelated = backing.join("keep-me");
+        std::fs::create_dir_all(&unrelated).unwrap();
+
+        super::clear_dead_stores(&dir, None);
+
+        assert!(!stale.exists(), "dead-pid backing store was swept");
+        assert!(
+            legacy_live.exists(),
+            "live-pid store (even unlocked legacy) stayed untouched"
+        );
+        assert!(unrelated.exists(), "unrelated directory stayed untouched");
+    }
+
+    #[test]
+    fn reaper_sweeps_dead_pid_backing_stores_while_keeping_serving_store() {
+        let tmp = TempDir::new().unwrap();
+        let mut cfg = config(&tmp);
+        cfg.residency_host_bytes = 3 << 30;
+        cfg.reap_interval = Duration::from_millis(200);
+        let backing = cfg.registry_dir().join("backing");
+        let server = RunningServer::start(cfg).unwrap();
+        let own = server
+            .registry
+            .residency_store_dir()
+            .expect("resident has a residency store");
+        assert!(own.is_dir(), "serving store exists");
+
+        let dead = dead_pid();
+        let crashed = backing.join(format!("raw-{dead}-1234-0"));
+        std::fs::create_dir_all(&crashed).unwrap();
+        std::fs::write(crashed.join("0000000000000000.raw"), b"crashed successor").unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while crashed.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !crashed.exists(),
+            "reaper swept the dead-pid backing store while serving"
+        );
+        assert!(own.is_dir(), "serving engine's own backing store untouched");
         server.shutdown();
     }
 

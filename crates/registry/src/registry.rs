@@ -1827,6 +1827,15 @@ impl Registry {
             .map(|host| host.store.directory().to_path_buf())
     }
 
+    /// Close this daemon's residency store against further writes and remove
+    /// its backing directory immediately (used when a successor aborts before
+    /// taking over).
+    pub(crate) fn abort_residency_store(&self) {
+        if let Some(host) = &self.residency {
+            host.store.abort();
+        }
+    }
+
     /// Is no background drawer rebuild in flight?
     pub(crate) fn cold_builds_idle(&self) -> bool {
         self.cold_builds

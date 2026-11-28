@@ -1451,6 +1451,13 @@ it is `mrd daemon`.
   gave the try up — passed nothing the successor keeps: the successor closes
   what it received, which unlocks nothing, and asks again; once nothing
   accepts on the socket it starts as `mrd daemon`, already warm.
+- **Aborting before commit.** A successor that receives `SIGINT`/`SIGTERM` or
+  exits with an error before writing `{"adopted":true}` stops warming and
+  waiting promptly, closes and removes its own residency backing store under
+  `<cache-root>/registry/backing/`, and leaves the serving daemon and its
+  backing store untouched. Dead-process, unlocked `raw-<pid>-*` directories
+  left by a `SIGKILL`ed or crashed successor are swept both when a subsequent
+  successor starts and on the serving daemon's reap pass.
 - **Why nothing is refused.** Neither the listening socket nor the lock is
   ever closed, re-bound or released: an flock belongs to the open file
   description, so the passed descriptor IS the held lock and no third daemon
