@@ -13,10 +13,10 @@
 //! invalidates: there is nothing to get wrong, because a rev IS the identity
 //! of the bytes. A restart re-evaluates and loses nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use run::modes::{LoadedBlock, ModuleCache};
+use run::modes::{LoadedBlock, ModuleCache, Page};
 
 /// How many blocks one workspace keeps. A page carries a handful of blocks
 /// and a fleet root a few pages of them, so this is generous for the real
@@ -24,10 +24,42 @@ use run::modes::{LoadedBlock, ModuleCache};
 /// on every edit is a slow leak, and a fleet daemon runs for weeks.
 const CAPACITY: usize = 512;
 
-/// One workspace's cached modules.
+/// How many validated prelude keys one workspace keeps.
+const PRELUDE_CAPACITY: usize = 64;
+
+/// How many parsed mode-row page copies (`(page_path, file_rev) -> Arc<Page>`)
+/// one workspace keeps. Keyed by `file_rev`, so an edited page is a new key
+/// and a warm fire on an unchanged page avoids re-walking and cloning every
+/// fenced block of a large hooks page (e.g. 236 KB `HOOKS.md`).
+const PAGE_CAPACITY: usize = 64;
+
+/// One workspace's cached modules, validated preludes, and extracted mode pages.
 #[derive(Default)]
 pub struct WorkspaceModules {
     blocks: Mutex<HashMap<String, Arc<LoadedBlock>>>,
+    preludes: Mutex<HashSet<String>>,
+    pages: Mutex<HashMap<(String, String), Arc<Page>>>,
+}
+
+impl WorkspaceModules {
+    /// Look up a cached [`Page`] copy for `(page, file_rev)`.
+    #[must_use]
+    pub fn get_page(&self, page: &str, file_rev: &str) -> Option<Arc<Page>> {
+        self.pages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(page.to_owned(), file_rev.to_owned()))
+            .map(Arc::clone)
+    }
+
+    /// Cache a [`Page`] copy for `(page, file_rev)`.
+    pub fn put_page(&self, page: String, file_rev: String, copied: Arc<Page>) {
+        let mut pages = self.pages.lock().unwrap_or_else(PoisonError::into_inner);
+        if pages.len() >= PAGE_CAPACITY {
+            pages.clear();
+        }
+        pages.insert((page, file_rev), copied);
+    }
 }
 
 // `LoadedBlock` holds a starlark `FrozenModule`, which has no `Debug`. The
@@ -60,5 +92,20 @@ impl ModuleCache for WorkspaceModules {
             blocks.clear();
         }
         blocks.insert(key, loaded);
+    }
+
+    fn prelude_ok(&self, key: &str) -> bool {
+        self.preludes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(key)
+    }
+
+    fn mark_prelude_ok(&self, key: String) {
+        let mut preludes = self.preludes.lock().unwrap_or_else(PoisonError::into_inner);
+        if preludes.len() >= PRELUDE_CAPACITY {
+            preludes.clear();
+        }
+        preludes.insert(key);
     }
 }

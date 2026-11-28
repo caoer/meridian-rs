@@ -228,6 +228,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
                 (Some(world), None) => entry_row(
                     &**world,
                     registry.residency_controller(),
+                    modules.as_deref(),
                     &target.page,
                     &invocation,
                     |page| {
@@ -294,6 +295,7 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 fn entry_row(
     world: &dyn model::catalog::DocumentCatalog,
     charge: Option<&crate::residency::controller::Controller>,
+    modules: Option<&crate::run_modules::WorkspaceModules>,
     page: &str,
     invocation: &str,
     row: impl FnOnce(&modes::Page) -> Value,
@@ -306,8 +308,30 @@ fn entry_row(
             "fault": {"class": class, "reason": reason},
         })
     };
+    if let (Some(modules), Some(rev)) = (modules, world.revision(page))
+        && let Some(cached) = modules.get_page(page, &rev.0)
+    {
+        let charged = charge.and_then(|controller| {
+            controller
+                .charge_floor(cached.heap_bytes())
+                .inspect_err(|error| timing::say!("run: a page copy was not charged: {error}"))
+                .ok()
+        });
+        let answer = row(&cached);
+        drop(cached);
+        drop(charged);
+        return answer;
+    }
     match model::catalog::read(world, page, modes::Page::of) {
         Ok(Some(copied)) => {
+            let copied = std::sync::Arc::new(copied);
+            if let Some(modules) = modules {
+                modules.put_page(
+                    page.to_owned(),
+                    copied.file_rev().to_owned(),
+                    std::sync::Arc::clone(&copied),
+                );
+            }
             // Under a residency host the copy is a floor charge for the
             // row's life; the copy is destroyed before its charge ends.
             let charged = charge.and_then(|controller| {
@@ -785,6 +809,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let row = entry_row(
             &world,
             None,
+            None,
             "HOOKS.md",
             "inv-t0",
             |page| json!({"pinned_page": *page == modes::Page::of(&docs["HOOKS.md"])}),
@@ -795,8 +820,107 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             (1, 0),
             "the row serves this one page: an interactive lease, not a scan pin"
         );
-        let absent = entry_row(&world, None, "gone.md", "inv-t1", |_| json!("ran"));
+        let absent = entry_row(&world, None, None, "gone.md", "inv-t1", |_| json!("ran"));
         assert_eq!(absent["fault"]["class"], "bad_path", "{absent:#}");
+    }
+
+    /// A cached page copy keyed by `(page, file_rev)` avoids re-pinning and
+    /// re-walking the page on repeated warm fires, while refreshing when the
+    /// page's revision changes and keeping residency floor accounting intact.
+    #[test]
+    fn a_warm_mode_row_reuses_the_cached_page_without_repinning() {
+        use crate::entry_fixture::{Entry, docs};
+        use crate::residency::controller::Controller;
+        use crate::run_modules::WorkspaceModules;
+
+        let d1 = docs(&[("HOOKS.md", HOOKS)]);
+        let w1 = Entry::new(&d1);
+        let modules = WorkspaceModules::default();
+        let controller = Controller::new(0);
+        let _other = controller.charge_floor(1).unwrap();
+        let base_floor = controller.report().floor;
+        let expected_copy = modes::Page::of(&d1["HOOKS.md"]).heap_bytes();
+
+        let first = entry_row(
+            &w1,
+            Some(&controller),
+            Some(&modules),
+            "HOOKS.md",
+            "inv-t0",
+            |page| json!({"rev": page.file_rev(), "floor": controller.report().floor}),
+        );
+        assert_eq!(w1.reads(), 1, "first fire pins and copies once");
+        assert_eq!(first["floor"], json!(base_floor + expected_copy));
+        assert_eq!(controller.report().floor, base_floor);
+
+        let second = entry_row(
+            &w1,
+            Some(&controller),
+            Some(&modules),
+            "HOOKS.md",
+            "inv-t1",
+            |page| json!({"rev": page.file_rev(), "floor": controller.report().floor}),
+        );
+        assert_eq!(
+            w1.reads(),
+            1,
+            "second fire at the same file_rev hits the page cache without re-pinning"
+        );
+        assert_eq!(second["rev"], first["rev"]);
+        assert_eq!(second["floor"], json!(base_floor + expected_copy));
+        assert_eq!(controller.report().floor, base_floor);
+
+        // An edited page has a new file_rev and misses the cache.
+        let d2 = docs(&[("HOOKS.md", HOOKS_EDITED)]);
+        let w2 = Entry::new(&d2);
+        let edited = entry_row(&w2, None, Some(&modules), "HOOKS.md", "inv-t2", |page| {
+            json!({"rev": page.file_rev()})
+        });
+        assert_eq!(w2.reads(), 1, "edited file_rev misses and re-reads once");
+        assert_ne!(edited["rev"], first["rev"]);
+    }
+
+    /// Validated preludes are cached in `WorkspaceModules` across warm fires,
+    /// while an invalid prelude is never cached and still refuses `prelude_invalid`.
+    #[test]
+    fn a_warm_fire_caches_valid_prelude_and_refuses_invalid_prelude() {
+        let home = tempfile::tempdir().unwrap();
+        let reg = registry_in(home.path());
+        let ws = write_ws(home.path(), &[("HOOKS.md", HOOKS)]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical)
+            .expect("the entry pass warms the drawer");
+
+        let valid_prelude = "def helper(x):\n    return x\n";
+        let mut f1 = fire_frame(1);
+        f1.insert("prelude".into(), json!(valid_prelude));
+        let out1 = rows(&serve_line(&reg, Some(&canonical), &f1, Rev::V3));
+        assert_eq!(out1[0]["result"], "ok", "{out1:?}");
+
+        let limits = effects::EvalLimits::default();
+        let key = format!(
+            "{}:{}:{}",
+            blake3::hash(valid_prelude.as_bytes()).to_hex(),
+            limits.fuel,
+            limits.mem
+        );
+        let modules = reg.modules(&canonical);
+        assert!(
+            run::modes::ModuleCache::prelude_ok(&*modules, &key),
+            "first fire cached the validated prelude key"
+        );
+
+        let mut f2 = fire_frame(2);
+        f2.insert("prelude".into(), json!(valid_prelude));
+        let out2 = rows(&serve_line(&reg, Some(&canonical), &f2, Rev::V3));
+        assert_eq!(out2[0]["result"], "ok", "{out2:?}");
+
+        let mut bad = fire_frame(3);
+        bad.insert("prelude".into(), json!("def broken(:\n"));
+        let out_bad = rows(&serve_line(&reg, Some(&canonical), &bad, Rev::V3));
+        assert_eq!(out_bad[0]["result"], "refused", "{out_bad:?}");
+        assert_eq!(out_bad[0]["fault"]["class"], "prelude_invalid", "{out_bad:?}");
     }
 
     /// The row runs after its lease has ended: with a controller behind the
@@ -814,7 +938,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let world = Catalog::capture(&docs, &controller, &store).unwrap();
         let expected = modes::Page::of(&docs["HOOKS.md"]);
         drop(docs);
-        let row = entry_row(&world, None, "HOOKS.md", "inv-t0", |page| {
+        let row = entry_row(&world, None, None, "HOOKS.md", "inv-t0", |page| {
             assert_eq!(*page, expected);
             let report = controller.report();
             let nested = model::catalog::read(&world, "other.md", |other| other.raw.len());
@@ -841,7 +965,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // grows for the row's charge nor shrinks when it ends.
         let _other = controller.charge_floor(1).unwrap();
         let before = controller.report().floor;
-        let during = entry_row(&world, Some(&controller), "HOOKS.md", "inv-t0", |_| {
+        let during = entry_row(&world, Some(&controller), None, "HOOKS.md", "inv-t0", |_| {
             json!(controller.report().floor)
         });
         assert_eq!(
@@ -869,7 +993,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
             (Fault::Transient, "workspace_busy"),
         ] {
             world.fail(fault);
-            let row = entry_row(&world, None, "HOOKS.md", "inv-t0", |_| {
+            let row = entry_row(&world, None, None, "HOOKS.md", "inv-t0", |_| {
                 panic!("{fault:?}: the row ran without its pinned page")
             });
             assert_eq!(row["result"], "refused", "{fault:?}: {row:#}");
@@ -886,7 +1010,7 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         // The sibling row of the same submission still answers for itself.
         world.fail(Fault::None);
         assert_eq!(
-            entry_row(&world, None, "HOOKS.md", "inv-t1", |_| json!("ran")),
+            entry_row(&world, None, None, "HOOKS.md", "inv-t1", |_| json!("ran")),
             json!("ran")
         );
     }

@@ -2226,8 +2226,13 @@ impl Registry {
                 }
                 if resident == witness {
                     let engine = Arc::new(engine);
-                    engines.insert(canonical.clone(), Arc::clone(&engine));
+                    let replaced = engines.insert(canonical.clone(), Arc::clone(&engine));
                     drop(engines);
+                    // Drop the replaced generation AFTER releasing the engines
+                    // write lock: dropping a large generation (or residency
+                    // catalog slots) inside the write guard blocks every
+                    // concurrent `cold_gate` / `engine_snapshot` reader.
+                    drop(replaced);
                     // Published: the waiters serve it now, ahead of the
                     // host's census below.
                     drop(flight);
@@ -4095,13 +4100,17 @@ impl Registry {
             candidates
         };
         if !candidates.is_empty() {
-            let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-            for key in &candidates {
-                if engines.remove(key).is_some() {
-                    demoted.insert(key.clone());
+            let mut removed_engines = Vec::new();
+            {
+                let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
+                for key in &candidates {
+                    if let Some(engine) = engines.remove(key) {
+                        demoted.insert(key.clone());
+                        removed_engines.push(engine);
+                    }
                 }
             }
-            drop(engines);
+            drop(removed_engines);
             // The resident memo SURVIVES the horizon under a live feed — the
             // §6.4 point: memo + dirty set make the re-warm O(dirty). With no
             // live feed there is no gap coverage, so the memo dies here as it
@@ -4437,12 +4446,14 @@ impl Registry {
     /// cache and pre-warm signature all drop; the registration survives.
     /// Re-censuses the host floor, alone when `alone` ([`Self::census`]).
     fn evict(&self, victims: &[PathBuf], alone: bool) {
-        {
+        let removed_engines: Vec<_> = {
             let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
-            for key in victims {
-                engines.remove(key);
-            }
-        }
+            victims
+                .iter()
+                .filter_map(|key| engines.remove(key))
+                .collect()
+        };
+        drop(removed_engines);
         // Feed and memo leave their maps under the locks and die OUTSIDE
         // them: the feed's Drop releases a kernel stream, and unbinding a
         // memo's stamps takes the memo lock — no path takes a memo lock
@@ -8764,5 +8775,56 @@ mod engine_tests {
             .root(&::fs::WorkspaceRoot(canonical.clone()))
             .unwrap();
         assert_eq!(after, truth, "the named document is served as on disk");
+    }
+
+    /// Replacing a warm generation in `warm_generation` drops the previous
+    /// `Arc<WorkspaceEngine>` AFTER releasing `self.engines.write()`, so a
+    /// concurrent `cold_gate` / `engine_snapshot` reader is never blocked
+    /// behind the old generation's teardown.
+    #[test]
+    fn warm_generation_drops_replaced_engine_outside_engines_write_lock() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("notes/plan.md", &plan_page("August"))]);
+        let canonical = workspace::canonicalize(&ws).unwrap();
+        reg.register(&canonical);
+        reg.warm_or_build(&canonical).unwrap();
+
+        fs::write(canonical.join("notes/plan.md"), plan_page("September")).unwrap();
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let reader_saw_unlocked = Arc::new(AtomicBool::new(false));
+        let reg_cb = Arc::clone(&reg);
+        let canonical_cb = canonical.clone();
+        let drops_cb = Arc::clone(&drops);
+        let unlocked_cb = Arc::clone(&reader_saw_unlocked);
+
+        crate::engine::drop_test::ON_DROP.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                drops_cb.fetch_add(1, Ordering::SeqCst);
+                if reg_cb.engine_snapshot_nowait(&canonical_cb).is_some() {
+                    unlocked_cb.store(true, Ordering::SeqCst);
+                }
+            }));
+        });
+
+        let outcome = reg.warm_or_build(&canonical);
+
+        crate::engine::drop_test::ON_DROP.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+
+        outcome.unwrap();
+        assert!(
+            drops.load(Ordering::SeqCst) >= 1,
+            "the replaced WorkspaceEngine dropped during warm_or_build"
+        );
+        assert!(
+            reader_saw_unlocked.load(Ordering::SeqCst),
+            "engine_snapshot_nowait must succeed while the replaced generation drops \
+             (self.engines.write() must already be released)"
+        );
     }
 }

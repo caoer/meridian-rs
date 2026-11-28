@@ -419,6 +419,26 @@ pub enum WarmOutcome {
 }
 
 #[cfg(test)]
+pub(crate) mod drop_test {
+    use std::cell::RefCell;
+
+    thread_local! {
+        pub(crate) static ON_DROP: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
+    }
+}
+
+#[cfg(test)]
+impl Drop for WorkspaceEngine {
+    fn drop(&mut self) {
+        let _ = drop_test::ON_DROP.try_with(|slot| {
+            if let Some(f) = slot.borrow_mut().as_mut() {
+                f();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{RootCounts, carry_roots, count_roots};
     use std::sync::Arc;
