@@ -24,7 +24,7 @@
 //! torn mid-batch state. Pre-check (unlocked fold vs baseline) keeps quiet
 //! cycles off the flock so writers are not spuriously `workspace_busy`.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -50,11 +50,14 @@ pub const DETECT_CADENCE: Duration = Duration::from_millis(250);
 /// backstop — the staleness bound a silent capture loss can put on frames.
 pub const DETECT_FLOOR_CADENCE: Duration = Duration::from_secs(30);
 
-/// How long a subscribe's priming waits for the workspace write flock
-/// (merkle-spec §6.7). With the pre-observation's 2 s door cookie budget it
-/// leaves half of a client's 10 s request deadline for the snapshot and the
-/// flock-held observation. Past it the `sub` refuses `workspace_busy`.
+/// How long priming waits for the flock: [`PRIME_FLOCK_BUDGET`]; tests
+/// shorten it.
 pub const PRIME_FLOCK_BUDGET: Duration = Duration::from_secs(3);
+
+/// How long an un-redialed handover ring or recently-unsubscribed primed ring
+/// remains eligible for baseline and pending-frame transfer across back-to-back
+/// successions (covers subscriber redial floor + retry backoff).
+pub(crate) const HANDOVER_REDIAL_GRACE: Duration = Duration::from_secs(60);
 
 /// One workspace's delta plane: retained ring, watcher baseline, multi-thread bookkeeping.
 #[derive(Debug)]
@@ -72,6 +75,9 @@ pub struct WorkspaceRing {
     retention: Option<Arc<dyn model::bytes::ByteRetention>>,
     /// Live subscriptions — drives detection and reaper exemption.
     subscribers: AtomicUsize,
+    /// Highest frame `seq` flushed to a live subscriber (or covered by an
+    /// initial unprimed subscribe baseline) on this ring epoch.
+    max_delivered_seq: AtomicU64,
     /// How long priming waits for the flock: [`PRIME_FLOCK_BUDGET`]; tests
     /// shorten it.
     prime_budget: Duration,
@@ -118,6 +124,21 @@ struct RingState {
     /// the [`DETECT_FLOOR_CADENCE`] fallback clock's anchor. `None` until
     /// the first cycle, so the backstop never pre-empts priming.
     last_floor: Option<Instant>,
+    /// Set when this ring adopted a subscribed baseline across warm succession,
+    /// cleared when a live subscriber attaches. Keeps back-to-back successions
+    /// inside the subscriber's redial floor from dropping Window B edits.
+    handover_pending_since: Option<Instant>,
+    /// When the last live subscriber disconnected from this ring.
+    last_unsubscribed: Option<Instant>,
+}
+
+/// Outcome of [`WorkspaceRing::sync_baseline_silent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SyncOutcome {
+    /// The baseline now sits at the returned root.
+    Matched(Root),
+    /// Disk moved past the expected root (or raced mid-write); baseline left intact.
+    DiskMoved(Root),
 }
 
 /// Live subscription claim. Decrements on drop so EOF, broken pipe, or panic
@@ -141,7 +162,9 @@ impl SubGuard {
 
 impl Drop for SubGuard {
     fn drop(&mut self) {
-        self.ring.subscribers.fetch_sub(1, Ordering::SeqCst);
+        if self.ring.subscribers.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.ring.state().last_unsubscribed = Some(Instant::now());
+        }
     }
 }
 
@@ -176,10 +199,13 @@ impl WorkspaceRing {
                 watch,
                 last_detect: None,
                 last_floor: None,
+                handover_pending_since: None,
+                last_unsubscribed: None,
             }),
             cycle_gate: Mutex::new(()),
             retention,
             subscribers: AtomicUsize::new(0),
+            max_delivered_seq: AtomicU64::new(0),
             prime_budget: PRIME_FLOCK_BUDGET,
             #[cfg(test)]
             pause_after_prime_snapshot: Mutex::new(None),
@@ -253,6 +279,7 @@ impl WorkspaceRing {
     /// Register a subscription. Guard lifetime is the subscription's.
     pub fn subscribe(self: &Arc<Self>) -> SubGuard {
         self.subscribers.fetch_add(1, Ordering::SeqCst);
+        self.state().handover_pending_since = None;
         SubGuard {
             ring: Arc::clone(self),
         }
@@ -262,6 +289,274 @@ impl WorkspaceRing {
     #[must_use]
     pub fn has_subscribers(&self) -> bool {
         self.subscribers.load(Ordering::SeqCst) > 0
+    }
+
+    /// Record that a live subscriber has flushed frames through `seq` onto its
+    /// socket.
+    pub(crate) fn note_delivered(&self, seq: u64) {
+        self.max_delivered_seq.fetch_max(seq, Ordering::SeqCst);
+    }
+
+    /// Mark this ring as carrying a subscribed baseline handed over from a
+    /// predecessor daemon whose client has not redialed yet.
+    pub(crate) fn mark_handover_pending(&self) {
+        self.state().handover_pending_since = Some(Instant::now());
+    }
+
+    /// Should warm succession carry and flush this ring's baseline?
+    ///
+    /// True whenever at least one live subscriber is attached, OR this ring
+    /// holds a primed baseline from a recent handover / recent unsubscribe
+    /// within [`HANDOVER_REDIAL_GRACE`] so back-to-back successions inside the
+    /// client's redial floor do not drop Window B edits.
+    #[must_use]
+    pub(crate) fn needs_handover(&self) -> bool {
+        if self.has_subscribers() {
+            return true;
+        }
+        let state = self.state();
+        if state.watch.root().is_none() {
+            return false;
+        }
+        state
+            .handover_pending_since
+            .is_some_and(|at| at.elapsed() < HANDOVER_REDIAL_GRACE)
+            || state
+                .last_unsubscribed
+                .is_some_and(|at| at.elapsed() < HANDOVER_REDIAL_GRACE)
+    }
+
+    /// Undelivered frames retained on an un-redialed handover ring (empty when
+    /// live subscribers are present on this daemon to drain the ring directly).
+    #[must_use]
+    pub(crate) fn pending_undelivered_frames(&self) -> Vec<DeltaFrame> {
+        if self.has_subscribers() {
+            return Vec::new();
+        }
+        let delivered = self.max_delivered_seq.load(Ordering::SeqCst);
+        self.state().ring.frames_after(delivered)
+    }
+
+    /// Seed undelivered frames carried over from an un-redialed predecessor
+    /// ring, re-numbered sequentially into this ring's epoch.
+    pub(crate) fn seed_pending_frames(&self, frames: &[DeltaFrame]) {
+        if frames.is_empty() {
+            return;
+        }
+        let mut state = self.state();
+        for frame in frames {
+            let mut seeded = frame.clone();
+            seeded.delta.seq = state.ring.allocate_seq();
+            state.ring.advance(seeded);
+        }
+    }
+
+    /// Current watcher baseline root (`None` until primed).
+    #[must_use]
+    pub(crate) fn watch_root(&self) -> Option<Root> {
+        self.state().watch.root().cloned()
+    }
+
+    /// Force a synchronous detection pass before handover commit
+    /// (`docs/wire-contract.md` §A.3).
+    ///
+    /// Unlike ordinary [`Self::detect`], this never skips on `DETECT_CADENCE`
+    /// and never short-circuits on an uncorked `vouched_quiet` check: it runs a
+    /// door-grade observation (`cookie_barrier` + take-and-apply on a live feed,
+    /// ~0.5 ms when quiet; floor when unvouched) and only takes the write flock
+    /// when disk moved past the baseline. Every external edit already on disk
+    /// before handover is classified against this daemon's `WatchState` and
+    /// recorded (with its `effects` / hook intents) before the successor adopts.
+    ///
+    /// # Errors
+    /// Observation, flock wait, or classification failure past `budget`.
+    pub(crate) fn flush_detect(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+        budget: Duration,
+    ) -> Result<bool, Box<ErrorBody>> {
+        let deadline = Instant::now() + budget;
+        let _flight = self
+            .cycle_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(baseline) = self.state().watch.root().cloned() else {
+            return Ok(false);
+        };
+        let cache = registry.domain_cache(&ws_root.0);
+        let rem = || {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(1))
+        };
+        let pre = registry
+            .door_observation(&ws_root.0, &cache, rem())
+            .map_err(|e| io_error_body(&e))?;
+        if Root(pre.0) == baseline {
+            self.state().last_detect = Some(Instant::now());
+            return Ok(false);
+        }
+        let _write_lock = fs::WriteLock::acquire_within(ws_root, rem())
+            .map(|lock| lock.timed("flock.hold.handover"))
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    let mut busy = ErrorBody::new(ErrorCode::WorkspaceBusy);
+                    busy.message = Some(format!(
+                        "writer held .meridian/write.lock during pre-handover flush: {e}"
+                    ));
+                    Box::new(busy)
+                } else {
+                    io_error_body(&e)
+                }
+            })?;
+        for _ in 0..3 {
+            registry
+                .door_observation(&ws_root.0, &cache, rem())
+                .map_err(|e| io_error_body(&e))?;
+            let (observed, leaves) = memo_pair(&cache)?;
+            if self.state().watch.root() == Some(&observed) {
+                let now = Instant::now();
+                let mut state = self.state();
+                state.last_detect = Some(now);
+                state.last_floor = Some(now);
+                return Ok(false);
+            }
+            let emitted = self.reconcile_pair(ws_root, &leaves, &observed)?;
+            if self.state().watch.root() == Some(&observed) {
+                let now = Instant::now();
+                let mut state = self.state();
+                state.last_detect = Some(now);
+                state.last_floor = Some(now);
+                return Ok(emitted);
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        let mut busy = ErrorBody::new(ErrorCode::WorkspaceBusy);
+        busy.message =
+            Some("dirty workspace kept moving while flushing pre-handover changes".to_owned());
+        Err(Box::new(busy))
+    }
+
+    /// Pre-prime this ring beside a serving resident without taking
+    /// `.meridian/write.lock` (`docs/wire-contract.md` §A.3), so the resident's
+    /// live writers never see spurious `workspace_busy` refusals.
+    ///
+    /// Reuses the successor's resident `WorkspaceEngine` generation (zero disk
+    /// reads for normal UTF-8 members). If already primed, returns its current
+    /// baseline root without emitting frames.
+    ///
+    /// # Errors
+    /// Warming or priming failed.
+    pub(crate) fn prime_beside(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+    ) -> Result<Root, Box<ErrorBody>> {
+        let _flight = self
+            .cycle_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(root) = self.state().watch.root().cloned() {
+            return Ok(root);
+        }
+        for _ in 0..2 {
+            if registry.engine_snapshot(&ws_root.0).is_none() {
+                registry
+                    .warm_or_build(&ws_root.0)
+                    .map_err(|e| io_error_body(&e))?;
+            }
+            let Some(engine) = registry.engine_snapshot(&ws_root.0) else {
+                return Err(io_error_body(&std::io::Error::other(
+                    "warm engine vanished before prime_beside",
+                )));
+            };
+            let observed = Root(engine.at_fingerprint.0.clone());
+            let leaves: LeafView = engine
+                .leaves
+                .iter()
+                .filter_map(|(rel, digest)| rel.to_str().map(|s| (s.to_owned(), *digest)))
+                .collect();
+            let snapshot =
+                wire_serve::watch::PrimeSnapshot::held(engine.baseline(), self.retention.clone());
+            let primed = {
+                let mut state = self.state();
+                wire_serve::watch::prime(ws_root, &mut state.watch, snapshot, &leaves, &observed)?
+            };
+            if primed {
+                self.state().last_detect = Some(Instant::now());
+                return Ok(observed);
+            }
+            // Rare: an unserved non-UTF-8 member raced its leaf on disk; rebuild once.
+            registry
+                .warm_or_build(&ws_root.0)
+                .map_err(|e| io_error_body(&e))?;
+        }
+        Err(io_error_body(&std::io::Error::other(
+            "prime_beside could not stabilize baseline against concurrent edits",
+        )))
+    }
+
+    /// Advance an already-primed ring's baseline silently without taking
+    /// `.meridian/write.lock` and without emitting any frame (`docs/wire-contract.md`
+    /// §A.3).
+    ///
+    /// When `expected` is `Some(target)`:
+    /// - if the baseline already sits at `target`, returns immediately with zero
+    ///   syscalls;
+    /// - if disk currently folds to `target`, updates only the changed files in
+    ///   `WatchState` and returns `SyncOutcome::Matched`;
+    /// - if disk has already moved past `target` (an external edit landed after
+    ///   the resident's flush), leaves the baseline untouched and returns
+    ///   `SyncOutcome::DiskMoved` so the caller can avoid folding that edit away.
+    ///
+    /// # Errors
+    /// Observation or mover read failure.
+    pub(crate) fn sync_baseline_silent(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+        expected: Option<&Root>,
+        budget: Duration,
+    ) -> Result<SyncOutcome, Box<ErrorBody>> {
+        if let Some(exp) = expected
+            && self.state().watch.root() == Some(exp)
+        {
+            return Ok(SyncOutcome::Matched(exp.clone()));
+        }
+        let _flight = self
+            .cycle_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(exp) = expected
+            && self.state().watch.root() == Some(exp)
+        {
+            return Ok(SyncOutcome::Matched(exp.clone()));
+        }
+        if self.state().watch.root().is_none() {
+            return Err(io_error_body(&std::io::Error::other(
+                "sync_baseline_silent called on an unprimed ring",
+            )));
+        }
+        let cache = registry.domain_cache(&ws_root.0);
+        registry
+            .door_observation(&ws_root.0, &cache, budget)
+            .map_err(|e| io_error_body(&e))?;
+        let (observed, leaves) = memo_pair(&cache)?;
+        if expected.is_some_and(|exp| *exp != observed) {
+            return Ok(SyncOutcome::DiskMoved(observed));
+        }
+        let synced = {
+            let mut state = self.state();
+            wire_serve::watch::sync_silent(ws_root, &mut state.watch, &leaves, &observed)?
+        };
+        if !synced {
+            return Ok(SyncOutcome::DiskMoved(observed));
+        }
+        self.state().last_detect = Some(Instant::now());
+        Ok(SyncOutcome::Matched(observed))
     }
 
     /// Frames the caller has not seen, in emission order.
@@ -308,6 +603,21 @@ impl WorkspaceRing {
         ws_root: &fs::WorkspaceRoot,
         registry: &crate::Registry,
     ) -> Result<bool, Box<ErrorBody>> {
+        self.detect_unless(ws_root, registry, || false)
+    }
+
+    /// Like [`Self::detect`], skipping if `pause()` becomes true before or
+    /// right after acquiring `cycle_gate` (prevents a descheduled push thread
+    /// from running a detect pass after handover quiesce / `flush_detect`).
+    pub(crate) fn detect_unless(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+        pause: impl Fn() -> bool,
+    ) -> Result<bool, Box<ErrorBody>> {
+        if pause() {
+            return Ok(false);
+        }
         // §6.7 pre-check inputs, read and RELEASED before any registry
         // borrow: no path may hold this state lock while acquiring a memo
         // (the sanctioned order is memo → ring state, never the reverse).
@@ -349,6 +659,9 @@ impl WorkspaceRing {
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
         };
+        if pause() {
+            return Ok(false);
+        }
         self.cycle(ws_root, registry, floor_due)
     }
 
@@ -387,12 +700,13 @@ impl WorkspaceRing {
             .cycle_gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let was_unprimed = self.state().watch.root().is_none();
         self.cycle(ws_root, registry, false)?;
         let state = self.state();
         let seq = state.ring.seq();
         // No root: the priming cycle lost the flock for the whole budget, so
         // no baseline exists, and none is invented.
-        state
+        let pair = state
             .watch
             .root()
             .map(|root| (root.clone(), seq))
@@ -404,7 +718,14 @@ impl WorkspaceRing {
                     self.prime_budget
                 ));
                 Box::new(busy)
-            })
+            })?;
+        if was_unprimed {
+            // An initially unprimed subscribe establishes the epoch's first
+            // baseline at `seq`; frames numbered before it predate any
+            // subscriber and must not be re-carried as pending handover frames.
+            self.max_delivered_seq.fetch_max(seq, Ordering::SeqCst);
+        }
+        Ok(pair)
     }
 
     /// One detection cycle, cadence ignored. Gates described on [`Self::detect`].

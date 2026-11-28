@@ -37,7 +37,7 @@
 //! acquire it and refuses to start, so there is only ever one writer of the
 //! state file — the single-writer invariant the atomic state write assumes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
@@ -59,9 +59,11 @@ use crate::protocol::{Request, Response};
 use crate::registry::{
     ColdGate, DOOR_COOKIE_TIMEOUT, PinOutcome, RegisterOutcome, Registry, ResolveOutcome,
 };
-use crate::ring::SubGuard;
+use crate::ring::{SubGuard, SyncOutcome};
 use crate::state::StateStore;
-use crate::succession::{self, Offer, Parked, Reading, Succession};
+use crate::succession::{
+    self, AdoptDecision, Offer, Parked, Pushing, Reading, SubscribedState, Succession,
+};
 use crate::{
     DEFAULT_IDLE_EXIT, DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_PREWARM_QUIET_MAX,
     DEFAULT_PUSH_WRITE_TIMEOUT, DEFAULT_REAP_INTERVAL, DEFAULT_SUB_IDLE_WRITE_TIMEOUT, now_secs,
@@ -872,6 +874,333 @@ fn is_vanished_workspace(workspace: &Path, err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::NotFound && !workspace.is_dir()
 }
 
+/// Maximum times a successor declines adoption with short `WARM_RETRY` backoff
+/// before entering the `Busy` schedule when a subscribed workspace keeps moving
+/// across handover.
+const MAX_ADOPT_RESYNCS: u32 = 3;
+
+/// Maximum consecutive `prime_beside` failures on one subscribed workspace
+/// before the successor logs `may LOSS` and proceeds without blocking the
+/// handover on that workspace.
+const MAX_PRIME_RETRIES: u32 = 2;
+
+/// Shared wall-clock budget for `adopt_subscribed_baselines` across ALL
+/// subscribed workspaces: strictly below `succession::ADOPT_BOUND` so the
+/// successor sends `{"abort":true}` cleanly before the resident times out.
+const ADOPT_CHECK_BUDGET: Duration = succession::ADOPT_BOUND.saturating_sub(Duration::from_secs(1));
+
+/// Record any newly reported subscribed workspaces for the next pre-prime pass.
+fn record_subscribed_targets(targets: &mut Vec<PathBuf>, entries: &[SubscribedState]) {
+    for entry in entries {
+        if !targets.contains(&entry.workspace) {
+            targets.push(entry.workspace.clone());
+        }
+    }
+}
+
+/// Seed any undelivered frames carried over from an un-redialed predecessor
+/// ring and mark every adopted subscribed ring handover-pending before serving.
+fn finish_adopted_rings(
+    registry: &Registry,
+    subscribed: &[SubscribedState],
+    unprimable_subscribed: &[PathBuf],
+) {
+    for entry in subscribed {
+        if !entry.workspace.is_dir() || unprimable_subscribed.contains(&entry.workspace) {
+            continue;
+        }
+        let ring = registry.ring(&entry.workspace);
+        ring.seed_pending_frames(&entry.pending_frames);
+        ring.mark_handover_pending();
+    }
+}
+
+/// Back off exponentially on `Offer::Busy`, failing with `TimedOut` after
+/// `BUSY_TRIES` so the resident keeps serving.
+fn wait_on_busy(
+    busy: &mut u32,
+    retry: &mut Duration,
+    what: Option<&str>,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    *busy += 1;
+    let what = what.unwrap_or("it named nothing");
+    if *busy >= succession::BUSY_TRIES {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "the serving daemon answered busy {} times ({what}) and keeps serving",
+                *busy
+            ),
+        ));
+    }
+    timing::say!(
+        "registry: the serving daemon answered busy ({what}); try {} of {}, asking again in {}s",
+        *busy,
+        succession::BUSY_TRIES,
+        retry.as_secs()
+    );
+    sleep_until_stopped(*retry, stop)?;
+    *retry = (*retry * 2).min(succession::BUSY_RETRY_MAX);
+    Ok(())
+}
+
+/// Per-workspace succession tracking shared across retry rounds in `succeed_until`.
+#[derive(Default)]
+struct SucceedTargets {
+    vanished: Vec<PathBuf>,
+    subscribed: Vec<PathBuf>,
+    vanished_subscribed: Vec<PathBuf>,
+    unprimable_subscribed: Vec<PathBuf>,
+    prime_failures: HashMap<PathBuf, u32>,
+}
+
+struct AskClaims {
+    warm: Vec<PathBuf>,
+    claimed: Vec<PathBuf>,
+    primed: Vec<PathBuf>,
+}
+
+/// Refresh warm workspaces and pre-prime subscribed targets before asking the
+/// resident for handover. Returns `Ok(None)` when a transient pre-prime failure
+/// occurred and the caller should back off and retry before asking.
+fn refresh_before_ask(
+    registry: &Arc<Registry>,
+    targets: &mut SucceedTargets,
+    stop: &AtomicBool,
+) -> io::Result<Option<AskClaims>> {
+    let warm = registry.warm_workspaces();
+    for gone in warm_beside(registry, &warm, &[], stop)? {
+        if !targets.vanished.contains(&gone) {
+            targets.vanished.push(gone);
+        }
+    }
+    if refresh_subscribed_beside(
+        registry,
+        &targets.subscribed,
+        &mut targets.vanished_subscribed,
+        &mut targets.unprimable_subscribed,
+        &mut targets.prime_failures,
+        stop,
+    )? {
+        sleep_until_stopped(succession::WARM_RETRY, stop)?;
+        return Ok(None);
+    }
+    let warm = registry.warm_workspaces();
+    let claimed = with_vanished(warm.clone(), &targets.vanished);
+    let primed = with_vanished(
+        with_vanished(registry.primed_workspaces(), &targets.vanished_subscribed),
+        &targets.unprimable_subscribed,
+    );
+    Ok(Some(AskClaims {
+        warm,
+        claimed,
+        primed,
+    }))
+}
+
+/// Handle `Offer::Warm`: wait when already covered (resident building a drawer),
+/// record newly reported subscribed targets, and warm any missing workspaces.
+fn handle_warm_offer(
+    registry: &Arc<Registry>,
+    theirs: &[PathBuf],
+    theirs_sub: &[SubscribedState],
+    claimed: &[PathBuf],
+    primed: &[PathBuf],
+    targets: &mut SucceedTargets,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    let warm_covered = theirs.iter().all(|w| claimed.contains(w));
+    let sub_covered = theirs_sub.iter().all(|e| primed.contains(&e.workspace));
+    if warm_covered && sub_covered {
+        sleep_until_stopped(succession::WARM_RETRY, stop)?;
+    }
+    record_subscribed_targets(&mut targets.subscribed, theirs_sub);
+    for gone in warm_beside(registry, theirs, claimed, stop)? {
+        if !targets.vanished.contains(&gone) {
+            targets.vanished.push(gone);
+        }
+    }
+    Ok(())
+}
+
+/// Union `live` with any `vanished` paths not already present.
+fn with_vanished(mut live: Vec<PathBuf>, vanished: &[PathBuf]) -> Vec<PathBuf> {
+    for workspace in vanished {
+        if !live.contains(workspace) {
+            live.push(workspace.clone());
+        }
+    }
+    live
+}
+
+/// Pre-prime or silently refresh every subscribed workspace beside the serving
+/// daemon (without taking `.meridian/write.lock`), skipping vanished paths and
+/// stopping promptly when `stop` is raised.
+///
+/// A single workspace's `prime_beside` failure never fails the whole
+/// succession: it retries up to [`MAX_PRIME_RETRIES`] times and then marks the
+/// workspace unprimable with a `may LOSS` log line so the upgrade still lands.
+/// Returns `Ok(true)` when a transient pre-prime failure occurred and the
+/// caller should back off briefly before asking again.
+fn refresh_subscribed_beside(
+    registry: &Registry,
+    subscribed_targets: &[PathBuf],
+    vanished_subscribed: &mut Vec<PathBuf>,
+    unprimable_subscribed: &mut Vec<PathBuf>,
+    prime_failures: &mut HashMap<PathBuf, u32>,
+    stop: &AtomicBool,
+) -> io::Result<bool> {
+    let mut had_transient_failure = false;
+    for workspace in subscribed_targets {
+        if stop.load(Ordering::SeqCst) {
+            return Err(succession_interrupted());
+        }
+        if vanished_subscribed.contains(workspace) || unprimable_subscribed.contains(workspace) {
+            continue;
+        }
+        if !workspace.is_dir() {
+            vanished_subscribed.push(workspace.clone());
+            continue;
+        }
+        let ws_root = fs::WorkspaceRoot(workspace.clone());
+        let ring = registry.ring(workspace);
+        if ring.watch_root().is_none() {
+            match ring.prime_beside(&ws_root, registry) {
+                Ok(_) => {
+                    prime_failures.remove(workspace);
+                }
+                Err(_) if !workspace.is_dir() => {
+                    vanished_subscribed.push(workspace.clone());
+                }
+                Err(e) => {
+                    let tries = prime_failures.entry(workspace.clone()).or_insert(0);
+                    *tries += 1;
+                    if *tries > MAX_PRIME_RETRIES {
+                        timing::say!(
+                            "registry: cannot pre-prime subscribed workspace {} after {} tries ({e:?}); proceeding without pre-prime (may LOSS)",
+                            workspace.display(),
+                            *tries
+                        );
+                        unprimable_subscribed.push(workspace.clone());
+                    } else {
+                        timing::say!(
+                            "registry: pre-prime failed for subscribed workspace {} (try {} of {}): {e:?}; retrying",
+                            workspace.display(),
+                            *tries,
+                            MAX_PRIME_RETRIES
+                        );
+                        had_transient_failure = true;
+                    }
+                }
+            }
+        } else if let Err(e) =
+            ring.sync_baseline_silent(&ws_root, registry, None, DOOR_COOKIE_TIMEOUT)
+        {
+            timing::say!(
+                "registry: pre-ask baseline refresh failed for {} ({e:?})",
+                workspace.display()
+            );
+        }
+    }
+    Ok(had_transient_failure)
+}
+
+fn decline_adopt(allow_resync: bool, why: String) -> AdoptDecision {
+    if allow_resync {
+        AdoptDecision::Resync
+    } else {
+        AdoptDecision::Busy(why)
+    }
+}
+
+/// Reconcile each pre-primed subscribed ring silently to the resident's final
+/// baseline root before sending `adopted`, under one shared deadline below
+/// `ADOPT_BOUND`. Never silently adopts over a `DiskMoved` or unprimed ring:
+/// declines with `Resync` while `allow_resync`, else `Busy` so the resident
+/// serves on with zero loss.
+fn adopt_subscribed_baselines(
+    registry: &Registry,
+    subscribed: &[SubscribedState],
+    unprimable_subscribed: &[PathBuf],
+    allow_resync: bool,
+    stop: &AtomicBool,
+) -> AdoptDecision {
+    let deadline = Instant::now() + ADOPT_CHECK_BUDGET;
+    for entry in subscribed {
+        if stop.load(Ordering::SeqCst) {
+            return AdoptDecision::Interrupted;
+        }
+        let Some(expected) = entry.root.as_ref() else {
+            continue;
+        };
+        if !entry.workspace.is_dir() {
+            continue;
+        }
+        if unprimable_subscribed.contains(&entry.workspace) {
+            timing::say!(
+                "registry: adopting without pre-primed baseline for {} (may LOSS)",
+                entry.workspace.display()
+            );
+            continue;
+        }
+        let rem = deadline.saturating_duration_since(Instant::now());
+        if rem.is_zero() {
+            return decline_adopt(
+                allow_resync,
+                "subscribed baseline sync exceeded adopt budget".to_owned(),
+            );
+        }
+        let ws_root = fs::WorkspaceRoot(entry.workspace.clone());
+        let ring = registry.ring(&entry.workspace);
+        if ring.watch_root().is_none()
+            && let Err(e) = ring.prime_beside(&ws_root, registry)
+        {
+            return decline_adopt(
+                allow_resync,
+                format!(
+                    "pre-prime failed during adopt for {}: {e:?}",
+                    entry.workspace.display()
+                ),
+            );
+        }
+        let rem = deadline.saturating_duration_since(Instant::now());
+        if rem.is_zero() {
+            return decline_adopt(
+                allow_resync,
+                "subscribed baseline sync exceeded adopt budget".to_owned(),
+            );
+        }
+        let target = Root(expected.clone());
+        match ring.sync_baseline_silent(&ws_root, registry, Some(&target), rem) {
+            Ok(SyncOutcome::Matched(_)) => {}
+            Ok(SyncOutcome::DiskMoved(_)) => {
+                return decline_adopt(
+                    allow_resync,
+                    format!(
+                        "subscribed workspace {} moved during handover",
+                        entry.workspace.display()
+                    ),
+                );
+            }
+            Err(e) => {
+                return decline_adopt(
+                    allow_resync,
+                    format!(
+                        "subscribed baseline sync failed for {}: {e:?}",
+                        entry.workspace.display()
+                    ),
+                );
+            }
+        }
+    }
+    if stop.load(Ordering::SeqCst) {
+        AdoptDecision::Interrupted
+    } else {
+        AdoptDecision::Adopt
+    }
+}
+
 enum WarmStep {
     Warmed,
     Vanished(PathBuf),
@@ -1239,95 +1568,82 @@ impl RunningServer {
         let mut abort_store = AbortStoreOnDrop::new(&registry);
         let mut busy = 0u32;
         let mut retry = succession::BUSY_RETRY;
-        // Workspaces the resident named whose directory disappeared on disk:
-        // skipped rather than warmed, and still named in `Ask.warm` so an
-        // older resident whose `covers` checks the raw set grants handover.
-        let mut vanished: Vec<PathBuf> = Vec::new();
+        let mut targets = SucceedTargets::default();
+        let mut adopt_resyncs = 0u32;
         loop {
             if stop.load(Ordering::SeqCst) {
                 return Err(succession_interrupted());
             }
-            // Bring what is warm up to the disk, so the first currency pass
-            // after the commit has little to fold.
-            let mut warm = registry.warm_workspaces();
-            for gone in warm_beside(&registry, &warm, &[], stop)? {
-                if !vanished.contains(&gone) {
-                    vanished.push(gone);
-                }
-            }
-            warm = registry.warm_workspaces();
-            let mut claimed = warm.clone();
-            for workspace in &vanished {
-                if !claimed.contains(workspace) {
-                    claimed.push(workspace.clone());
-                }
-            }
-            match succession::ask(&config.socket_path, &claimed, stop)? {
+            let Some(AskClaims {
+                warm,
+                claimed,
+                primed,
+            }) = refresh_before_ask(&registry, &mut targets, stop)?
+            else {
+                continue;
+            };
+            let allow_resync = adopt_resyncs < MAX_ADOPT_RESYNCS;
+            let adopt_check = |subscribed: &[SubscribedState]| {
+                adopt_subscribed_baselines(
+                    &registry,
+                    subscribed,
+                    &targets.unprimable_subscribed,
+                    allow_resync,
+                    stop,
+                )
+            };
+            match succession::ask(&config.socket_path, &claimed, &primed, stop, adopt_check)? {
                 Offer::Absent => {
                     if stop.load(Ordering::SeqCst) {
                         return Err(succession_interrupted());
                     }
-                    // The serving daemon went away while this one warmed.
                     let singleton = take_singleton(&dir)?;
                     let server = Self::bind_and_serve(config, Arc::clone(&registry), singleton)?;
                     abort_store.disarm();
                     clear_earlier_stores(&registry, &dir);
                     return Ok(server);
                 }
-                Offer::Warm(theirs) => {
-                    if theirs.iter().all(|workspace| claimed.contains(workspace)) {
-                        // Nothing new to warm: the serving daemon is building
-                        // a drawer. Wait for it instead of asking in a spin.
-                        sleep_until_stopped(succession::WARM_RETRY, stop)?;
-                    }
-                    for gone in warm_beside(&registry, &theirs, &claimed, stop)? {
-                        if !vanished.contains(&gone) {
-                            vanished.push(gone);
-                        }
-                    }
+                Offer::Warm {
+                    warm: theirs,
+                    subscribed: theirs_sub,
+                } => {
+                    handle_warm_offer(
+                        &registry,
+                        &theirs,
+                        &theirs_sub,
+                        &claimed,
+                        &primed,
+                        &mut targets,
+                        stop,
+                    )?;
+                }
+                Offer::Resync(theirs_sub) => {
+                    adopt_resyncs += 1;
+                    record_subscribed_targets(&mut targets.subscribed, &theirs_sub);
+                    sleep_until_stopped(succession::WARM_RETRY, stop)?;
                 }
                 Offer::Busy(what) => {
-                    // Every `busy` held the serving daemon's callers for the
-                    // drain bound, so the tries are counted and spaced out.
-                    busy += 1;
-                    let what = what.as_deref().unwrap_or("it named nothing");
-                    if busy >= succession::BUSY_TRIES {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            format!(
-                                "the serving daemon answered busy {busy} times ({what}) and keeps serving"
-                            ),
-                        ));
-                    }
-                    timing::say!(
-                        "registry: the serving daemon answered busy ({what}); try {busy} of {}, asking again in {}s",
-                        succession::BUSY_TRIES,
-                        retry.as_secs()
-                    );
-                    sleep_until_stopped(retry, stop)?;
-                    retry = (retry * 2).min(succession::BUSY_RETRY_MAX);
+                    adopt_resyncs = 0;
+                    wait_on_busy(&mut busy, &mut retry, what.as_deref(), stop)?;
                 }
                 Offer::Granted {
                     listener,
                     singleton,
                     conns,
+                    subscribed,
                 } => {
-                    // Registrations the predecessor took since this daemon
-                    // loaded the state file.
-                    registry.adopt_entries(
-                        StateStore::new(config.state_path.clone())
-                            .load()
-                            .into_iter()
-                            .filter(|entry| entry.workspace.is_dir())
-                            .collect(),
-                    );
+                    finish_adopted_rings(&registry, &subscribed, &targets.unprimable_subscribed);
+                    let entries = StateStore::new(config.state_path.clone())
+                        .load()
+                        .into_iter()
+                        .filter(|e| e.workspace.is_dir())
+                        .collect();
+                    registry.adopt_entries(entries);
                     timing::say!(
                         "registry: took over from the serving daemon ({} workspace(s) warm, {} connection(s) carried)",
                         warm.len(),
                         conns.len()
                     );
-                    // Callers first: the predecessor's stores go once this
-                    // daemon accepts.
                     let server =
                         Self::serve(config, Arc::clone(&registry), listener, singleton, conns)?;
                     abort_store.disarm();
@@ -1509,7 +1825,10 @@ impl RunningServer {
         }
         // A successor holds the socket, the lock, the state file and the
         // cache drawers: nothing here is this daemon's to save or remove.
+        // Wait briefly for push_loop threads to flush any pre-handover frames
+        // before closing their sockets and ending this process.
         if handed {
+            self.succession.drain_pushing(Duration::from_secs(2));
             return;
         }
         // Capture in-memory last_use bumps that resolve made without persisting.
@@ -2071,6 +2390,11 @@ fn serve_conn(
                     .attached
                     .take()
                     .expect("an accepted sub proves a bound workspace");
+                // Enter push tracking BEFORE releasing `reading` so a handover
+                // commit cannot miss this subscriber's final flush.
+                let pushing = ctx
+                    .succession
+                    .enter_push(Arc::clone(guard.ring()), from_seq);
                 // A push connection is no request in flight either.
                 drop(reading);
                 return push_loop(
@@ -2082,6 +2406,7 @@ fn serve_conn(
                     guard,
                     &ctx.shutdown,
                     &ctx.succession,
+                    pushing,
                     ctx.deadlines,
                 );
             }
@@ -2262,6 +2587,7 @@ fn push_loop(
     guard: SubGuard,
     shutdown: &AtomicBool,
     succession: &Succession,
+    pushing: Pushing,
     deadlines: PushDeadlines,
 ) -> io::Result<()> {
     // The guard's ring is the epoch the `sub` was acked on — and the claim has
@@ -2282,16 +2608,25 @@ fn push_loop(
     // A handed-over daemon ends its subs: the client's redial reaches the
     // successor and resyncs by fingerprint (§7.1).
     while !shutdown.load(Ordering::SeqCst) && !succession.handed() {
-        // Detection failure never ends the sub; log and retry next cycle.
-        if let Err(e) = ring.detect(&ws_root, registry) {
+        // While a handover is draining, `drain()` owns the final detect pass
+        // so the ring's baseline stays frozen at the root handed to the successor.
+        // Re-checking `quiescing()` under `cycle_gate` closes the microsecond
+        // deschedule race between this check and `drain()`'s flush.
+        if let Err(e) = ring.detect_unless(&ws_root, registry, || succession.quiescing()) {
             timing::say!("registry: watch reconcile ({}): {e:?}", ws.display());
         }
+        let mut wrote = false;
         for frame in ring.frames_after(delivered) {
             wire_serve::ring::write_frame(writer, &frame, rev == Rev::V3)?;
             delivered = frame.delta.seq;
             last_write = Instant::now();
+            wrote = true;
         }
         writer.flush()?;
+        if wrote {
+            ring.note_delivered(delivered);
+            pushing.note_delivered(delivered);
+        }
         if peer_closed(&mut probe) {
             return Ok(());
         }
@@ -2299,6 +2634,23 @@ fn push_loop(
         // with its cursor and catches up from an empty ring.
         if last_write.elapsed() >= deadlines.idle_write {
             return Ok(());
+        }
+    }
+    if succession.handed() {
+        // Flush every frame recorded before the handover commit (including
+        // `drain()`'s final detect) before closing this socket so the
+        // subscriber reads them strictly before EOF.
+        let _ = writer.set_write_timeout(Some(deadlines.write.min(Duration::from_secs(2))));
+        let mut wrote = false;
+        for frame in ring.frames_after(delivered) {
+            wire_serve::ring::write_frame(writer, &frame, rev == Rev::V3)?;
+            delivered = frame.delta.seq;
+            wrote = true;
+        }
+        writer.flush()?;
+        if wrote {
+            ring.note_delivered(delivered);
+            pushing.note_delivered(delivered);
         }
     }
     Ok(())
@@ -5369,5 +5721,94 @@ mod residency_activation_tests {
             "only the live workspace is actually resident in the successor"
         );
         server.shutdown();
+    }
+
+    /// P1-2: once `MAX_ADOPT_RESYNCS` is exhausted against a continuously
+    /// `DiskMoved` subscribed workspace, `RunningServer::succeed_until` MUST
+    /// NOT silently fold the raced edit into its baseline and send `adopted`:
+    /// it aborts into the `Busy` schedule so the resident keeps serving.
+    #[test]
+    fn resync_exhaustion_never_silently_folds_raced_baseline() {
+        use super::{MAX_ADOPT_RESYNCS, prepare_dirs};
+        use std::io::{BufRead as _, BufReader, Write as _};
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::net::UnixListener;
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        let tmp = TempDir::new().unwrap();
+        let cfg = config(&tmp);
+        let dir = prepare_dirs(&cfg).unwrap();
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+        std::fs::write(ws.join("a.md"), "# A\n\nv1\n").unwrap();
+        let ws_c = workspace::canonicalize(&ws).unwrap();
+        let stale_root = "b3a:0000000000000000000000000000000000000000000000000000000000000000";
+
+        let listener = UnixListener::bind(&cfg.socket_path).unwrap();
+        let lock = cache::DrawerLock::try_acquire(&dir).unwrap().unwrap();
+        let want_ws = ws_c;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_res = Arc::clone(&stop);
+
+        let resident = std::thread::spawn(move || {
+            let (mut grants, mut aborts) = (0u32, 0u32);
+            loop {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                if line.is_empty() {
+                    continue;
+                }
+                let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let has_primed = req["primed"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|v| v.as_str() == want_ws.to_str());
+                if !has_primed {
+                    let out = format!(
+                        "{}\n",
+                        serde_json::json!({"status":"handover","grant":false,"reason":"warm","warm":[&want_ws],"subscribed":[{"workspace":&want_ws,"root":stale_root}],"conns":[]})
+                    );
+                    (&stream).write_all(out.as_bytes()).unwrap();
+                    continue;
+                }
+                grants += 1;
+                let out = format!(
+                    "{}\n",
+                    serde_json::json!({"status":"handover","grant":true,"subscribed":[{"workspace":&want_ws,"root":stale_root}],"conns":[]})
+                );
+                crate::succession::send_with_fds(
+                    &stream,
+                    out.as_bytes(),
+                    &[listener.as_raw_fd(), lock.held().as_raw_fd()],
+                )
+                .unwrap();
+                let mut reply = String::new();
+                let _ = BufReader::new(&stream).read_line(&mut reply);
+                if reply.contains("\"adopted\"") {
+                    (&stream).write_all(b"{\"released\":true}\n").unwrap();
+                    drop(lock.into_held());
+                    return (grants, aborts, true);
+                }
+                aborts += 1;
+                let _ = (&stream).write_all(b"{\"aborted\":true}\n");
+                if grants > MAX_ADOPT_RESYNCS {
+                    stop_res.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return (grants, aborts, false);
+                }
+            }
+        });
+
+        let outcome = RunningServer::succeed_until(cfg, &stop);
+        let (grants, aborts, adopted) = resident.join().unwrap();
+        if let Ok(server) = outcome {
+            server.shutdown();
+        }
+        assert!(
+            !adopted,
+            "must never silently adopt DiskMoved baseline after MAX_ADOPT_RESYNCS (grants={grants}, aborts={aborts})"
+        );
+        assert_eq!(aborts, MAX_ADOPT_RESYNCS + 1);
     }
 }

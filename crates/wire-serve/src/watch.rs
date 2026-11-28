@@ -606,6 +606,51 @@ pub fn prime(
     Ok(true)
 }
 
+/// Advance an already-primed watcher baseline silently to `(leaves, observed)`
+/// without emitting a frame (wire-contract §A.3: a successor daemon whose
+/// warm-beside baseline lags the resident's final committed root catches up to
+/// that exact root before adopting). Reads bytes for movers only, each
+/// verified against its leaf.
+///
+/// Returns `Ok(true)` when the baseline now sits at `observed`, or `Ok(false)`
+/// when the watch is unprimed or a mover raced its leaf on disk.
+///
+/// # Errors
+/// A mover read fails with anything but absence, or the scope cannot be loaded.
+pub fn sync_silent(
+    ws_root: &fs::WorkspaceRoot,
+    watch: &mut WatchState,
+    leaves: &std::collections::BTreeMap<String, [u8; 32]>,
+    observed: &Root,
+) -> Result<bool, Box<ErrorBody>> {
+    let Some(watch_root) = watch.root.as_ref() else {
+        return Ok(false);
+    };
+    if watch_root == observed {
+        return Ok(true);
+    }
+    let Some(diff) = watch.watcher.diff_leaves(leaves) else {
+        return Ok(false);
+    };
+    let mut upserts: Vec<(String, Vec<u8>)> = Vec::new();
+    for path in diff.added.iter().chain(&diff.changed) {
+        let Some(bytes) = read_verified(ws_root, path, leaves.get(path).copied())? else {
+            return Ok(false);
+        };
+        upserts.push((path.clone(), bytes));
+    }
+    let scope_now = load_scope(ws_root)?;
+    let prepared = watch
+        .watcher
+        .prepare_snapshot(upserts)
+        .map_err(|error| backing_error(&error))?;
+    let retired = watch.watcher.advance(prepared, &diff.removed);
+    watch.root = Some(observed.clone());
+    watch.scope = Some(scope_now);
+    drop(retired);
+    Ok(true)
+}
+
 /// One mover's bytes, verified against the observed leaf. `Ok(None)` is the
 /// mid-cycle race (vanished, or bytes past the observed digest); an error is
 /// any other read failure.
