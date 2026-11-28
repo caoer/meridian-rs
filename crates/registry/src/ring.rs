@@ -120,6 +120,15 @@ struct RingState {
     last_floor: Option<Instant>,
 }
 
+/// Outcome of [`WorkspaceRing::sync_baseline_silent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SyncOutcome {
+    /// The baseline now sits at the returned root.
+    Matched(Root),
+    /// Disk moved past the expected root (or raced mid-write); baseline left intact.
+    DiskMoved(Root),
+}
+
 /// Live subscription claim. Decrements on drop so EOF, broken pipe, or panic
 /// always releases; a leaked count would keep the workspace un-reapable forever.
 ///
@@ -262,6 +271,204 @@ impl WorkspaceRing {
     #[must_use]
     pub fn has_subscribers(&self) -> bool {
         self.subscribers.load(Ordering::SeqCst) > 0
+    }
+
+    /// Current watcher baseline root (`None` until primed).
+    #[must_use]
+    pub(crate) fn watch_root(&self) -> Option<Root> {
+        self.state().watch.root().cloned()
+    }
+
+    /// Force a synchronous detection pass before handover commit
+    /// (`docs/wire-contract.md` §A.3).
+    ///
+    /// Unlike ordinary [`Self::detect`], this never skips on `DETECT_CADENCE`
+    /// and never short-circuits on an uncorked `vouched_quiet` check: it runs a
+    /// door-grade observation (`cookie_barrier` + take-and-apply on a live feed,
+    /// ~0.5 ms when quiet; floor when unvouched) and only takes the write flock
+    /// when disk moved past the baseline. Every external edit already on disk
+    /// before handover is classified against this daemon's `WatchState` and
+    /// recorded (with its `effects` / hook intents) before the successor adopts.
+    ///
+    /// # Errors
+    /// Observation, flock wait, or classification failure past `budget`.
+    pub(crate) fn flush_detect(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+        budget: Duration,
+    ) -> Result<bool, Box<ErrorBody>> {
+        let deadline = Instant::now() + budget;
+        let _flight = self
+            .cycle_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(baseline) = self.state().watch.root().cloned() else {
+            return Ok(false);
+        };
+        let cache = registry.domain_cache(&ws_root.0);
+        let rem = || {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_millis(1))
+        };
+        let pre = registry
+            .door_observation(&ws_root.0, &cache, rem())
+            .map_err(|e| io_error_body(&e))?;
+        if Root(pre.0) == baseline {
+            self.state().last_detect = Some(Instant::now());
+            return Ok(false);
+        }
+        let _write_lock = fs::WriteLock::acquire_within(ws_root, rem())
+            .map(|lock| lock.timed("flock.hold.handover"))
+            .map_err(|e| io_error_body(&e))?;
+        for _ in 0..3 {
+            registry
+                .door_observation(&ws_root.0, &cache, rem())
+                .map_err(|e| io_error_body(&e))?;
+            let (observed, leaves) = memo_pair(&cache)?;
+            if self.state().watch.root() == Some(&observed) {
+                let now = Instant::now();
+                let mut state = self.state();
+                state.last_detect = Some(now);
+                state.last_floor = Some(now);
+                return Ok(false);
+            }
+            let emitted = self.reconcile_pair(ws_root, &leaves, &observed)?;
+            if self.state().watch.root() == Some(&observed) {
+                let now = Instant::now();
+                let mut state = self.state();
+                state.last_detect = Some(now);
+                state.last_floor = Some(now);
+                return Ok(emitted);
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+        let mut busy = ErrorBody::new(ErrorCode::WorkspaceBusy);
+        busy.message =
+            Some("dirty workspace kept moving while flushing pre-handover changes".to_owned());
+        Err(Box::new(busy))
+    }
+
+    /// Pre-prime this ring beside a serving resident without taking
+    /// `.meridian/write.lock` (`docs/wire-contract.md` §A.3), so the resident's
+    /// live writers never see spurious `workspace_busy` refusals.
+    ///
+    /// Reuses the successor's resident `WorkspaceEngine` generation (zero disk
+    /// reads for normal UTF-8 members). If already primed, returns its current
+    /// baseline root without emitting frames.
+    ///
+    /// # Errors
+    /// Warming or priming failed.
+    pub(crate) fn prime_beside(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+    ) -> Result<Root, Box<ErrorBody>> {
+        let _flight = self
+            .cycle_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(root) = self.state().watch.root().cloned() {
+            return Ok(root);
+        }
+        for _ in 0..2 {
+            if registry.engine_snapshot(&ws_root.0).is_none() {
+                registry
+                    .warm_or_build(&ws_root.0)
+                    .map_err(|e| io_error_body(&e))?;
+            }
+            let Some(engine) = registry.engine_snapshot(&ws_root.0) else {
+                return Err(io_error_body(&std::io::Error::other(
+                    "warm engine vanished before prime_beside",
+                )));
+            };
+            let observed = Root(engine.at_fingerprint.0.clone());
+            let leaves: LeafView = engine
+                .leaves
+                .iter()
+                .filter_map(|(rel, digest)| rel.to_str().map(|s| (s.to_owned(), *digest)))
+                .collect();
+            let snapshot =
+                wire_serve::watch::PrimeSnapshot::held(engine.baseline(), self.retention.clone());
+            let primed = {
+                let mut state = self.state();
+                wire_serve::watch::prime(ws_root, &mut state.watch, snapshot, &leaves, &observed)?
+            };
+            if primed {
+                self.state().last_detect = Some(Instant::now());
+                return Ok(observed);
+            }
+            // Rare: an unserved non-UTF-8 member raced its leaf on disk; rebuild once.
+            registry
+                .warm_or_build(&ws_root.0)
+                .map_err(|e| io_error_body(&e))?;
+        }
+        Err(io_error_body(&std::io::Error::other(
+            "prime_beside could not stabilize baseline against concurrent edits",
+        )))
+    }
+
+    /// Advance an already-primed ring's baseline silently without taking
+    /// `.meridian/write.lock` and without emitting any frame (`docs/wire-contract.md`
+    /// §A.3).
+    ///
+    /// When `expected` is `Some(target)`:
+    /// - if the baseline already sits at `target`, returns immediately with zero
+    ///   syscalls;
+    /// - if disk currently folds to `target`, updates only the changed files in
+    ///   `WatchState` and returns `SyncOutcome::Matched`;
+    /// - if disk has already moved past `target` (an external edit landed after
+    ///   the resident's flush), leaves the baseline untouched and returns
+    ///   `SyncOutcome::DiskMoved` so the caller can avoid folding that edit away.
+    ///
+    /// # Errors
+    /// Observation or mover read failure.
+    pub(crate) fn sync_baseline_silent(
+        &self,
+        ws_root: &fs::WorkspaceRoot,
+        registry: &crate::Registry,
+        expected: Option<&Root>,
+        budget: Duration,
+    ) -> Result<SyncOutcome, Box<ErrorBody>> {
+        if let Some(exp) = expected
+            && self.state().watch.root() == Some(exp)
+        {
+            return Ok(SyncOutcome::Matched(exp.clone()));
+        }
+        let _flight = self
+            .cycle_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(exp) = expected
+            && self.state().watch.root() == Some(exp)
+        {
+            return Ok(SyncOutcome::Matched(exp.clone()));
+        }
+        if self.state().watch.root().is_none() {
+            return Err(io_error_body(&std::io::Error::other(
+                "sync_baseline_silent called on an unprimed ring",
+            )));
+        }
+        let cache = registry.domain_cache(&ws_root.0);
+        registry
+            .door_observation(&ws_root.0, &cache, budget)
+            .map_err(|e| io_error_body(&e))?;
+        let (observed, leaves) = memo_pair(&cache)?;
+        if expected.is_some_and(|exp| *exp != observed) {
+            return Ok(SyncOutcome::DiskMoved(observed));
+        }
+        let synced = {
+            let mut state = self.state();
+            wire_serve::watch::sync_silent(ws_root, &mut state.watch, &leaves, &observed)?
+        };
+        if !synced {
+            return Ok(SyncOutcome::DiskMoved(observed));
+        }
+        self.state().last_detect = Some(Instant::now());
+        Ok(SyncOutcome::Matched(observed))
     }
 
     /// Frames the caller has not seen, in emission order.

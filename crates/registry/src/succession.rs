@@ -74,11 +74,23 @@ struct ConnState {
     rev: String,
 }
 
+/// One subscribed workspace's settled watch baseline carried across handover.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SubscribedState {
+    pub(crate) workspace: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) root: Option<String>,
+}
+
 /// The successor's request line.
 #[derive(Debug, Serialize, Deserialize)]
 struct Ask {
     op: String,
     warm: Vec<PathBuf>,
+    /// Workspaces whose watch ring this successor has pre-primed beside the
+    /// resident (`None` for older successors that do not speak this field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primed: Option<Vec<PathBuf>>,
 }
 
 /// The resident's answer line.
@@ -95,6 +107,10 @@ struct Answer {
     warm: Vec<PathBuf>,
     #[serde(default)]
     conns: Vec<ConnState>,
+    /// Workspaces with live `sub` connections on the resident, with each
+    /// ring's settled baseline root (empty for older residents).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    subscribed: Vec<SubscribedState>,
 }
 
 fn rev_word(rev: Rev) -> &'static str {
@@ -248,6 +264,9 @@ pub(crate) fn recv_with_fds(
 struct Live {
     /// Connection threads in request mode, the accept loop's own pass included.
     reading: usize,
+    /// Connection threads in push mode (`push_loop`), tracked so a handed-over
+    /// daemon waits for them to flush pre-handover frames before exiting.
+    pushing: usize,
     /// Connections that left request mode at a request boundary.
     parked: Vec<Parked>,
 }
@@ -285,6 +304,17 @@ impl Drop for Reading {
     }
 }
 
+/// A connection thread's place in the push-mode count; dropping it leaves.
+#[derive(Debug)]
+pub(crate) struct Pushing(Arc<Succession>);
+
+impl Drop for Pushing {
+    fn drop(&mut self) {
+        self.0.live().pushing -= 1;
+        self.0.moved.notify_all();
+    }
+}
+
 impl Succession {
     pub(crate) fn new(listener: UnixListener, singleton: DrawerLock) -> Self {
         Succession {
@@ -318,6 +348,22 @@ impl Succession {
     pub(crate) fn enter_held(self: &Arc<Self>) -> Reading {
         self.live().reading += 1;
         Reading(Arc::clone(self))
+    }
+
+    /// Enter push mode (`push_loop`): tracked so a handed-over daemon waits for
+    /// pre-handover frames to flush before exiting.
+    pub(crate) fn enter_push(self: &Arc<Self>) -> Pushing {
+        self.live().pushing += 1;
+        Pushing(Arc::clone(self))
+    }
+
+    /// Wait up to `bound` for all active `push_loop` threads to finish flushing
+    /// pre-handover frames and close their sockets.
+    pub(crate) fn drain_pushing(&self, bound: Duration) {
+        let live = self.live();
+        let _ = self
+            .moved
+            .wait_timeout_while(live, bound, |live| live.pushing > 0);
     }
 
     /// Is a handover draining this daemon?
@@ -401,6 +447,8 @@ enum Undrained {
     Background,
     /// A query or a compaction holds a sql cache open.
     SqlCache,
+    /// Pre-handover flush of subscribed workspace rings did not settle in time.
+    SubscribeFlush,
 }
 
 impl Undrained {
@@ -411,7 +459,8 @@ impl Undrained {
             Undrained::Taken
             | Undrained::Requests(_)
             | Undrained::Background
-            | Undrained::SqlCache => "busy",
+            | Undrained::SqlCache
+            | Undrained::SubscribeFlush => "busy",
         }
     }
 
@@ -422,6 +471,7 @@ impl Undrained {
             Undrained::Requests(n) => Some(format!("{n} request(s) in flight")),
             Undrained::Background => Some("background work in a pass".to_owned()),
             Undrained::SqlCache => Some("a sql cache in use".to_owned()),
+            Undrained::SubscribeFlush => Some("flushing subscribed workspace changes".to_owned()),
         }
     }
 }
@@ -435,7 +485,18 @@ impl std::fmt::Display for Undrained {
     }
 }
 
-/// Answer `grant:false` with why and this daemon's warm set.
+fn subscribed_wire(registry: &Registry) -> Vec<SubscribedState> {
+    registry
+        .subscribed_baselines()
+        .into_iter()
+        .map(|(workspace, root)| SubscribedState {
+            workspace,
+            root: root.map(|r| r.0),
+        })
+        .collect()
+}
+
+/// Answer `grant:false` with why and this daemon's warm/subscribed sets.
 fn refuse(stream: &UnixStream, registry: &Registry, why: Undrained) -> io::Result<Granted> {
     let answer = Answer {
         status: "handover".to_owned(),
@@ -444,6 +505,7 @@ fn refuse(stream: &UnixStream, registry: &Registry, why: Undrained) -> io::Resul
         busy: why.busy(),
         warm: registry.warm_workspaces(),
         conns: Vec::new(),
+        subscribed: subscribed_wire(registry),
     };
     let mut out = serde_json::to_string(&answer).map_err(io::Error::other)?;
     out.push('\n');
@@ -485,24 +547,40 @@ impl Drop for ResumeOnPanic<'_> {
     }
 }
 
-/// Does the successor's claimed warm set cover everything this daemon holds
-/// warm whose directory still exists on disk, with no drawer rebuild in flight?
-fn covers(registry: &Registry, claimed: &[PathBuf]) -> bool {
-    registry.cold_builds_idle()
-        && registry
-            .warm_workspaces()
+/// Does the successor's claimed warm (and, when supplied, primed) set cover
+/// everything this daemon holds warm or subscribed whose directory still exists
+/// on disk, with no drawer rebuild in flight?
+fn covers(registry: &Registry, claimed: &[PathBuf], primed: Option<&[PathBuf]>) -> bool {
+    if !registry.cold_builds_idle() {
+        return false;
+    }
+    if !registry
+        .warm_workspaces()
+        .iter()
+        .all(|workspace| !workspace.is_dir() || claimed.contains(workspace))
+    {
+        return false;
+    }
+    if let Some(primed) = primed
+        && !registry
+            .subscribed_baselines()
             .iter()
-            .all(|workspace| !workspace.is_dir() || claimed.contains(workspace))
+            .all(|(workspace, _)| !workspace.is_dir() || primed.contains(workspace))
+    {
+        return false;
+    }
+    true
 }
 
 /// The drain: every connection thread parks or ends, background work ends
-/// its pass and stays out, the sql caches close and the state file is
-/// flushed. `Err` names why the handover is abandoned, and for a `busy` one
-/// what was still running.
+/// its pass and stays out, subscribed rings flush any dirty external edits,
+/// the sql caches close and the state file is flushed. `Err` names why the
+/// handover is abandoned, and for a `busy` one what was still running.
 fn drain<'a>(
     succession: &'a Succession,
     registry: &Registry,
     claimed: &[PathBuf],
+    primed: Option<&[PathBuf]>,
 ) -> Result<std::sync::RwLockWriteGuard<'a, ()>, Undrained> {
     let deadline = Instant::now() + DRAIN_BOUND;
     let reading = {
@@ -523,9 +601,16 @@ fn drain<'a>(
             Err(_) => return Err(Undrained::Background),
         }
     };
-    // A request served during the drain may have warmed something new.
-    if !covers(registry, claimed) {
+    // A request served during the drain may have warmed or subscribed something new.
+    if !covers(registry, claimed, primed) {
         return Err(Undrained::Warm);
+    }
+    // Flush dirty external changes on every subscribed workspace BEFORE closing
+    // push streams so their frames and hook intents land in this ring and the
+    // successor receives each ring's final settled watch root.
+    if let Err(why) = registry.flush_subscribed_rings(deadline) {
+        timing::say!("registry: pre-handover subscribe flush did not settle ({why})");
+        return Err(Undrained::SubscribeFlush);
     }
     if !registry.close_sql_stores() {
         return Err(Undrained::SqlCache);
@@ -536,7 +621,12 @@ fn drain<'a>(
 
 /// Send the grant line with every descriptor and wait for `adopted`.
 /// `Ok(false)`: the successor did not adopt inside the bound.
-fn pass(stream: &UnixStream, conns: Vec<ConnState>, mut fds: Vec<RawFd>) -> io::Result<bool> {
+fn pass(
+    stream: &UnixStream,
+    conns: Vec<ConnState>,
+    subscribed: Vec<SubscribedState>,
+    mut fds: Vec<RawFd>,
+) -> io::Result<bool> {
     let answer = Answer {
         status: "handover".to_owned(),
         grant: true,
@@ -544,6 +634,7 @@ fn pass(stream: &UnixStream, conns: Vec<ConnState>, mut fds: Vec<RawFd>) -> io::
         busy: None,
         warm: Vec::new(),
         conns,
+        subscribed,
     };
     let mut out = serde_json::to_string(&answer).map_err(io::Error::other)?;
     out.push('\n');
@@ -573,7 +664,7 @@ pub(crate) fn grant(
     resume: &dyn Fn(Parked),
 ) -> io::Result<Granted> {
     let claimed: Ask = serde_json::from_str(request).map_err(io::Error::other)?;
-    if !covers(registry, &claimed.warm) {
+    if !covers(registry, &claimed.warm, claimed.primed.as_deref()) {
         return refuse(stream, registry, Undrained::Warm);
     }
     // One handover at a time.
@@ -581,7 +672,12 @@ pub(crate) fn grant(
         return refuse(stream, registry, Undrained::Taken);
     }
     let _resume_on_panic = ResumeOnPanic { succession, resume };
-    let background = match drain(succession, registry, &claimed.warm) {
+    let background = match drain(
+        succession,
+        registry,
+        &claimed.warm,
+        claimed.primed.as_deref(),
+    ) {
         Ok(background) => background,
         Err(why) => {
             resume_all(succession, resume, &why.to_string());
@@ -620,7 +716,8 @@ pub(crate) fn grant(
         (conns, fds)
     };
     let passed = conns.len();
-    let adopted = pass(stream, conns, fds);
+    let subscribed = subscribed_wire(registry);
+    let adopted = pass(stream, conns, subscribed, fds);
     if !matches!(adopted, Ok(true)) {
         let _ = put(stream, b"{\"aborted\":true}\n");
         drop((listener, singleton, background));
@@ -648,8 +745,14 @@ pub(crate) fn grant(
 pub(crate) enum Offer {
     /// No daemon accepts on the socket.
     Absent,
-    /// The resident holds these warm; warm them and ask again.
-    Warm(Vec<PathBuf>),
+    /// The resident holds these warm/subscribed; warm/prime them and ask again.
+    Warm {
+        warm: Vec<PathBuf>,
+        subscribed: Vec<SubscribedState>,
+    },
+    /// The successor declined adoption because a subscribed baseline raced an
+    /// external edit; resync the baseline and ask again immediately.
+    Resync(Vec<SubscribedState>),
     /// The resident could not drain; ask again later. Carries what it named
     /// as still running, when it named anything.
     Busy(Option<String>),
@@ -673,7 +776,10 @@ fn after_loss(socket: &Path) -> Offer {
 }
 
 /// Ask the daemon on `socket` to hand over to this process, which holds
-/// `warm` warm.
+/// `warm` warm and `primed` rings pre-primed. `adopt_check` runs after
+/// `grant:true` arrives and before `adopted` is written; returning `false`
+/// declines adoption cleanly so the resident resumes and this process can
+/// resync.
 ///
 /// Until the commit every received descriptor is a plain descriptor: closing
 /// one unlocks nothing and ends no connection the resident still serves.
@@ -681,13 +787,19 @@ fn after_loss(socket: &Path) -> Offer {
 /// # Errors
 /// The resident does not speak `handover`, or descriptors were lost in
 /// transit: this process must not serve, and the resident serves on.
-pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
+pub(crate) fn ask(
+    socket: &Path,
+    warm: &[PathBuf],
+    primed: &[PathBuf],
+    mut adopt_check: impl FnMut(&[SubscribedState]) -> bool,
+) -> io::Result<Offer> {
     let Ok(stream) = UnixStream::connect(socket) else {
         return Ok(Offer::Absent);
     };
     let mut request = serde_json::to_string(&Ask {
         op: "handover".to_owned(),
         warm: warm.to_vec(),
+        primed: Some(primed.to_vec()),
     })
     .map_err(io::Error::other)?;
     request.push('\n');
@@ -729,7 +841,10 @@ pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
     })?;
     if !answer.grant {
         return Ok(match answer.reason.as_deref() {
-            Some("warm") => Offer::Warm(answer.warm),
+            Some("warm") => Offer::Warm {
+                warm: answer.warm,
+                subscribed: answer.subscribed,
+            },
             _ => Offer::Busy(answer.busy),
         });
     }
@@ -741,6 +856,16 @@ pub(crate) fn ask(socket: &Path, warm: &[PathBuf]) -> io::Result<Offer> {
             drop(fds);
             return Ok(after_loss(socket));
         }
+    }
+
+    if !adopt_check(&answer.subscribed) {
+        // Deliberately carries no `"adopted"` token so the resident aborts
+        // immediately instead of waiting out ADOPT_BOUND or committing.
+        let _ = (&stream).write_all(b"{\"abort\":true}\n");
+        let mut word = Vec::new();
+        let _ = (&stream).read_to_end(&mut word);
+        drop(fds);
+        return Ok(Offer::Resync(answer.subscribed));
     }
 
     let adopted = (&stream).write_all(b"{\"adopted\":true}\n");
@@ -816,7 +941,7 @@ mod tests {
         let lock = DrawerLock::try_acquire(tmp.path()).unwrap().unwrap();
 
         let offer = std::thread::scope(|scope| {
-            let asking = scope.spawn(|| ask(&socket, &[]));
+            let asking = scope.spawn(|| ask(&socket, &[], &[], |_| true));
             let stream = asked(&listener);
             // The resident stopped waiting for `adopted` before the successor
             // wrote it: the successor's write fails with the grant in hand.
@@ -845,7 +970,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
 
         let offer = std::thread::scope(|scope| {
-            let asking = scope.spawn(|| ask(&socket, &[]));
+            let asking = scope.spawn(|| ask(&socket, &[], &[], |_| true));
             let stream = asked(&listener);
             drop(listener);
             drop(stream);

@@ -3889,6 +3889,63 @@ impl Registry {
         rings.values().any(|ring| ring.has_subscribers())
     }
 
+    /// Workspaces with at least one live `sub` connection whose directory still
+    /// exists on disk, paired with each ring's current watch baseline root
+    /// (`docs/wire-contract.md` §A.3).
+    pub(crate) fn subscribed_baselines(&self) -> Vec<(PathBuf, Option<wire::Root>)> {
+        let live: Vec<(PathBuf, Arc<crate::ring::WorkspaceRing>)> = {
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            rings
+                .iter()
+                .filter(|(ws, ring)| ring.has_subscribers() && ws.is_dir())
+                .map(|(ws, ring)| (ws.clone(), Arc::clone(ring)))
+                .collect()
+        };
+        live.into_iter()
+            .map(|(ws, ring)| (ws, ring.watch_root()))
+            .collect()
+    }
+
+    /// Workspaces whose ring has already been primed and whose directory still
+    /// exists on disk (successor pre-priming set for `Ask.primed`).
+    pub(crate) fn primed_workspaces(&self) -> Vec<PathBuf> {
+        let rings: Vec<(PathBuf, Arc<crate::ring::WorkspaceRing>)> = {
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            rings
+                .iter()
+                .filter(|(ws, _)| ws.is_dir())
+                .map(|(ws, ring)| (ws.clone(), Arc::clone(ring)))
+                .collect()
+        };
+        rings
+            .into_iter()
+            .filter_map(|(ws, ring)| ring.watch_root().map(|_| ws))
+            .collect()
+    }
+
+    /// Force a synchronous pre-handover detect pass on every live subscribed
+    /// workspace so dirty external edits are classified and recorded (with
+    /// `effects` / hook intents) before the handover commits.
+    pub(crate) fn flush_subscribed_rings(&self, deadline: Instant) -> Result<(), String> {
+        let live: Vec<(PathBuf, Arc<crate::ring::WorkspaceRing>)> = {
+            let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            rings
+                .iter()
+                .filter(|(ws, ring)| ring.has_subscribers() && ws.is_dir())
+                .map(|(ws, ring)| (ws.clone(), Arc::clone(ring)))
+                .collect()
+        };
+        for (ws, ring) in live {
+            let rem = deadline.saturating_duration_since(Instant::now());
+            if rem.is_zero() {
+                return Err("flushing subscribed workspace changes".to_owned());
+            }
+            ring.flush_detect(&fs::WorkspaceRoot(ws.clone()), self, rem)
+                .map_err(|e| format!("flushing subscribed workspace {}: {e:?}", ws.display()))?;
+        }
+        Ok(())
+    }
+
     /// How many client requests this daemon has served since it started.
     ///
     /// The pre-warm backoff watches this rather than a timestamp: a counter
