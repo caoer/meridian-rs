@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cache::DrawerLock;
+
 const MAGIC: &[u8; 8] = b"MRDRAW01";
 const HEADER: usize = 80;
 const HEADER_BYTES: u64 = 80;
@@ -28,14 +30,19 @@ fn lock<T>(mutex: &Mutex<T>) -> io::Result<MutexGuard<'_, T>> {
 }
 
 #[derive(Debug)]
-struct Directory(PathBuf);
+struct Directory {
+    path: PathBuf,
+    // Exclusive advisory lock held on the store directory fd for its lifetime;
+    // released automatically by the kernel on process death (including SIGKILL).
+    _lock: DrawerLock,
+}
 
 impl Drop for Directory {
     fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir(&self.0)
+        if let Err(error) = fs::remove_dir(&self.path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            timing::say!("raw-store: cannot reclaim {}: {error}", self.0.display());
+            timing::say!("raw-store: cannot reclaim {}: {error}", self.path.display());
         }
     }
 }
@@ -85,6 +92,7 @@ struct Writer {
     active: Option<Arc<Segment>>,
     end: u64,
     next_segment: u64,
+    closed: bool,
 }
 
 /// Process-local backing store; its index must not own historical versions.
@@ -125,7 +133,27 @@ impl RawStore {
     /// This store's own directory under the backing parent.
     #[must_use]
     pub fn directory(&self) -> &Path {
-        &self.directory.0
+        &self.directory.path
+    }
+
+    /// Close this store against further writes and remove its backing directory
+    /// immediately. Used when a successor aborts before taking over so segment
+    /// files written during warming are reclaimed immediately even while worker
+    /// threads are still unwinding.
+    pub fn abort(&self) {
+        if let Ok(mut writer) = lock(&self.writer) {
+            writer.closed = true;
+            writer.active = None;
+            writer.end = 0;
+            if let Err(error) = fs::remove_dir_all(&self.directory.path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                timing::say!(
+                    "raw-store: cannot abort {}: {error}",
+                    self.directory.path.display()
+                );
+            }
+        }
     }
 
     /// Quiescent Rust heap census of required-backing bookkeeping. This
@@ -161,7 +189,7 @@ impl RawStore {
                         .saturating_mul(model::allocation::arc_bytes::<Segment>()),
                 )
                 .saturating_add(model::allocation::arc_bytes::<Directory>())
-                .saturating_add(self.directory.0.capacity());
+                .saturating_add(self.directory.path.capacity());
             let mut segments = Vec::new();
             segments
                 .try_reserve_exact(index.segments.len())
@@ -193,8 +221,19 @@ impl RawStore {
             let path = parent.join(format!("raw-{}-{time:x}-{serial:x}", std::process::id()));
             match fs::DirBuilder::new().mode(0o700).create(&path) {
                 Ok(()) => {
+                    let lock = match DrawerLock::try_acquire(&path) {
+                        Ok(Some(lock)) => lock,
+                        Ok(None) => {
+                            let _ = fs::remove_dir(&path);
+                            continue;
+                        }
+                        Err(error) => {
+                            let _ = fs::remove_dir(&path);
+                            return Err(error);
+                        }
+                    };
                     return Ok(Self {
-                        directory: Arc::new(Directory(path)),
+                        directory: Arc::new(Directory { path, _lock: lock }),
                         index: Mutex::new(Index::default()),
                         writer: Mutex::new(Writer::default()),
                     });
@@ -217,6 +256,12 @@ impl RawStore {
         let digest = model::leaf_digest(bytes);
         let len = u64::try_from(bytes.len()).map_err(|_| invalid("raw length does not fit"))?;
         let mut writer = lock(&self.writer)?;
+        if writer.closed {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "raw backing store closed",
+            ));
+        }
         let existing = lock(&self.index)?
             .records
             .get(&digest)
@@ -263,6 +308,12 @@ impl RawStore {
     /// is reported after publication; all replacement handles remain valid.
     pub fn compact(&self) -> io::Result<()> {
         let mut writer = lock(&self.writer)?;
+        if writer.closed {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "raw backing store closed",
+            ));
+        }
         let records: Vec<_> = {
             let mut index = lock(&self.index)?;
             index.records.retain(|_, record| record.strong_count() != 0);
@@ -366,7 +417,7 @@ impl RawStore {
 
     fn owned_files(&self) -> io::Result<Vec<PathBuf>> {
         let mut paths = Vec::new();
-        for entry in fs::read_dir(&self.directory.0)? {
+        for entry in fs::read_dir(&self.directory.path)? {
             let entry = entry?;
             let name = entry.file_name();
             let name = name
@@ -437,7 +488,7 @@ impl RawStore {
             writer.next_segment = id
                 .checked_add(1)
                 .ok_or_else(|| invalid("segment id overflow"))?;
-            let path = self.directory.0.join(format!("{id:016x}.raw"));
+            let path = self.directory.path.join(format!("{id:016x}.raw"));
             let file = OpenOptions::new()
                 .create_new(true)
                 .read(true)
