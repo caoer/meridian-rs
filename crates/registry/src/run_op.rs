@@ -290,8 +290,11 @@ fn serve(registry: &Registry, ws: &Path, request: &RunArgs) -> Vec<Value> {
 /// before the row runs (merkle-spec §6.8). A block's Starlark and `bash()`
 /// execute with no body of the generation pinned, and the row keeps no parse
 /// tree of the page. Under a residency host, `charge` is its controller and
-/// the copy is a floor charge from the copy until the row ends. Every arm
-/// answers on the row, so its siblings still report for themselves.
+/// every live copy carries a measured floor charge until its allocation is
+/// destroyed — until the row ends when uncached, or until the last reference
+/// drops on replacement, cache clear, or workspace eviction when cached in
+/// `modules` (merkle-spec §6.4). Every arm answers on the row, so its siblings
+/// still report for themselves.
 fn entry_row(
     world: &dyn model::catalog::DocumentCatalog,
     charge: Option<&crate::residency::controller::Controller>,
@@ -311,38 +314,49 @@ fn entry_row(
     if let (Some(modules), Some(rev)) = (modules, world.revision(page))
         && let Some(cached) = modules.get_page(page, &rev.0)
     {
-        let charged = charge.and_then(|controller| {
-            controller
-                .charge_floor(cached.heap_bytes())
-                .inspect_err(|error| timing::say!("run: a page copy was not charged: {error}"))
-                .ok()
-        });
-        let answer = row(&cached);
+        // A cached copy already carries its own floor charge for its full
+        // lifetime; take a per-row charge only if the cache entry was
+        // populated without a controller.
+        let fallback_charge =
+            (!cached.is_charged())
+                .then_some(charge)
+                .flatten()
+                .and_then(|controller| {
+                    controller
+                        .charge_floor(cached.page().heap_bytes())
+                        .inspect_err(|error| {
+                            timing::say!("run: a page copy was not charged: {error}");
+                        })
+                        .ok()
+                });
+        let answer = row(cached.page());
         drop(cached);
-        drop(charged);
+        drop(fallback_charge);
         return answer;
     }
     match model::catalog::read(world, page, modes::Page::of) {
         Ok(Some(copied)) => {
-            let copied = std::sync::Arc::new(copied);
-            if let Some(modules) = modules {
-                modules.put_page(
-                    page.to_owned(),
-                    copied.file_rev().to_owned(),
-                    std::sync::Arc::clone(&copied),
-                );
-            }
-            // Under a residency host the copy is a floor charge for the
-            // row's life; the copy is destroyed before its charge ends.
+            // Under a residency host every live page copy carries a measured
+            // floor charge until its allocation is destroyed (merkle-spec
+            // §6.4). Pairing `Page` and `Floor` inside `Arc<CachedPage>` (with
+            // `Page` dropped before `Floor`) holds the charge for the row's
+            // life when uncached, and across cache hits and in-flight rows
+            // until the last reference drops when cached in `modules`.
             let charged = charge.and_then(|controller| {
                 controller
                     .charge_floor(copied.heap_bytes())
                     .inspect_err(|error| timing::say!("run: a page copy was not charged: {error}"))
                     .ok()
             });
-            let answer = row(&copied);
-            drop(copied);
-            drop(charged);
+            let cached = std::sync::Arc::new(crate::run_modules::CachedPage::new(copied, charged));
+            let cached = match modules {
+                Some(modules) if charge.is_none() || cached.is_charged() => {
+                    modules.put_page(page.to_owned(), cached)
+                }
+                _ => cached,
+            };
+            let answer = row(cached.page());
+            drop(cached);
             answer
         }
         // The pinned corpus does not carry this page.
@@ -824,11 +838,14 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         assert_eq!(absent["fault"]["class"], "bad_path", "{absent:#}");
     }
 
-    /// A cached page copy keyed by `(page, file_rev)` avoids re-pinning and
-    /// re-walking the page on repeated warm fires, while refreshing when the
-    /// page's revision changes and keeping residency floor accounting intact.
+    /// A cached page copy obeys the residency floor-charge law (merkle-spec
+    /// §6.4): its floor charge stays held for as long as the copy lives in
+    /// `WorkspaceModules` or in an in-flight row, cache hits reuse that charge
+    /// without re-pinning or double-counting, an edit replaces the superseded
+    /// revision and releases its charge once any in-flight row ends, and
+    /// dropping `WorkspaceModules` releases every cached page's charge.
     #[test]
-    fn a_warm_mode_row_reuses_the_cached_page_without_repinning() {
+    fn a_warm_mode_row_caches_its_page_under_a_floor_charge_for_its_full_lifetime() {
         use crate::entry_fixture::{Entry, docs};
         use crate::residency::controller::Controller;
         use crate::run_modules::WorkspaceModules;
@@ -839,50 +856,102 @@ declare(on = \"PreToolUse\", match = \"Bash\")
         let controller = Controller::new(0);
         let _other = controller.charge_floor(1).unwrap();
         let base_floor = controller.report().floor;
-        let expected_copy = modes::Page::of(&d1["HOOKS.md"]).heap_bytes();
+        let copy1 = modes::Page::of(&d1["HOOKS.md"]).heap_bytes();
+        let fire = |w: &Entry<'_>, inv: &str| {
+            entry_row(
+                w,
+                Some(&controller),
+                Some(&modules),
+                "HOOKS.md",
+                inv,
+                |p| json!({"rev": p.file_rev(), "floor": controller.report().floor}),
+            )
+        };
 
-        let first = entry_row(
-            &w1,
-            Some(&controller),
-            Some(&modules),
-            "HOOKS.md",
-            "inv-t0",
-            |page| json!({"rev": page.file_rev(), "floor": controller.report().floor}),
-        );
+        let first = fire(&w1, "inv-t0");
         assert_eq!(w1.reads(), 1, "first fire pins and copies once");
-        assert_eq!(first["floor"], json!(base_floor + expected_copy));
-        assert_eq!(controller.report().floor, base_floor);
-
-        let second = entry_row(
-            &w1,
-            Some(&controller),
-            Some(&modules),
-            "HOOKS.md",
-            "inv-t1",
-            |page| json!({"rev": page.file_rev(), "floor": controller.report().floor}),
+        assert_eq!(first["floor"], json!(base_floor + copy1));
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy1,
+            "cached page copy stays charged in floor after row ends"
         );
+
+        let second = fire(&w1, "inv-t1");
         assert_eq!(
             w1.reads(),
             1,
             "second fire at the same file_rev hits the page cache without re-pinning"
         );
         assert_eq!(second["rev"], first["rev"]);
-        assert_eq!(second["floor"], json!(base_floor + expected_copy));
-        assert_eq!(controller.report().floor, base_floor);
+        assert_eq!(
+            second["floor"],
+            json!(base_floor + copy1),
+            "cache hit reuses the cached copy's floor charge without double-counting"
+        );
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy1,
+            "floor charge stays held while the copy stays cached"
+        );
 
-        // An edited page has a new file_rev and misses the cache.
+        // An edited page has a new file_rev, misses the cache, and replaces
+        // the superseded revision so only one copy per page stays charged.
         let d2 = docs(&[("HOOKS.md", HOOKS_EDITED)]);
         let w2 = Entry::new(&d2);
-        let edited = entry_row(
-            &w2,
-            None,
-            Some(&modules),
-            "HOOKS.md",
-            "inv-t2",
-            |page| json!({"rev": page.file_rev()}),
-        );
+        let copy2 = modes::Page::of(&d2["HOOKS.md"]).heap_bytes();
+        let edited = fire(&w2, "inv-t2");
         assert_eq!(w2.reads(), 1, "edited file_rev misses and re-reads once");
         assert_ne!(edited["rev"], first["rev"]);
+        assert_eq!(
+            edited["floor"],
+            json!(base_floor + copy2),
+            "replacing a page drops the superseded revision and its floor charge"
+        );
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy2,
+            "only the latest revision stays charged after replacement"
+        );
+
+        // While an in-flight row holds the previous cached copy and another
+        // row replaces the cache entry, both live copies stay charged until
+        // the in-flight row drops its reference.
+        let overlap = entry_row(
+            &w2,
+            Some(&controller),
+            Some(&modules),
+            "HOOKS.md",
+            "inv-t3",
+            |_| {
+                let inner = fire(&w1, "inv-t4")["floor"].clone();
+                json!({"inner": inner, "outer_after_replace": controller.report().floor})
+            },
+        );
+        assert_eq!(
+            overlap["inner"],
+            json!(base_floor + copy2 + copy1),
+            "both the replaced in-flight copy and the new cached copy are charged"
+        );
+        assert_eq!(
+            overlap["outer_after_replace"],
+            json!(base_floor + copy2 + copy1),
+            "the replaced copy's charge stays held until the in-flight row drops it"
+        );
+        assert_eq!(
+            controller.report().floor,
+            base_floor + copy1,
+            "once the in-flight row ends, only the cached copy remains charged"
+        );
+
+        // Dropping the workspace module cache (eviction / unregister) releases
+        // every cached page copy and its floor charge.
+        drop(modules);
+        assert_eq!(
+            controller.report().floor,
+            base_floor,
+            "dropping WorkspaceModules releases every cached page floor charge"
+        );
     }
 
     /// Validated preludes are cached in `WorkspaceModules` across warm fires,

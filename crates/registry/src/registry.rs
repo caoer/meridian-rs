@@ -2112,27 +2112,23 @@ impl Registry {
 
             // Warm + unchanged → done. Nothing is copied out of the memo on
             // this path: it is the hot one, and a 20k-entry clone per currency
-            // pass would put back a slice of what the memo just removed. A
-            // miss records the resident fingerprint as the WITNESS the guarded
-            // insert below checks against, and pins the resident engine as
-            // the incremental pass's prior build.
-            let (witness, prior) = {
+            // pass would put back a slice of what the memo just removed. Do
+            // NOT clone `prior` before `enter_warm_flight`: a waiter that
+            // adopts the in-flight rebuild never uses `prior`, and holding an
+            // `Arc` to the old generation across the wait would make the
+            // waiter drop the replaced generation on its own thread.
+            {
                 let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
-                match engines.get(&canonical) {
-                    Some(engine) if engine.at_fingerprint == fingerprint => {
-                        let outcome = match parsed {
-                            None => WarmOutcome::Reused,
-                            Some(docs) => WarmOutcome::Built { docs },
-                        };
-                        return Ok((outcome, Arc::clone(engine)));
-                    }
-                    Some(engine) => (
-                        Some(engine.at_fingerprint.clone()),
-                        Some(Arc::clone(engine)),
-                    ),
-                    None => (None, None),
+                if let Some(engine) = engines.get(&canonical)
+                    && engine.at_fingerprint == fingerprint
+                {
+                    let outcome = match parsed {
+                        None => WarmOutcome::Reused,
+                        Some(docs) => WarmOutcome::Built { docs },
+                    };
+                    return Ok((outcome, Arc::clone(engine)));
                 }
-            };
+            }
 
             // One rebuild per `(workspace, fingerprint)`: the first caller to
             // miss at this fold runs the pass below, the rest wait here and
@@ -2154,6 +2150,27 @@ impl Registry {
                         waited_at.push(fingerprint);
                         continue;
                     }
+                }
+            };
+
+            // Only the caller running the rebuild pins the resident engine as
+            // its incremental prior and records its fingerprint as the WITNESS
+            // checked at the guarded insert below.
+            let (witness, prior) = {
+                let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+                match engines.get(&canonical) {
+                    Some(engine) if engine.at_fingerprint == fingerprint => {
+                        let outcome = match parsed {
+                            None => WarmOutcome::Reused,
+                            Some(docs) => WarmOutcome::Built { docs },
+                        };
+                        return Ok((outcome, Arc::clone(engine)));
+                    }
+                    Some(engine) => (
+                        Some(engine.at_fingerprint.clone()),
+                        Some(Arc::clone(engine)),
+                    ),
+                    None => (None, None),
                 }
             };
 
@@ -2237,14 +2254,14 @@ impl Registry {
                     let engine = Arc::new(engine);
                     let replaced = engines.insert(canonical.clone(), Arc::clone(&engine));
                     drop(engines);
-                    // Drop the replaced generation AFTER releasing the engines
-                    // write lock: dropping a large generation (or residency
-                    // catalog slots) inside the write guard blocks every
-                    // concurrent `cold_gate` / `engine_snapshot` reader.
-                    drop(replaced);
-                    // Published: the waiters serve it now, ahead of the
-                    // host's census below.
+                    // Published: release the flight BEFORE dropping the
+                    // replaced generation so warm-flight waiters serve the new
+                    // generation immediately instead of waiting on the old
+                    // generation's teardown (and drop both outside
+                    // `self.engines.write()` so readers never stall behind the
+                    // drop).
                     drop(flight);
+                    drop(replaced);
                     if let Some(host) = &self.residency {
                         // The host floor reaches this generation for as long
                         // as anything holds it (merkle-spec §6.4).
@@ -4486,12 +4503,14 @@ impl Registry {
                 stores.remove(key);
             }
         }
-        {
+        let removed_modules: Vec<_> = {
             let mut modules = self.modules.lock().unwrap_or_else(PoisonError::into_inner);
-            for key in victims {
-                modules.remove(key);
-            }
-        }
+            victims
+                .iter()
+                .filter_map(|key| modules.remove(key))
+                .collect()
+        };
+        drop(removed_modules);
         {
             let mut signatures = self
                 .prewarm_signatures
@@ -7855,6 +7874,88 @@ mod engine_tests {
             WarmOutcome::Reused,
             "the waiter parsed nothing, so its outcome is the zero-parse one"
         );
+        assert!(
+            Arc::ptr_eq(&built, &served),
+            "the waiter serves the very generation the rebuild published"
+        );
+    }
+
+    /// Publishing a rebuilt generation releases `WarmFlightGuard` BEFORE
+    /// dropping the replaced `Arc<WorkspaceEngine>`, so a warm-flight waiter
+    /// serves the published generation immediately without waiting on the old
+    /// generation's teardown.
+    #[test]
+    fn warm_flight_waiter_is_released_before_replaced_engine_drops() {
+        // Always unblock the drop hook on unwind so the leader thread exits cleanly.
+        struct ReleaseOnDrop(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let home = tempfile::tempdir().unwrap();
+        let reg = Arc::new(registry_in(home.path()));
+        let ws = write_ws(home.path(), &[("a.md", "# A v1\n"), ("b.md", "# B\n")]);
+        reg.warm_or_build(&ws).unwrap();
+        rewrite(&ws, "a.md", "# A v2\n");
+
+        let (arrived_tx, arrived) = std::sync::mpsc::channel();
+        let (release_insert, release_insert_rx) = std::sync::mpsc::channel();
+        *reg.pause_before_insert
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((arrived_tx, release_insert_rx));
+
+        let (dropping_tx, dropping_rx) = std::sync::mpsc::channel();
+        let (release_drop, release_drop_rx) = std::sync::mpsc::channel();
+        let mut drop_guard = ReleaseOnDrop(Some(release_drop));
+
+        let leader = {
+            let reg = Arc::clone(&reg);
+            let ws = ws.clone();
+            std::thread::spawn(move || {
+                let mut hook = Some((dropping_tx, release_drop_rx));
+                crate::engine::drop_test::ON_DROP.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(move || {
+                        if let Some((tx, rx)) = hook.take() {
+                            let _ = tx.send(());
+                            let _ = rx.recv();
+                        }
+                    }));
+                });
+                let out = reg.warm_generation(&ws);
+                crate::engine::drop_test::ON_DROP.with(|slot| {
+                    *slot.borrow_mut() = None;
+                });
+                out
+            })
+        };
+
+        arrived.recv().expect("the rebuild reached the pause gate");
+        let waiter = warm_on_a_thread(&reg, &ws);
+        until_flight_waits(&reg, 1);
+
+        release_insert
+            .send(())
+            .expect("the rebuild parked on the gate");
+        dropping_rx
+            .recv_timeout(ANSWERS)
+            .expect("the leader entered drop(replaced)");
+
+        // While the leader is still parked inside drop(replaced), the waiter
+        // must already wake and serve the newly published generation.
+        let (waiter_outcome, served) = waiter
+            .recv_timeout(Duration::from_secs(2))
+            .expect("warm-flight waiter must be released before replaced engine finishes dropping")
+            .unwrap();
+        assert_eq!(waiter_outcome, WarmOutcome::Reused);
+
+        // Now let the replaced generation finish dropping.
+        let _ = drop_guard.0.take().unwrap().send(());
+        let (leader_outcome, built) = leader.join().expect("leader thread panicked").unwrap();
+        assert_eq!(leader_outcome, WarmOutcome::Built { docs: 1 });
         assert!(
             Arc::ptr_eq(&built, &served),
             "the waiter serves the very generation the rebuild published"
