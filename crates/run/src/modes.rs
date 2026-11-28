@@ -59,6 +59,12 @@ impl Page {
         }
     }
 
+    /// The file revision this page copy was built from.
+    #[must_use]
+    pub fn file_rev(&self) -> &str {
+        &self.file_rev
+    }
+
     /// Requested heap this copy owns — never below what its drop frees
     /// (`BTreeMap` nodes at an upper bound). The inline struct is its
     /// owner's.
@@ -254,6 +260,23 @@ pub trait ModuleCache: Sync {
     fn get(&self, key: &str) -> Option<std::sync::Arc<LoadedBlock>>;
     /// Keep this block under this key.
     fn put(&self, key: String, loaded: std::sync::Arc<LoadedBlock>);
+    /// Whether `prelude` has already passed `effects::check_prelude` under
+    /// the same evaluation limits (`key` = digest + limits).
+    fn prelude_ok(&self, _key: &str) -> bool {
+        false
+    }
+    /// Record a prelude key that passed `effects::check_prelude`.
+    fn mark_prelude_ok(&self, _key: String) {}
+}
+
+/// The cache key for a validated prelude under a caller's evaluation limits.
+fn prelude_cache_key(prelude: &str, limits: EvalLimits) -> String {
+    format!(
+        "{}:{}:{}",
+        blake3::hash(prelude.as_bytes()).to_hex(),
+        limits.fuel,
+        limits.mem
+    )
 }
 
 /// The cache key: the block's own rev, plus a digest of the prelude.
@@ -385,7 +408,7 @@ pub fn draft_row(
     source: &str,
     invocation: &str,
 ) -> Value {
-    if let Some(row) = prelude_refusal(world.prelude, target, invocation) {
+    if let Some(row) = prelude_refusal(world.prelude, None, target, invocation) {
         return row;
     }
     let drafted = Page::of(&model::build(source.to_owned(), syntax::parse(source)));
@@ -429,18 +452,31 @@ pub fn draft_row(
 /// e9f1ae35, F9.)
 fn prelude_refusal(
     prelude: Option<&str>,
+    cache: Option<&dyn ModuleCache>,
     target: &wire::RunTarget,
     invocation: &str,
 ) -> Option<Value> {
-    let fault =
-        effects::check_prelude(prelude?, &ctx_for(target, invocation), eval_limits(target))?;
-    Some(refused_row(
-        target,
-        invocation,
-        "prelude_invalid",
-        &fault.reason,
-        fault.line,
-    ))
+    let prelude = prelude?;
+    let limits = eval_limits(target);
+    let key = cache.map(|_| prelude_cache_key(prelude, limits));
+    if let (Some(cache), Some(key)) = (cache, key.as_deref())
+        && cache.prelude_ok(key)
+    {
+        return None;
+    }
+    if let Some(fault) = effects::check_prelude(prelude, &ctx_for(target, invocation), limits) {
+        return Some(refused_row(
+            target,
+            invocation,
+            "prelude_invalid",
+            &fault.reason,
+            fault.line,
+        ));
+    }
+    if let (Some(cache), Some(key)) = (cache, key) {
+        cache.mark_prelude_ok(key);
+    }
+    None
 }
 
 /// One mode-bearing target → one row.
@@ -468,7 +504,7 @@ pub fn mode_row(
             invocation,
         );
     }
-    if let Some(row) = prelude_refusal(world.prelude, target, invocation) {
+    if let Some(row) = prelude_refusal(world.prelude, world.cache, target, invocation) {
         return row;
     }
     match target.mode {
