@@ -5137,6 +5137,7 @@ mod engine_tests {
             &engine,
             "SELECT path FROM doc ORDER BY path",
             &|| false,
+            None,
         )
         .expect("the call answers");
         let wire::ResponseBody::Sql {
@@ -6911,6 +6912,88 @@ mod engine_tests {
         );
         assert_eq!(controller.report().reserved, 0);
         assert_eq!(store_limit(&store).unwrap(), "16.0 MiB");
+    }
+
+    /// A retired store carrying a previous escalation rung must recover
+    /// before inspecting `rung()` or raising `memory_limit`: retries while an
+    /// outstanding read drains must reserve zero controller budget, and once
+    /// the read drops the reopened store runs at steady with `rung() == None`.
+    #[test]
+    fn retired_store_with_rung_recovers_without_reserving_or_stamping_stale_rung() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_at_16_mib(&dir);
+        let docs: model::Docs = [(
+            "a.md".to_owned(),
+            Arc::new(model::build("# A\n".to_owned(), syntax::parse("# A\n"))),
+        )]
+        .into_iter()
+        .collect();
+        store
+            .sync(
+                &docs,
+                &model::RootedCorpus::ambient(&docs),
+                None,
+                None,
+                "b3b:v1",
+                None,
+            )
+            .expect("cold");
+        store.set_rung(Some(32 << 20));
+        let shared = Arc::new(Mutex::new(store));
+        let outstanding = shared
+            .lock()
+            .unwrap()
+            .begin_held_read(&shared)
+            .expect("open read");
+        // Retire the instance while `outstanding` still holds it.
+        let _ = shared.lock().unwrap().query("SET lock_configuration=true");
+        assert!(shared.lock().unwrap().is_retired());
+
+        let controller = crate::residency::controller::Controller::new(1 << 30);
+        let escalation = crate::residency::SqlEscalation::new(Some(controller.clone()), 64 << 20);
+        for _ in 0..5 {
+            let mut guard = shared.lock().unwrap();
+            let err = escalation
+                .run(&mut guard, |s| {
+                    s.sync(
+                        &docs,
+                        &model::RootedCorpus::ambient(&docs),
+                        None,
+                        None,
+                        "b3b:v2",
+                        None,
+                    )
+                })
+                .expect_err("retired with outstanding read refuses");
+            assert!(matches!(err.error, view::ViewError::Busy(_)), "{err:?}");
+            assert_eq!(
+                controller.report().reserved,
+                0,
+                "retries against a retired store must not reserve or park controller budget"
+            );
+        }
+
+        drop(outstanding);
+        let mut guard = shared.lock().unwrap();
+        escalation
+            .run(&mut guard, |s| {
+                s.sync(
+                    &docs,
+                    &model::RootedCorpus::ambient(&docs),
+                    None,
+                    None,
+                    "b3b:v2",
+                    None,
+                )
+            })
+            .expect("reopens and appends at steady limit");
+        assert!(!guard.is_retired());
+        assert_eq!(controller.report().reserved, 0);
+        assert_eq!(
+            guard.rung(),
+            None,
+            "reopened steady-limit append must not carry the retired instance's rung"
+        );
     }
 
     /// The suspicious-only door piggybacks on the next borrow: a named
